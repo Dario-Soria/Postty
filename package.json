@@ -1,0 +1,41 @@
+{
+  "name": "instagram-poster",
+  "version": "1.0.0",
+  "description": "Backend service for automatic Instagram posting with S3 image upload",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "ts-node src/server.ts",
+    "verify": "node verify-setup.js"
+  },
+  "keywords": [
+    "instagram",
+    "automation",
+    "s3",
+    "fastify"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@fastify/multipart": "^8.1.0",
+    "@google/genai": "^1.33.0",
+    "aws-sdk": "^2.1550.0",
+    "axios": "^1.6.5",
+    "better-sqlite3": "^12.4.1",
+    "dotenv": "^16.4.1",
+    "fastify": "^4.26.0",
+    "form-data": "^4.0.0",
+    "openai": "^6.10.0",
+    "sharp": "^0.34.5"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/aws-sdk": "^2.7.0",
+    "@types/axios": "^0.14.0",
+    "@types/form-data": "^2.5.0",
+    "@types/node": "^20.11.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}

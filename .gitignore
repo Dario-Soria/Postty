@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+.venv/
+
+# Build output
+dist/
+
+# Environment variables
+.env
+.env.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# TypeScript
+*.tsbuildinfo
+
+# Generated images
+generated-images/
+
+# Temporary uploads
+temp-uploads/
+

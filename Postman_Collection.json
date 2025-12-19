@@ -1,0 +1,85 @@
+{
+  "info": {
+    "name": "Instagram AI Poster",
+    "description": "API endpoints for AI-powered Instagram posting",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8080/health",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8080",
+          "path": [
+            "health"
+          ]
+        },
+        "description": "Check if the server is running"
+      }
+    },
+    {
+      "name": "Generate AI Image and Publish",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"prompt\": \"A woman on a beach smiling drinking a soda\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8080/generate-and-publish",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8080",
+          "path": [
+            "generate-and-publish"
+          ]
+        },
+        "description": "Generate an AI image from a text prompt and publish it to Instagram with an AI-generated caption"
+      }
+    },
+    {
+      "name": "Publish Image Directly",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"image_path\": \"/Users/dariosoria/Code/Postty v2/TestImage/DariMontana.jpeg\",\n  \"caption\": \"Testing direct upload 🚀 #test #instagram\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8080/publish-instagram",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8080",
+          "path": [
+            "publish-instagram"
+          ]
+        },
+        "description": "Upload a local image directly to Instagram (no AI generation)"
+      }
+    }
+  ]
+}
+
