@@ -1,0 +1,44 @@
+{
+  "canvas": {
+    "width": 1080,
+    "height": 1350,
+    "backgroundFit": "cover",
+    "backgroundPosition": { "x": 0.5, "y": 0.5 }
+  },
+  "overlays": [
+    {
+      "type": "text",
+      "id": "headline",
+      "text": "Black Friday Sale\nUp to 50% OFF",
+      "box": { "x": 80, "y": 120, "width": 920, "height": 320 },
+      "align": "left",
+      "verticalAlign": "top",
+      "font": {
+        "family": "Roboto",
+        "size": 96,
+        "weight": 700,
+        "style": "normal",
+        "lineHeight": 115,
+        "letterSpacing": 0
+      },
+      "fill": "#FFFFFF",
+      "stroke": { "color": "#000000", "width": 0 },
+      "shadow": { "dx": 0, "dy": 6, "blur": 10, "color": "rgba(0,0,0,0.6)" },
+      "padding": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
+      "background": { "color": "rgba(0,0,0,0.35)", "radius": 24, "opacity": 1 },
+      "transform": { "rotateDeg": 0, "originX": 540, "originY": 160 },
+      "maxLines": 3,
+      "overflow": "auto",
+      "minFontSize": 10
+    },
+    {
+      "type": "rect",
+      "box": { "x": 60, "y": 60, "width": 960, "height": 1230 },
+      "fill": "rgba(0,0,0,0)",
+      "stroke": { "color": "rgba(255,255,255,0.35)", "width": 2 },
+      "radius": 24
+    }
+  ]
+}
+
+

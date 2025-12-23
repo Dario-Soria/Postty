@@ -1,0 +1,94 @@
+{
+  "canvas": {
+    "width": 1080,
+    "height": 1350,
+    "backgroundFit": "cover",
+    "backgroundPosition": { "x": 0.5, "y": 0.5 },
+    "effects": {
+      "vignette": { "strength": 0.35, "radius": 0.85, "color": "rgba(0,0,0,0.85)" },
+      "grain": { "amount": 0.12, "size": 1.2, "opacity": 0.18 }
+    }
+  },
+  "overlays": [
+    {
+      "type": "text",
+      "id": "title_outline",
+      "text": "FUERZA +",
+      "box": { "x": 150, "y": 40, "width": 360, "height": 520 },
+      "align": "center",
+      "verticalAlign": "middle",
+      "font": {
+        "family": "Bebas Neue",
+        "size": 138,
+        "weight": 700,
+        "style": "normal",
+        "lineHeight": 140,
+        "letterSpacing": 2
+      },
+      "fill": "rgba(0,0,0,0)",
+      "stroke": { "color": "#B8FF2C", "width": 10 },
+      "shadow": { "dx": 0, "dy": 0, "blur": 10, "color": "rgba(0,0,0,0.35)" },
+      "transform": { "rotateDeg": -72, "originX": 330, "originY": 280 },
+      "maxLines": 1,
+      "overflow": "auto",
+      "minFontSize": 10
+    },
+    {
+      "type": "text",
+      "id": "title_fill",
+      "text": "RECUPERACIÓN",
+      "box": { "x": 120, "y": 260, "width": 420, "height": 820 },
+      "align": "center",
+      "verticalAlign": "middle",
+      "font": {
+        "family": "Bebas Neue",
+        "size": 142,
+        "weight": 800,
+        "style": "normal",
+        "lineHeight": 142,
+        "letterSpacing": 3
+      },
+      "fill": "#B8FF2C",
+      "shadow": { "dx": 0, "dy": 10, "blur": 18, "color": "rgba(0,0,0,0.55)" },
+      "transform": { "rotateDeg": -72, "originX": 330, "originY": 640 },
+      "maxLines": 1,
+      "overflow": "auto",
+      "minFontSize": 10
+    },
+    {
+      "type": "path",
+      "id": "decor_left_chevrons",
+      "opacity": 0.35,
+      "stroke": { "color": "#B8FF2C", "width": 6 },
+      "fill": "rgba(0,0,0,0)",
+      "paths": [
+        { "d": "M80 250 L180 200 L180 240 L80 290 Z" },
+        { "d": "M80 330 L180 280 L180 320 L80 370 Z" },
+        { "d": "M80 410 L180 360 L180 400 L80 450 Z" }
+      ]
+    },
+    {
+      "type": "path",
+      "id": "decor_right_chevrons",
+      "opacity": 0.25,
+      "stroke": { "color": "#B8FF2C", "width": 5 },
+      "fill": "rgba(0,0,0,0)",
+      "paths": [
+        { "d": "M930 260 L1020 215 L1020 250 L930 295 Z" },
+        { "d": "M930 330 L1020 285 L1020 320 L930 365 Z" },
+        { "d": "M930 400 L1020 355 L1020 390 L930 435 Z" },
+        { "d": "M930 470 L1020 425 L1020 460 L930 505 Z" }
+      ]
+    },
+    {
+      "type": "rect",
+      "id": "soft_plate",
+      "box": { "x": 0, "y": 0, "width": 1080, "height": 1350 },
+      "fill": "rgba(0,0,0,0.10)",
+      "radius": 0,
+      "blendMode": "multiply"
+    }
+  ]
+}
+
+

@@ -1,0 +1,87 @@
+{
+  "canvas": {
+    "width": 1080,
+    "height": 1350,
+    "backgroundFit": "cover",
+    "backgroundPosition": { "x": 0.5, "y": 0.5 },
+    "effects": {
+      "vignette": { "strength": 0.35, "radius": 0.85, "color": "rgba(0,0,0,0.80)" },
+      "grain": { "amount": 0.25, "size": 1.2, "opacity": 0.18 }
+    }
+  },
+  "overlays": [
+    {
+      "type": "path",
+      "id": "chevrons_left",
+      "opacity": 0.35,
+      "stroke": { "color": "rgba(184,255,59,0.35)", "width": 4 },
+      "fill": "rgba(0,0,0,0)",
+      "paths": [
+        { "d": "M90 250 L190 200 L190 240 L90 290 Z" },
+        { "d": "M90 330 L190 280 L190 320 L90 370 Z" },
+        { "d": "M90 410 L190 360 L190 400 L90 450 Z" }
+      ]
+    },
+    {
+      "type": "path",
+      "id": "chevrons_right",
+      "opacity": 0.25,
+      "stroke": { "color": "rgba(184,255,59,0.30)", "width": 4 },
+      "fill": "rgba(0,0,0,0)",
+      "paths": [
+        { "d": "M900 260 L1000 215 L1000 250 L900 295 Z" },
+        { "d": "M900 330 L1000 285 L1000 320 L900 365 Z" },
+        { "d": "M900 400 L1000 355 L1000 390 L900 435 Z" },
+        { "d": "M900 470 L1000 425 L1000 460 L900 505 Z" }
+      ]
+    },
+    {
+      "type": "text",
+      "id": "headline_plus",
+      "text": "+",
+      "box": { "x": 260, "y": -120, "width": 240, "height": 120 },
+      "align": "left",
+      "verticalAlign": "top",
+      "font": { "family": "Bebas Neue", "size": 70, "weight": 700, "style": "normal", "letterSpacing": 1 },
+      "fill": "rgba(0,0,0,0)",
+      "stroke": { "color": "#B8FF3B", "width": 8 },
+      "shadow": { "dx": 0, "dy": 0, "blur": 10, "color": "rgba(0,0,0,0.35)" },
+      "transform": { "rotateDeg": -72, "originX": 540, "originY": 520 },
+      "maxLines": 1,
+      "overflow": "auto",
+      "minFontSize": 20
+    },
+    {
+      "type": "text",
+      "id": "headline_fuerza",
+      "text": "FUERZA",
+      "box": { "x": 220, "y": 120, "width": 420, "height": 220 },
+      "align": "left",
+      "verticalAlign": "top",
+      "font": { "family": "Bebas Neue", "size": 140, "weight": 700, "style": "normal", "letterSpacing": 1 },
+      "fill": "rgba(0,0,0,0)",
+      "stroke": { "color": "#B8FF3B", "width": 9 },
+      "shadow": { "dx": 0, "dy": 0, "blur": 10, "color": "rgba(0,0,0,0.35)" },
+      "transform": { "rotateDeg": -72, "originX": 540, "originY": 520 },
+      "maxLines": 1,
+      "overflow": "auto",
+      "minFontSize": 40
+    },
+    {
+      "type": "text",
+      "id": "headline_recuperacion",
+      "text": "RECUPERACIÓN",
+      "box": { "x": 220, "y": 340, "width": 420, "height": 420 },
+      "align": "left",
+      "verticalAlign": "top",
+      "font": { "family": "Bebas Neue", "size": 120, "weight": 700, "style": "normal", "letterSpacing": 1 },
+      "fill": "#B8FF3B",
+      "shadow": { "dx": 0, "dy": 10, "blur": 18, "color": "rgba(0,0,0,0.55)" },
+      "transform": { "rotateDeg": -72, "originX": 540, "originY": 520 },
+      "maxLines": 1,
+      "overflow": "auto",
+      "minFontSize": 30
+    }
+  ]
+}
+  

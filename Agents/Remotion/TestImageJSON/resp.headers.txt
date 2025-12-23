@@ -1,0 +1,9 @@
+HTTP/1.1 100 Continue
+
+HTTP/1.1 200 OK
+content-type: image/png
+content-length: 7798
+Date: Mon, 22 Dec 2025 22:14:35 GMT
+Connection: keep-alive
+Keep-Alive: timeout=72
+
