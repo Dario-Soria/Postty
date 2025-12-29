@@ -14,6 +14,9 @@ import transcribeRoute from './routes/transcribe';
 import v2GenerateRoutes from './routes/v2-generate';
 import styleProfileRoute from './routes/style-profile';
 import imageAnalyzerRoute from './routes/image-analyzer';
+import pipelineRoute from './routes/pipeline';
+import suggestTextRoute from './routes/suggestText';
+import geminiChatRoute from './routes/geminiChat';
 import * as logger from './utils/logger';
 
 // Configuration
@@ -56,6 +59,9 @@ async function start(): Promise<void> {
     await fastify.register(v2GenerateRoutes);
     await fastify.register(styleProfileRoute);
     await fastify.register(imageAnalyzerRoute);
+    await fastify.register(pipelineRoute);
+    await fastify.register(suggestTextRoute);
+    await fastify.register(geminiChatRoute);
 
     // Health check endpoint
     fastify.get('/health', async (request, reply) => {
@@ -81,6 +87,10 @@ async function start(): Promise<void> {
     logger.info('  POST /v2/generate-with-references - V2 product merge using uploaded reference backgrounds + async indexing');
     logger.info('  POST /style-profile - Extract strict style profile from reference images (async SQLite indexing)');
     logger.info('  POST /image-analyzer - Gemini vision image analysis for use-case selection');
+    logger.info('  POST /pipeline - Full image generation pipeline (Nano Banana + Gemini text + compositor)');
+    logger.info('  POST /pipeline/json - Pipeline with JSON body (base64 images)');
+    logger.info('  GET  /pipeline/status - Check pipeline readiness');
+    logger.info('  GET  /pipeline/references - List available reference images');
     logger.info('  GET  /health - Health check');
   } catch (err) {
     logger.error('Error starting server:', err);

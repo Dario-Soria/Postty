@@ -15,19 +15,26 @@ type Props = {
   setPrompt: (v: string) => void;
   showToast: (message: string, kind?: "error" | "info", ms?: number) => void;
   onContinue: () => void;
+  // New props for style and text
+  selectedStyle?: string;
+  setSelectedStyle?: (s: string) => void;
+  textIntent?: string;
+  setTextIntent?: (t: string) => void;
 };
 
 function isAllowedImage(file: File): boolean {
   const type = (file.type || "").toLowerCase();
-  if (type === "image/jpeg" || type === "image/png") return true;
-  if (type === "image/heic" || type === "image/heif") return true;
+  // Accept common image types
+  if (type.startsWith("image/")) return true;
   const name = (file.name || "").toLowerCase();
   return (
     name.endsWith(".jpg") ||
     name.endsWith(".jpeg") ||
     name.endsWith(".png") ||
     name.endsWith(".heic") ||
-    name.endsWith(".heif")
+    name.endsWith(".heif") ||
+    name.endsWith(".webp") ||
+    name.endsWith(".gif")
   );
 }
 
@@ -37,12 +44,14 @@ export function ProductPostScreen({
   onBack,
   imageFile,
   setImageFile,
-  // prompt/setPrompt kept for now because V2 flow uses it when entering chat,
-  // but Screen 4 UI no longer collects text.
-  prompt: _prompt,
-  setPrompt: _setPrompt,
+  prompt,
+  setPrompt,
   showToast,
   onContinue,
+  selectedStyle,
+  setSelectedStyle,
+  textIntent,
+  setTextIntent,
 }: Props) {
   const [dragOver, setDragOver] = React.useState(false);
   const [isConverting, setIsConverting] = React.useState(false);
@@ -130,23 +139,24 @@ export function ProductPostScreen({
       if (!f) return;
       if (!isAllowedImage(f)) {
         setImageFile(null);
-        showToast("format not accepted", "error", 2600);
+        showToast("Formato no aceptado", "error", 2600);
         return;
       }
 
-      // If camera/library returns HEIC/HEIF, convert to JPEG so the rest of the app can treat it consistently.
+      // If camera/library returns HEIC/HEIF, try to convert to JPEG
       const opId = ++convertOpRef.current;
       setIsConverting(false);
       if (isHeicLike(f)) {
         setIsConverting(true);
         try {
           const jpeg = await convertHeicToJpeg(f);
-          if (convertOpRef.current !== opId) return; // superseded by a newer selection
+          if (convertOpRef.current !== opId) return;
           setImageFile(jpeg);
         } catch {
           if (convertOpRef.current !== opId) return;
-          setImageFile(null);
-          showToast("could not process this photo", "error", 2600);
+          // If conversion fails, try to use the file as-is
+          console.warn("HEIC conversion failed, using original file");
+          setImageFile(f);
         } finally {
           if (convertOpRef.current === opId) setIsConverting(false);
         }
@@ -170,192 +180,105 @@ export function ProductPostScreen({
   }, [openGallery]);
 
   const canContinue = imageFile != null && !isConverting;
+  
+  // Go directly to chat - style and text will be asked there
+  const handleContinue = () => {
+    onContinue();
+  };
 
+  // Upload Image - then go directly to chat
   return (
-    <div className="min-h-[calc(100dvh-5rem)] flex flex-col">
-      <TopBar onBack={onBack} />
+      <div className="min-h-[calc(100dvh-5rem)] flex flex-col">
+        <TopBar onBack={onBack} />
+        <div className="flex-1 min-h-0">
+          <div className="max-w-[860px] mx-auto">
+            <h1 className="text-[36px] sm:text-[46px] font-black tracking-tight">{title}</h1>
+            <p className="mt-1 text-lg sm:text-xl font-medium tracking-tight text-slate-900/80">{subtitle}</p>
 
-      <div className="flex-1 min-h-0">
-        <div className="max-w-[860px] mx-auto">
-          <h1 className="text-[36px] sm:text-[46px] font-black tracking-tight">{title}</h1>
-          <p className="mt-1 text-lg sm:text-xl font-medium tracking-tight text-slate-900/80">{subtitle}</p>
-
-          {/* Screen 4: only upload, plus a send/continue button (no mic, no text input). */}
-          <GlassCard className="mt-5 sm:mt-6 p-5 sm:p-6 h-[calc(100dvh-240px)] sm:h-[calc(100dvh-260px)] overflow-hidden">
-            <div className="h-full flex flex-col gap-4 sm:gap-5">
-              <div
-                role="button"
-                tabIndex={0}
-                onClick={onTapFrame}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") onTapFrame();
-                }}
-                onDragEnter={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setDragOver(true);
-                }}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setDragOver(true);
-                }}
-                onDragLeave={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setDragOver(false);
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setDragOver(false);
-                  const f = e.dataTransfer.files?.[0] || null;
-                  if (f) void setFileWithValidation(f);
-                }}
-                className={[
-                  "relative w-full flex-1 min-h-[240px] rounded-[26px] bg-white/45 border-2 border-dashed",
-                  dragOver ? "border-slate-900/40 bg-white/60" : "border-slate-900/20",
-                  "flex items-center justify-center overflow-hidden cursor-pointer select-none transition-all duration-150",
-                ].join(" ")}
-              >
-                {previewUrl ? (
-                  <div className="w-full h-full bg-white/35 flex items-center justify-center p-4">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={previewUrl} alt="Uploaded" className="w-full h-full object-contain" />
-                  </div>
-                ) : (
-                  <div className="text-center px-8">
-                    <div className="flex justify-center text-slate-900/80">
-                      <IconCamera />
+            <GlassCard className="mt-5 sm:mt-6 p-5 sm:p-6 h-[calc(100dvh-240px)] sm:h-[calc(100dvh-260px)] overflow-hidden">
+              <div className="h-full flex flex-col gap-4 sm:gap-5">
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={onTapFrame}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onTapFrame(); }}
+                  onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(true); }}
+                  onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(true); }}
+                  onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(false); }}
+                  onDrop={(e) => {
+                    e.preventDefault(); e.stopPropagation(); setDragOver(false);
+                    const f = e.dataTransfer.files?.[0] || null;
+                    if (f) void setFileWithValidation(f);
+                  }}
+                  className={[
+                    "relative w-full flex-1 min-h-[240px] rounded-[26px] bg-white/45 border-2 border-dashed",
+                    dragOver ? "border-slate-900/40 bg-white/60" : "border-slate-900/20",
+                    "flex items-center justify-center overflow-hidden cursor-pointer select-none transition-all duration-150",
+                  ].join(" ")}
+                >
+                  {previewUrl ? (
+                    <div className="w-full h-full bg-white/35 flex items-center justify-center p-4">
+                      <img src={previewUrl} alt="Uploaded" className="w-full h-full object-contain" />
                     </div>
-                    <p className="mt-4 text-2xl sm:text-3xl font-medium tracking-tight text-slate-900/45">
-                      Upload your picture
-                      <br />
-                      and create new content
-                    </p>
+                  ) : (
+                    <div className="text-center px-8">
+                      <div className="flex justify-center text-slate-900/80"><IconCamera /></div>
+                      <p className="mt-4 text-2xl sm:text-3xl font-medium tracking-tight text-slate-900/45">
+                        Subí tu foto<br />del producto
+                      </p>
+                    </div>
+                  )}
+                  {previewUrl && (
+                    <button
+                      type="button"
+                      aria-label="Remove image"
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); convertOpRef.current += 1; setIsConverting(false); setImageFile(null); }}
+                      className="absolute top-3 right-3 h-10 w-10 rounded-full bg-white/70 border border-white/80 backdrop-blur-xl text-slate-900/70 hover:text-slate-900 hover:bg-white/85 flex items-center justify-center shadow-[0_10px_30px_rgba(0,0,0,0.10)]"
+                    >
+                      <span className="text-2xl leading-none -mt-[2px]">×</span>
+                    </button>
+                  )}
+                </div>
+
+                <input ref={galleryInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => { void setFileWithValidation(e.target.files?.[0] || null); e.currentTarget.value = ""; }} />
+                <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { void setFileWithValidation(e.target.files?.[0] || null); e.currentTarget.value = ""; }} />
+
+                {showSourcePicker && (
+                  <div className="fixed inset-0 z-50 flex items-end justify-center" role="dialog" aria-modal="true" onClick={() => setShowSourcePicker(false)}>
+                    <div className="absolute inset-0 bg-black/30" />
+                    <div className="relative w-full max-w-[520px] mx-auto p-4" onClick={(e) => e.stopPropagation()}>
+                      <div className="rounded-2xl bg-white/85 backdrop-blur-xl border border-white/70 shadow-[0_20px_60px_rgba(0,0,0,0.18)] overflow-hidden">
+                        <button type="button" className="w-full py-4 text-lg font-semibold text-slate-900 hover:bg-black/5 transition" onClick={() => { setShowSourcePicker(false); openCamera(); }}>Cámara</button>
+                        <div className="h-px bg-black/10" />
+                        <button type="button" className="w-full py-4 text-lg font-semibold text-slate-900 hover:bg-black/5 transition" onClick={() => { setShowSourcePicker(false); openGallery(); }}>Galería</button>
+                        <div className="h-px bg-black/10" />
+                        <button type="button" className="w-full py-4 text-lg font-semibold text-slate-900/70 hover:bg-black/5 transition" onClick={() => setShowSourcePicker(false)}>Cancelar</button>
+                      </div>
+                    </div>
                   </div>
                 )}
 
-                {previewUrl ? (
+                <div className="flex items-center justify-end">
                   <button
                     type="button"
-                    aria-label="Remove image"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      convertOpRef.current += 1; // cancel any in-flight conversion
-                      setIsConverting(false);
-                      setImageFile(null);
-                    }}
+                    disabled={!canContinue}
+                    onClick={canContinue ? handleContinue : undefined}
                     className={[
-                      "absolute top-3 right-3 h-10 w-10 rounded-full",
-                      "bg-white/70 border border-white/80 backdrop-blur-xl",
-                      "text-slate-900/70 hover:text-slate-900 hover:bg-white/85",
-                      "flex items-center justify-center shadow-[0_10px_30px_rgba(0,0,0,0.10)]",
+                      "h-14 w-14 rounded-full border flex items-center justify-center shrink-0 transition-all duration-200",
+                      "shadow-[0_12px_35px_rgba(0,0,0,0.10)] backdrop-blur-xl",
+                      canContinue
+                        ? "bg-gradient-to-r from-sky-400 via-cyan-400 to-emerald-400 text-slate-900 border-white/40 hover:shadow-[0_16px_45px_rgba(56,189,248,0.45)] hover:-translate-y-[1px]"
+                        : "bg-white/55 text-slate-900/35 border-white/70",
                     ].join(" ")}
                   >
-                    <span className="text-2xl leading-none -mt-[2px]">×</span>
+                    <IconSend className={canContinue ? "text-slate-900" : "text-slate-900/35"} />
                   </button>
-                ) : null}
-              </div>
-
-              <input
-                ref={galleryInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0] || null;
-                  void setFileWithValidation(f);
-                  // allow reselect same file later
-                  e.currentTarget.value = "";
-                }}
-              />
-
-              <input
-                ref={cameraInputRef}
-                type="file"
-                accept="image/*"
-                // Hints to mobile browsers to open camera capture UI.
-                capture="environment"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0] || null;
-                  void setFileWithValidation(f);
-                  // allow reselect same file later
-                  e.currentTarget.value = "";
-                }}
-              />
-
-              {showSourcePicker ? (
-                <div
-                  className="fixed inset-0 z-50 flex items-end justify-center"
-                  role="dialog"
-                  aria-modal="true"
-                  onClick={() => setShowSourcePicker(false)}
-                >
-                  <div className="absolute inset-0 bg-black/30" />
-                  <div
-                    className="relative w-full max-w-[520px] mx-auto p-4"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <div className="rounded-2xl bg-white/85 backdrop-blur-xl border border-white/70 shadow-[0_20px_60px_rgba(0,0,0,0.18)] overflow-hidden">
-                      <button
-                        type="button"
-                        className="w-full py-4 text-lg font-semibold text-slate-900 hover:bg-black/5 transition"
-                        onClick={() => {
-                          setShowSourcePicker(false);
-                          openCamera();
-                        }}
-                      >
-                        Camera
-                      </button>
-                      <div className="h-px bg-black/10" />
-                      <button
-                        type="button"
-                        className="w-full py-4 text-lg font-semibold text-slate-900 hover:bg-black/5 transition"
-                        onClick={() => {
-                          setShowSourcePicker(false);
-                          openGallery();
-                        }}
-                      >
-                        Pictures
-                      </button>
-                      <div className="h-px bg-black/10" />
-                      <button
-                        type="button"
-                        className="w-full py-4 text-lg font-semibold text-slate-900/70 hover:bg-black/5 transition"
-                        onClick={() => setShowSourcePicker(false)}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
                 </div>
-              ) : null}
-
-              <div className="flex items-center justify-end">
-                <button
-                  type="button"
-                  aria-label="Send"
-                  disabled={!canContinue}
-                  onClick={canContinue ? onContinue : undefined}
-                  className={[
-                    "h-14 w-14 rounded-full border flex items-center justify-center shrink-0 transition-all duration-200",
-                    "shadow-[0_12px_35px_rgba(0,0,0,0.10)] backdrop-blur-xl",
-                    canContinue
-                      ? "bg-gradient-to-r from-sky-400 via-cyan-400 to-emerald-400 text-slate-900 border-white/40 hover:shadow-[0_16px_45px_rgba(56,189,248,0.45)] hover:-translate-y-[1px]"
-                      : "bg-white/55 text-slate-900/35 border-white/70",
-                  ].join(" ")}
-                >
-                  <IconSend className={canContinue ? "text-slate-900" : "text-slate-900/35"} />
-                </button>
               </div>
-            </div>
-          </GlassCard>
+            </GlassCard>
+          </div>
         </div>
       </div>
-    </div>
   );
 }
 
