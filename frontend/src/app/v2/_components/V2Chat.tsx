@@ -259,7 +259,7 @@ export function V2Chat({
     form.set("image", effectiveImage as File);
     form.set("prompt", finalPrompt);
     form.set("preview_only", "true");
-    form.set("num_candidates", "3");
+    form.set("num_candidates", "1");
 
     const res = await fetch("/api/generate-with-image", { method: "POST", body: form });
     const ct = res.headers.get("content-type") || "";
@@ -1793,21 +1793,19 @@ export function V2Chat({
       }
 
       if (isGeneratingAction) {
-        const requestedCandidates =
-          isRegenerating && regen
-            ? (regen.numCandidates ?? (regen.candidateId ? 1 : 3))
-            : 3;
+        // Always generate 1 image for now
+        const requestedCandidates = 1;
 
-        if (!isRegenerating && requestedCandidates === 3) {
-          // If the user already decided references (from the pre-generate intake), skip the extra “do you have references?” roundtrip.
-          // We’ll proceed directly into the reference gate and run generation.
+        if (!isRegenerating) {
+          // If the user already decided references (from the pre-generate intake), skip the extra "do you have references?" roundtrip.
+          // We'll proceed directly into the reference gate and run generation.
           if (referenceIntake?.decided) {
             const usedReferenceImage = !!effectiveReferenceImageFile;
             setActivity("generating");
             setStyleProfile(null);
             setPendingReferenceGate({
               actionPrompt: action.prompt,
-              requestedCandidates: 3,
+              requestedCandidates: 1,
               usedReferenceImage,
               effectiveReferenceImageFile: effectiveReferenceImageFile ?? null,
             });
@@ -1825,7 +1823,7 @@ export function V2Chat({
           setReferenceStyleFiles([]);
           setPendingReferenceGate({
             actionPrompt: action.prompt,
-            requestedCandidates: 3,
+            requestedCandidates: 1,
             usedReferenceImage,
             effectiveReferenceImageFile: effectiveReferenceImageFile ?? null,
           });

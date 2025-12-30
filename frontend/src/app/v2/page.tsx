@@ -7,6 +7,8 @@ import { ReadyScreen } from "./_components/ReadyScreen";
 import { ProductPostScreen } from "./_components/ProductPostScreen";
 import { V2Chat } from "./_components/V2Chat";
 import { AnalyzingScreen, type ImageAnalyzerResult } from "./_components/AnalyzingScreen";
+import { DirectGenerateScreen } from "./_components/DirectGenerateScreen";
+import { ConversationalChat } from "./_components/ConversationalChat";
 import { Toast } from "./_components/ui/Toast";
 
 type Step = 1 | 2 | 3 | 4 | 5 | 6;
@@ -27,6 +29,9 @@ export default function V2Page() {
   const [productImageFile, setProductImageFile] = React.useState<File | null>(null);
   const [productPrompt, setProductPrompt] = React.useState<string>("");
   const [imageAnalysis, setImageAnalysis] = React.useState<ImageAnalyzerResult | null>(null);
+  // New: Style and text intent
+  const [selectedStyle, setSelectedStyle] = React.useState<string>("elegante");
+  const [textIntent, setTextIntent] = React.useState<string>("");
 
   // Cosmetic placeholders (until auth/integrations are wired)
   const userName = "Juan";
@@ -75,13 +80,17 @@ export default function V2Page() {
       return (
         <ProductPostScreen
           title="Tu nuevo Post"
-          subtitle="Upload your picture and create new content"
+          subtitle="Subí tu foto y creá contenido"
           onBack={() => setStep(3)}
           imageFile={productImageFile}
           setImageFile={setProductImageFile}
           prompt={productPrompt}
           setPrompt={setProductPrompt}
           showToast={showToast}
+          selectedStyle={selectedStyle}
+          setSelectedStyle={setSelectedStyle}
+          textIntent={textIntent}
+          setTextIntent={setTextIntent}
           onContinue={() => {
             setImageAnalysis(null);
             setStep(5);
@@ -90,31 +99,30 @@ export default function V2Page() {
       );
     }
     if (step === 5) {
-      // Analyze image with Gemini and then enter chat.
+      // Skip to generation directly (no OpenAI)
       if (!productImageFile) {
         return null;
       }
+      setTimeout(() => setStep(6), 100);
       return (
-        <AnalyzingScreen
-          onBack={() => setStep(4)}
-          imageFile={productImageFile}
-          onDone={(result) => {
-            setImageAnalysis(result);
-            setStep(6);
-          }}
-        />
+        <div className="min-h-[calc(100dvh-5rem)] flex flex-col items-center justify-center">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-slate-900 mx-auto"></div>
+            <p className="mt-4 text-lg font-medium text-slate-700">Preparando...</p>
+          </div>
+        </div>
       );
     }
 
+    // Step 6: Conversational chat with Gemini
     return (
-      <V2Chat
+      <ConversationalChat
         onBack={() => setStep(4)}
-        initialPrompt={productPrompt}
-        initialImageFile={productImageFile}
-        initialAnalysis={imageAnalysis}
+        imageFile={productImageFile!}
+        initialText={textIntent}
       />
     );
-  }, [instagramHandle, productImageFile, productPrompt, showToast, step, userName]);
+  }, [instagramHandle, productImageFile, productPrompt, showToast, step, userName, selectedStyle, textIntent]);
 
   return (
     <div className="min-h-[100dvh] w-full bg-[radial-gradient(1200px_circle_at_20%_-10%,#FCE3C8,transparent_60%),radial-gradient(1000px_circle_at_90%_0%,#EAD5FF,transparent_55%),radial-gradient(900px_circle_at_35%_95%,#BFE7FF,transparent_55%),linear-gradient(180deg,#FCE3C8_0%,#EAD5FF_45%,#BFE7FF_100%)] text-slate-900">

@@ -1,0 +1,98 @@
+{
+  "name": "Old Money Elegante",
+  "description": "Estilo elegante con texto arriba (marca/producto) y promoción grande abajo",
+  "style": "old-money",
+  "keywords": ["elegante", "lujo", "yate", "nautico", "hombre", "lifestyle", "premium", "sofisticado", "polo", "calzado", "zapatos", "clasico", "mediterraneo"],
+  
+  "textSlots": [
+    {
+      "id": "top-title",
+      "label": "Título arriba (nombre del producto)",
+      "position": { "x": 50, "y": 5, "anchor": "center" },
+      "style": {
+        "fontFamily": "PlayfairDisplay-Italic",
+        "fontSize": 65,
+        "fontWeight": "400",
+        "color": "#FFFFFF",
+        "letterSpacing": 3,
+        "lineHeight": 1.1,
+        "textTransform": "none",
+        "maxWidth": 90,
+        "shadow": {
+          "color": "rgba(0,0,0,0.8)",
+          "blur": 25,
+          "offsetX": 0,
+          "offsetY": 4
+        }
+      }
+    },
+    {
+      "id": "top-subtitle",
+      "label": "Subtítulo arriba (marca/concepto)",
+      "position": { "x": 50, "y": 13, "anchor": "center" },
+      "style": {
+        "fontFamily": "Arial",
+        "fontSize": 18,
+        "fontWeight": "400",
+        "color": "#FFFFFF",
+        "letterSpacing": 8,
+        "lineHeight": 1.2,
+        "textTransform": "uppercase",
+        "shadow": {
+          "color": "rgba(0,0,0,0.7)",
+          "blur": 15,
+          "offsetX": 0,
+          "offsetY": 2
+        }
+      }
+    },
+    {
+      "id": "bottom-promo",
+      "label": "Promoción (ej: 30% OFF + ENVÍO GRATIS)",
+      "position": { "x": 50, "y": 92, "anchor": "center" },
+      "style": {
+        "fontFamily": "Arial",
+        "fontSize": 55,
+        "fontWeight": "900",
+        "color": "#D4A84B",
+        "letterSpacing": 1,
+        "lineHeight": 1.0,
+        "textTransform": "uppercase",
+        "maxWidth": 95,
+        "shadow": {
+          "color": "rgba(0,0,0,0.9)",
+          "blur": 30,
+          "offsetX": 0,
+          "offsetY": 6
+        }
+      }
+    },
+    {
+      "id": "bottom-extra",
+      "label": "Extra (opcional)",
+      "position": { "x": 50, "y": 97, "anchor": "center" },
+      "style": {
+        "fontFamily": "Arial",
+        "fontSize": 28,
+        "fontWeight": "600",
+        "color": "#D4A84B",
+        "letterSpacing": 3,
+        "lineHeight": 1.0,
+        "textTransform": "uppercase",
+        "shadow": {
+          "color": "rgba(0,0,0,0.85)",
+          "blur": 15,
+          "offsetX": 0,
+          "offsetY": 3
+        }
+      }
+    }
+  ],
+  
+  "preview": {
+    "slot1": "Polo Tejido",
+    "slot2": "STAR CONCEPT", 
+    "slot3": "3X2",
+    "slot4": "+ ENVÍO GRATIS"
+  }
+}
