@@ -6,7 +6,7 @@ import {
   serverTimestamp,
   DocumentData,
 } from "firebase/firestore";
-import { db } from "./config";
+import { getFirebaseDb } from "./config";
 import { User } from "firebase/auth";
 
 export interface UserProfile {
@@ -28,6 +28,7 @@ export async function createUserProfile(
   user: User,
   provider: "google" | "email"
 ): Promise<void> {
+  const db = getFirebaseDb();
   const userRef = doc(db, "users", user.uid);
   
   // Check if user already exists
@@ -62,6 +63,7 @@ export async function createUserProfile(
  * Get user profile from Firestore
  */
 export async function getUserProfile(userId: string): Promise<UserProfile | null> {
+  const db = getFirebaseDb();
   const userRef = doc(db, "users", userId);
   const userSnap = await getDoc(userRef);
   
@@ -79,6 +81,7 @@ export async function updateUserProfile(
   userId: string,
   updates: Partial<UserProfile>
 ): Promise<void> {
+  const db = getFirebaseDb();
   const userRef = doc(db, "users", userId);
   await updateDoc(userRef, updates as DocumentData);
 }

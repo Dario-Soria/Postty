@@ -11,13 +11,14 @@ import {
   browserSessionPersistence,
   sendEmailVerification,
 } from "firebase/auth";
-import { auth } from "./config";
+import { getFirebaseAuth } from "./config";
 
 /**
  * Set authentication persistence based on "Remember Me" preference
  */
 async function setAuthPersistence(rememberMe: boolean = true): Promise<void> {
   try {
+    const auth = getFirebaseAuth();
     await setPersistence(
       auth,
       rememberMe ? browserLocalPersistence : browserSessionPersistence
@@ -34,6 +35,7 @@ export async function signInWithGoogle(
   rememberMe: boolean = true
 ): Promise<UserCredential> {
   await setAuthPersistence(rememberMe);
+  const auth = getFirebaseAuth();
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({
     prompt: "select_account",
@@ -51,6 +53,7 @@ export async function signUpWithEmail(
   rememberMe: boolean = true
 ): Promise<UserCredential> {
   await setAuthPersistence(rememberMe);
+  const auth = getFirebaseAuth();
   const userCredential = await createUserWithEmailAndPassword(
     auth,
     email,
@@ -85,6 +88,7 @@ export async function signInWithEmail(
   rememberMe: boolean = true
 ): Promise<UserCredential> {
   await setAuthPersistence(rememberMe);
+  const auth = getFirebaseAuth();
   return signInWithEmailAndPassword(auth, email, password);
 }
 
@@ -92,6 +96,7 @@ export async function signInWithEmail(
  * Sign out current user
  */
 export async function signOut(): Promise<void> {
+  const auth = getFirebaseAuth();
   return firebaseSignOut(auth);
 }
 
@@ -131,6 +136,7 @@ export function isGmailAddress(email: string): boolean {
  * Send email verification to current user
  */
 export async function sendVerificationEmail(): Promise<void> {
+  const auth = getFirebaseAuth();
   const user = auth.currentUser;
   if (!user) {
     throw new Error("No user is currently signed in");
@@ -155,6 +161,7 @@ export async function sendVerificationEmail(): Promise<void> {
  * Check if user's email is verified
  */
 export function isEmailVerified(): boolean {
+  const auth = getFirebaseAuth();
   return auth.currentUser?.emailVerified || false;
 }
 
@@ -162,8 +169,8 @@ export function isEmailVerified(): boolean {
  * Reload user to get latest email verification status
  */
 export async function reloadUser(): Promise<void> {
+  const auth = getFirebaseAuth();
   if (auth.currentUser) {
     await auth.currentUser.reload();
   }
 }
-

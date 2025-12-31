@@ -11,21 +11,29 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
-// Initialize Firebase
-let app: FirebaseApp;
-let auth: Auth;
-let db: Firestore;
-
-if (typeof window !== "undefined") {
-  // Only initialize on client side
-  if (!getApps().length) {
-    app = initializeApp(firebaseConfig);
-  } else {
-    app = getApps()[0];
+// Initialize Firebase - lazy initialization
+function getFirebaseApp(): FirebaseApp {
+  if (typeof window === "undefined") {
+    throw new Error("Firebase can only be initialized on the client side");
   }
-  auth = getAuth(app);
-  db = getFirestore(app);
+  if (!getApps().length) {
+    return initializeApp(firebaseConfig);
+  }
+  return getApps()[0];
 }
 
-export { app, auth, db };
+// Lazy getters to avoid SSR issues
+export const getFirebaseAuth = (): Auth => {
+  const app = getFirebaseApp();
+  return getAuth(app);
+};
+
+export const getFirebaseDb = (): Firestore => {
+  const app = getFirebaseApp();
+  return getFirestore(app);
+};
+
+// For backwards compatibility - these will throw on server
+export const auth = typeof window !== "undefined" ? getFirebaseAuth() : (null as unknown as Auth);
+export const db = typeof window !== "undefined" ? getFirebaseDb() : (null as unknown as Firestore);
 

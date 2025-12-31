@@ -10,6 +10,7 @@ import { AnalyzingScreen, type ImageAnalyzerResult } from "./_components/Analyzi
 import { DirectGenerateScreen } from "./_components/DirectGenerateScreen";
 import { ConversationalChat } from "./_components/ConversationalChat";
 import { Toast } from "./_components/ui/Toast";
+import { useAuth } from "@/contexts/AuthContext";
 
 type Step = 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -22,6 +23,7 @@ type ToastState =
     };
 
 export default function V2Page() {
+  const { user, loading } = useAuth();
   const [step, setStep] = React.useState<Step>(1);
   const [toast, setToast] = React.useState<ToastState>(null);
 
@@ -33,9 +35,70 @@ export default function V2Page() {
   const [selectedStyle, setSelectedStyle] = React.useState<string>("elegante");
   const [textIntent, setTextIntent] = React.useState<string>("");
 
-  // Cosmetic placeholders (until auth/integrations are wired)
-  const userName = "Juan";
-  const instagramHandle = "Nua.Skins";
+  // Instagram connection state
+  const [instagramConnected, setInstagramConnected] = React.useState(false);
+  const [instagramData, setInstagramData] = React.useState<{
+    username: string;
+    id: string;
+    accessToken: string;
+  } | null>(null);
+
+  // Use authenticated user's name, fallback to first name or "Usuario"
+  const userName = user?.displayName?.split(" ")[0] || "Usuario";
+  const instagramHandle = instagramData?.username || "No conectado";
+
+  // Check for Instagram OAuth callback on mount
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const igConnected = urlParams.get('instagram_connected');
+    const data = urlParams.get('data');
+    const error = urlParams.get('error');
+
+    if (error) {
+      showToast(`Error: ${decodeURIComponent(error)}`, 'error', 5000);
+      // Clean URL
+      window.history.replaceState({}, '', '/v2');
+      return;
+    }
+
+    if (igConnected === 'true' && data) {
+      try {
+        const parsedData = JSON.parse(decodeURIComponent(data));
+        setInstagramConnected(true);
+        setInstagramData({
+          username: parsedData.instagram.username,
+          id: parsedData.instagram.id,
+          accessToken: parsedData.accessToken,
+        });
+        // Save to localStorage for persistence
+        localStorage.setItem('instagram_data', JSON.stringify(parsedData));
+        showToast(`¡Conectado a @${parsedData.instagram.username}!`, 'info');
+        // Clean URL and go to step 3
+        window.history.replaceState({}, '', '/v2');
+        setStep(3);
+      } catch (e) {
+        console.error('Error parsing Instagram data:', e);
+      }
+    } else {
+      // Check localStorage for existing connection
+      const savedData = localStorage.getItem('instagram_data');
+      if (savedData) {
+        try {
+          const parsedData = JSON.parse(savedData);
+          setInstagramConnected(true);
+          setInstagramData({
+            username: parsedData.instagram.username,
+            id: parsedData.instagram.id,
+            accessToken: parsedData.accessToken,
+          });
+        } catch (e) {
+          localStorage.removeItem('instagram_data');
+        }
+      }
+    }
+  }, []);
 
   const showToast = React.useCallback((message: string, kind: "error" | "info" = "info", ms = 2500) => {
     const until = Date.now() + ms;
@@ -54,9 +117,16 @@ export default function V2Page() {
     if (step === 5 && !productImageFile) setStep(4);
   }, [productImageFile, step]);
 
+  // Skip login screen if user is already authenticated
+  React.useEffect(() => {
+    if (!loading && user && step === 1) {
+      setStep(2);
+    }
+  }, [user, loading, step]);
+
   const content = React.useMemo(() => {
     if (step === 1) {
-      return <WelcomeScreen onContinue={() => setStep(2)} />;
+      return <WelcomeScreen onContinue={() => setStep(2)} showToast={showToast} />;
     }
     if (step === 2) {
       return (
@@ -64,6 +134,8 @@ export default function V2Page() {
           userName={userName}
           onBack={() => setStep(1)}
           onContinue={() => setStep(3)}
+          instagramConnected={instagramConnected}
+          instagramUsername={instagramData?.username}
         />
       );
     }

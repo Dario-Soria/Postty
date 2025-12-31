@@ -19,6 +19,7 @@ import suggestTextRoute from './routes/suggestText';
 import geminiChatRoute from './routes/geminiChat';
 import templateRoutes from './routes/templates';
 import productAgentRoutes from './routes/productAgent';
+import instagramAuthRoutes from './routes/instagramAuth';
 import * as logger from './utils/logger';
 
 // Configuration
@@ -66,6 +67,7 @@ async function start(): Promise<void> {
     await fastify.register(geminiChatRoute);
     await fastify.register(templateRoutes);
     await fastify.register(productAgentRoutes);
+    await fastify.register(instagramAuthRoutes);
 
     // Health check endpoint
     fastify.get('/health', async (request, reply) => {
