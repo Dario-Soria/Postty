@@ -1,0 +1,15 @@
+# Google Generative AI SDK
+google-genai>=0.2.0
+
+# Required for authentication
+google-auth>=2.23.0
+google-auth-oauthlib>=1.1.0
+google-auth-httplib2>=0.1.1
+
+# Image processing
+Pillow>=10.0.0
+requests>=2.31.0
+
+# For better development experience (optional)
+python-dotenv>=1.0.0
+

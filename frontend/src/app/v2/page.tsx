@@ -2,6 +2,8 @@
 
 import * as React from "react";
 import { WelcomeScreen } from "./_components/WelcomeScreen";
+import { AgentSelectionScreen } from "./_components/AgentSelectionScreen";
+import { AgentChat } from "./_components/AgentChat";
 import { LinkInstagramScreen } from "./_components/LinkInstagramScreen";
 import { ReadyScreen } from "./_components/ReadyScreen";
 import { ProductPostScreen } from "./_components/ProductPostScreen";
@@ -16,7 +18,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { reloadUser } from "@/lib/firebase/auth";
 import { updateUserProfile } from "@/lib/firebase/firestore";
 
-type Step = 1 | 2 | 3 | 4 | 5 | 6;
+type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 type ToastState =
   | null
@@ -31,6 +33,9 @@ export default function V2Page() {
   const [step, setStep] = React.useState<Step>(1);
   const [toast, setToast] = React.useState<ToastState>(null);
   const [profileTimeout, setProfileTimeout] = React.useState(false);
+
+  // Agent selection state
+  const [selectedAgent, setSelectedAgent] = React.useState<string | null>(null);
 
   // Flow state from Screen 4 -> Screen 5
   const [productImageFile, setProductImageFile] = React.useState<File | null>(null);
@@ -202,19 +207,48 @@ export default function V2Page() {
       );
     }
 
+    // Step 2: Agent Selection (NEW - replaced Instagram linking)
     if (step === 2) {
       return (
-        <LinkInstagramScreen
+        <AgentSelectionScreen
           userName={userName}
-          onBack={() => setStep(1)}
-          onContinue={() => setStep(3)}
+          onBack={handleSignOut}
+          onAgentSelect={(agentId) => {
+            setSelectedAgent(agentId);
+            setStep(7); // Go to agent chat
+          }}
+          showToast={showToast}
         />
       );
     }
+
+    // Step 7: Agent Chat (NEW)
+    if (step === 7 && selectedAgent) {
+      const agentNames: Record<string, string> = {
+        "product-showcase": "Product Showcase",
+        "agent-2": "Agent 2",
+        "agent-3": "Agent 3",
+        "agent-4": "Agent 4",
+      };
+
+      return (
+        <AgentChat
+          agentId={selectedAgent}
+          agentName={agentNames[selectedAgent] || "Agent"}
+          onBack={() => {
+            setSelectedAgent(null);
+            setStep(2);
+          }}
+          showToast={showToast}
+        />
+      );
+    }
+
+    // OLD FLOW (kept for backwards compatibility - not currently accessible)
     if (step === 3) {
       return (
-        <ReadyScreen
-          instagramHandle={instagramHandle}
+        <LinkInstagramScreen
+          userName={userName}
           onBack={() => setStep(2)}
           onContinue={() => setStep(4)}
         />
@@ -222,10 +256,19 @@ export default function V2Page() {
     }
     if (step === 4) {
       return (
+        <ReadyScreen
+          instagramHandle={instagramHandle}
+          onBack={() => setStep(3)}
+          onContinue={() => setStep(5)}
+        />
+      );
+    }
+    if (step === 5) {
+      return (
         <ProductPostScreen
           title="Tu nuevo Post"
           subtitle="Subí tu foto y creá contenido"
-          onBack={() => setStep(3)}
+          onBack={() => setStep(4)}
           imageFile={productImageFile}
           setImageFile={setProductImageFile}
           prompt={productPrompt}
@@ -237,17 +280,17 @@ export default function V2Page() {
           setTextIntent={setTextIntent}
           onContinue={() => {
             setImageAnalysis(null);
-            setStep(5);
+            setStep(6);
           }}
         />
       );
     }
-    if (step === 5) {
+    if (step === 6) {
       // Skip to generation directly (no OpenAI)
       if (!productImageFile) {
         return null;
       }
-      setTimeout(() => setStep(6), 100);
+      setTimeout(() => setStep(7), 100);
       return (
         <div className="min-h-[calc(100dvh-5rem)] flex flex-col items-center justify-center">
           <div className="text-center">
@@ -258,15 +301,15 @@ export default function V2Page() {
       );
     }
 
-    // Step 6: Conversational chat with Gemini
+    // Default fallback
     return (
-      <ConversationalChat
-        onBack={() => setStep(4)}
-        imageFile={productImageFile!}
-        initialText={textIntent}
-      />
+      <div className="min-h-[calc(100dvh-5rem)] flex flex-col items-center justify-center">
+        <div className="text-center">
+          <p className="text-lg font-medium text-slate-700">Cargando...</p>
+        </div>
+      </div>
     );
-  }, [authLoading, instagramHandle, productImageFile, productPrompt, showToast, step, user, userName, selectedStyle, textIntent]);
+  }, [authLoading, handleSignOut, instagramHandle, productImageFile, productPrompt, selectedAgent, selectedStyle, showToast, step, textIntent, user, userName, userProfile, profileTimeout]);
 
   return (
     <div className="min-h-[100dvh] w-full bg-[radial-gradient(1200px_circle_at_20%_-10%,#FCE3C8,transparent_60%),radial-gradient(1000px_circle_at_90%_0%,#EAD5FF,transparent_55%),radial-gradient(900px_circle_at_35%_95%,#BFE7FF,transparent_55%),linear-gradient(180deg,#FCE3C8_0%,#EAD5FF_45%,#BFE7FF_100%)] text-slate-900">

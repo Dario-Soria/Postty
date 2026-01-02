@@ -1,0 +1,4 @@
+# Flask server dependencies (in addition to base requirements.txt)
+flask>=3.0.0
+flask-cors>=4.0.0
+

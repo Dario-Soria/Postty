@@ -17,6 +17,8 @@ import imageAnalyzerRoute from './routes/image-analyzer';
 import pipelineRoute from './routes/pipeline';
 import suggestTextRoute from './routes/suggestText';
 import geminiChatRoute from './routes/geminiChat';
+import agentChatRoute from './routes/agent-chat';
+import serveGeneratedImageRoute from './routes/serve-generated-image';
 import * as logger from './utils/logger';
 
 // Configuration
@@ -62,6 +64,8 @@ async function start(): Promise<void> {
     await fastify.register(pipelineRoute);
     await fastify.register(suggestTextRoute);
     await fastify.register(geminiChatRoute);
+    await fastify.register(agentChatRoute);
+    await fastify.register(serveGeneratedImageRoute);
 
     // Health check endpoint
     fastify.get('/health', async (request, reply) => {
