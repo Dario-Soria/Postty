@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as logger from '../utils/logger';
 
-const META_APP_ID = process.env.META_APP_ID || '242458132799811';
+const META_APP_ID = process.env.META_APP_ID || '2424581327998116';
 const META_APP_SECRET = process.env.META_APP_SECRET || 'daf97273d59ebb8229e476a65a11ad59';
 const REDIRECT_URI = process.env.META_REDIRECT_URI || 'https://0fb9827c518d.ngrok-free.app/api/auth/instagram/callback';
 
