@@ -231,5 +231,248 @@ export default async function instagramAuthRoutes(fastify: FastifyInstance): Pro
       });
     }
   });
+
+  // API endpoint to publish Story to Instagram
+  fastify.post('/instagram/publish-story', async (request: FastifyRequest, reply: FastifyReply) => {
+    logger.info('📤 POST /instagram/publish-story - Publishing Story to Instagram');
+
+    const { imageUrl, accessToken, instagramAccountId } = request.body as {
+      imageUrl: string;
+      accessToken: string;
+      instagramAccountId: string;
+    };
+
+    if (!imageUrl || !accessToken || !instagramAccountId) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Missing required fields: imageUrl, accessToken, instagramAccountId'
+      });
+    }
+
+    try {
+      // Step 1: Create Story media container
+      const createMediaUrl = new URL(`https://graph.facebook.com/v18.0/${instagramAccountId}/media`);
+      createMediaUrl.searchParams.set('image_url', imageUrl);
+      createMediaUrl.searchParams.set('media_type', 'STORIES');
+      createMediaUrl.searchParams.set('access_token', accessToken);
+
+      const createResponse = await fetch(createMediaUrl.toString(), { method: 'POST' });
+      const createData = await createResponse.json() as any;
+
+      if (createData.error) {
+        throw new Error(createData.error.message);
+      }
+
+      const containerId = createData.id;
+      logger.info(`✅ Created Story container: ${containerId}`);
+
+      // Step 2: Publish the Story container
+      const publishUrl = new URL(`https://graph.facebook.com/v18.0/${instagramAccountId}/media_publish`);
+      publishUrl.searchParams.set('creation_id', containerId);
+      publishUrl.searchParams.set('access_token', accessToken);
+
+      const publishResponse = await fetch(publishUrl.toString(), { method: 'POST' });
+      const publishData = await publishResponse.json() as any;
+
+      if (publishData.error) {
+        throw new Error(publishData.error.message);
+      }
+
+      logger.info(`✅ Published Story to Instagram: ${publishData.id}`);
+
+      return reply.send({
+        success: true,
+        storyId: publishData.id,
+        message: 'Successfully published Story to Instagram!'
+      });
+
+    } catch (error) {
+      logger.error('Instagram Story publish error:', error);
+      return reply.status(500).send({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to publish Story'
+      });
+    }
+  });
+
+  // API endpoint to publish Carousel (multiple images) to Instagram
+  fastify.post('/instagram/publish-carousel', async (request: FastifyRequest, reply: FastifyReply) => {
+    logger.info('📤 POST /instagram/publish-carousel - Publishing Carousel to Instagram');
+
+    const { imageUrls, caption, accessToken, instagramAccountId } = request.body as {
+      imageUrls: string[];
+      caption: string;
+      accessToken: string;
+      instagramAccountId: string;
+    };
+
+    if (!imageUrls || imageUrls.length < 2 || !accessToken || !instagramAccountId) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Missing required fields or need at least 2 images for carousel'
+      });
+    }
+
+    if (imageUrls.length > 10) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Maximum 10 images allowed in a carousel'
+      });
+    }
+
+    try {
+      // Step 1: Create individual media containers for each image
+      const childContainerIds: string[] = [];
+
+      for (const imageUrl of imageUrls) {
+        const createChildUrl = new URL(`https://graph.facebook.com/v18.0/${instagramAccountId}/media`);
+        createChildUrl.searchParams.set('image_url', imageUrl);
+        createChildUrl.searchParams.set('is_carousel_item', 'true');
+        createChildUrl.searchParams.set('access_token', accessToken);
+
+        const childResponse = await fetch(createChildUrl.toString(), { method: 'POST' });
+        const childData = await childResponse.json() as any;
+
+        if (childData.error) {
+          throw new Error(`Failed to create carousel item: ${childData.error.message}`);
+        }
+
+        childContainerIds.push(childData.id);
+        logger.info(`✅ Created carousel item: ${childData.id}`);
+      }
+
+      // Step 2: Create carousel container
+      const createCarouselUrl = new URL(`https://graph.facebook.com/v18.0/${instagramAccountId}/media`);
+      createCarouselUrl.searchParams.set('media_type', 'CAROUSEL');
+      createCarouselUrl.searchParams.set('children', childContainerIds.join(','));
+      createCarouselUrl.searchParams.set('caption', caption || '');
+      createCarouselUrl.searchParams.set('access_token', accessToken);
+
+      const carouselResponse = await fetch(createCarouselUrl.toString(), { method: 'POST' });
+      const carouselData = await carouselResponse.json() as any;
+
+      if (carouselData.error) {
+        throw new Error(carouselData.error.message);
+      }
+
+      const carouselContainerId = carouselData.id;
+      logger.info(`✅ Created carousel container: ${carouselContainerId}`);
+
+      // Step 3: Publish the carousel
+      const publishUrl = new URL(`https://graph.facebook.com/v18.0/${instagramAccountId}/media_publish`);
+      publishUrl.searchParams.set('creation_id', carouselContainerId);
+      publishUrl.searchParams.set('access_token', accessToken);
+
+      const publishResponse = await fetch(publishUrl.toString(), { method: 'POST' });
+      const publishData = await publishResponse.json() as any;
+
+      if (publishData.error) {
+        throw new Error(publishData.error.message);
+      }
+
+      logger.info(`✅ Published Carousel to Instagram: ${publishData.id}`);
+
+      return reply.send({
+        success: true,
+        postId: publishData.id,
+        message: 'Successfully published Carousel to Instagram!'
+      });
+
+    } catch (error) {
+      logger.error('Instagram Carousel publish error:', error);
+      return reply.status(500).send({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to publish Carousel'
+      });
+    }
+  });
+
+  // API endpoint to publish Reel (video) to Instagram
+  fastify.post('/instagram/publish-reel', async (request: FastifyRequest, reply: FastifyReply) => {
+    logger.info('📤 POST /instagram/publish-reel - Publishing Reel to Instagram');
+
+    const { videoUrl, caption, coverUrl, accessToken, instagramAccountId } = request.body as {
+      videoUrl: string;
+      caption?: string;
+      coverUrl?: string;
+      accessToken: string;
+      instagramAccountId: string;
+    };
+
+    if (!videoUrl || !accessToken || !instagramAccountId) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Missing required fields: videoUrl, accessToken, instagramAccountId'
+      });
+    }
+
+    try {
+      // Step 1: Create Reel media container
+      const createMediaUrl = new URL(`https://graph.facebook.com/v18.0/${instagramAccountId}/media`);
+      createMediaUrl.searchParams.set('video_url', videoUrl);
+      createMediaUrl.searchParams.set('media_type', 'REELS');
+      if (caption) createMediaUrl.searchParams.set('caption', caption);
+      if (coverUrl) createMediaUrl.searchParams.set('cover_url', coverUrl);
+      createMediaUrl.searchParams.set('access_token', accessToken);
+
+      const createResponse = await fetch(createMediaUrl.toString(), { method: 'POST' });
+      const createData = await createResponse.json() as any;
+
+      if (createData.error) {
+        throw new Error(createData.error.message);
+      }
+
+      const containerId = createData.id;
+      logger.info(`✅ Created Reel container: ${containerId}`);
+
+      // Step 2: Wait for video processing (poll status)
+      let status = 'IN_PROGRESS';
+      let attempts = 0;
+      const maxAttempts = 30; // Max 5 minutes (10s * 30)
+
+      while (status === 'IN_PROGRESS' && attempts < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10 seconds
+        
+        const statusUrl = `https://graph.facebook.com/v18.0/${containerId}?fields=status_code&access_token=${accessToken}`;
+        const statusResponse = await fetch(statusUrl);
+        const statusData = await statusResponse.json() as any;
+        
+        status = statusData.status_code;
+        attempts++;
+        logger.info(`Reel processing status: ${status} (attempt ${attempts})`);
+      }
+
+      if (status !== 'FINISHED') {
+        throw new Error(`Video processing failed or timed out. Status: ${status}`);
+      }
+
+      // Step 3: Publish the Reel
+      const publishUrl = new URL(`https://graph.facebook.com/v18.0/${instagramAccountId}/media_publish`);
+      publishUrl.searchParams.set('creation_id', containerId);
+      publishUrl.searchParams.set('access_token', accessToken);
+
+      const publishResponse = await fetch(publishUrl.toString(), { method: 'POST' });
+      const publishData = await publishResponse.json() as any;
+
+      if (publishData.error) {
+        throw new Error(publishData.error.message);
+      }
+
+      logger.info(`✅ Published Reel to Instagram: ${publishData.id}`);
+
+      return reply.send({
+        success: true,
+        reelId: publishData.id,
+        message: 'Successfully published Reel to Instagram!'
+      });
+
+    } catch (error) {
+      logger.error('Instagram Reel publish error:', error);
+      return reply.status(500).send({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to publish Reel'
+      });
+    }
+  });
 }
 
