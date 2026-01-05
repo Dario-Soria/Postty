@@ -5,11 +5,20 @@ import { GlassCard } from "./ui/GlassCard";
 import { TopBar } from "./ui/TopBar";
 import { useHoldToTalk } from "./hooks/useHoldToTalk";
 
+type ReferenceOption = {
+  id: string;
+  url: string;
+  description: string;
+  keywords: string[];
+  filename: string;
+};
+
 type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
   imageUrl?: string;
+  references?: ReferenceOption[];
 };
 
 type Props = {
@@ -24,6 +33,11 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
   const [inputValue, setInputValue] = React.useState("");
   const [isTyping, setIsTyping] = React.useState(false);
   const [isSending, setIsSending] = React.useState(false);
+  const [previewReference, setPreviewReference] = React.useState<{ ref: ReferenceOption; index: number } | null>(null);
+  const [showCaptionModal, setShowCaptionModal] = React.useState(false);
+  const [captionInput, setCaptionInput] = React.useState("");
+  const [publishingImageUrl, setPublishingImageUrl] = React.useState<string | null>(null);
+  const [isPublishing, setIsPublishing] = React.useState(false);
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLTextAreaElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -37,6 +51,17 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
   React.useEffect(() => {
     inputRef.current?.focus();
   }, [messages, isTyping]);
+
+  // Handle ESC key to close preview modal
+  React.useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && previewReference) {
+        handleClosePreview();
+      }
+    };
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [previewReference]);
 
   // Initial greeting from agent when component mounts
   const hasGreetedRef = React.useRef(false);
@@ -157,6 +182,21 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
       if (result.type === "text") {
         // Regular text response
         addAssistantMessage(result.text);
+      } else if (result.type === "reference_options") {
+        // Agent is presenting reference image options
+        setIsTyping(true);
+        setTimeout(() => {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: result.text,
+              references: result.references,
+            },
+          ]);
+          setIsTyping(false);
+        }, 800);
       } else if (result.type === "request_image") {
         // Agent is requesting an image upload (user can use + button)
         addAssistantMessage(result.text || "Por favor, subí una imagen usando el botón +");
@@ -200,6 +240,79 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
     link.click();
   };
 
+  const handleOpenPublishModal = (imageUrl: string) => {
+    setPublishingImageUrl(imageUrl);
+    setCaptionInput("");
+    setShowCaptionModal(true);
+  };
+
+  const handleClosePublishModal = () => {
+    setShowCaptionModal(false);
+    setPublishingImageUrl(null);
+    setCaptionInput("");
+  };
+
+  const handlePublishToInstagram = async () => {
+    if (!publishingImageUrl || !captionInput.trim()) {
+      showToast("Por favor escribí un caption para la publicación", "error");
+      return;
+    }
+
+    setIsPublishing(true);
+
+    try {
+      // Extract filename from URL (e.g., http://localhost:8080/generated-images/1234.png -> 1234.png)
+      const url = new URL(publishingImageUrl);
+      const pathParts = url.pathname.split('/');
+      const filename = pathParts[pathParts.length - 1];
+      const imagePath = `generated-images/${filename}`;
+
+      const response = await fetch("/api/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          image_path: imagePath,
+          caption: captionInput.trim(),
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data?.status !== "success") {
+        throw new Error(data?.message || "Error al publicar");
+      }
+
+      showToast("¡Publicado exitosamente en Instagram! 🎉", "info");
+      handleClosePublishModal();
+    } catch (error) {
+      console.error("Error publishing to Instagram:", error);
+      const errorMessage = error instanceof Error ? error.message : "Error al publicar en Instagram";
+      showToast(errorMessage, "error");
+    } finally {
+      setIsPublishing(false);
+    }
+  };
+
+  const handleSelectReference = (number: number, ref: ReferenceOption) => {
+    // Send selection number as message to agent
+    setPreviewReference(null); // Close modal
+    handleSendMessage(String(number));
+  };
+
+  const handleOpenPreview = (ref: ReferenceOption, index: number) => {
+    setPreviewReference({ ref, index });
+  };
+
+  const handleClosePreview = () => {
+    setPreviewReference(null);
+  };
+
+  const handleApproveReference = () => {
+    if (previewReference) {
+      handleSelectReference(previewReference.index + 1, previewReference.ref);
+    }
+  };
+
   // Microphone functionality
   const { isRecording, isTranscribing, bind: micBind } = useHoldToTalk({
     onTranscript: (text) => {
@@ -230,8 +343,8 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
         </div>
 
         {/* Chat messages */}
-        <GlassCard className="flex-1 p-4 overflow-hidden flex flex-col min-h-[400px]">
-          <div className="flex-1 overflow-y-auto space-y-3 pb-4">
+        <GlassCard className="flex-1 p-4 flex flex-col min-h-[400px]">
+          <div className="flex-1 overflow-y-auto space-y-3 pb-4" style={{ maxHeight: 'calc(100vh - 400px)' }}>
             {messages.map((msg) => (
               <div key={msg.id} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
                 <div
@@ -265,10 +378,10 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
                       />
                       <div className="flex gap-2 mt-3">
                         <button
-                          onClick={() => handleDownloadImage(msg.imageUrl!)}
+                          onClick={() => handleOpenPublishModal(msg.imageUrl!)}
                           className="flex-1 py-2.5 px-3 bg-slate-900 text-white font-medium rounded-xl text-sm hover:bg-slate-800 transition"
                         >
-                          Descargar
+                          Publicar
                         </button>
                         <button
                           onClick={onBack}
@@ -277,6 +390,33 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
                           Crear otra
                         </button>
                       </div>
+                    </div>
+                  )}
+
+                  {/* Reference image options grid */}
+                  {msg.role === "assistant" && msg.references && (
+                    <div className="mt-4 grid grid-cols-3 gap-3">
+                      {msg.references.map((ref, idx) => (
+                        <button
+                          key={ref.id}
+                          onClick={() => handleOpenPreview(ref, idx)}
+                          disabled={isSending || isTyping}
+                          className="relative group cursor-pointer rounded-xl overflow-hidden border-2 border-slate-200 hover:border-slate-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed bg-slate-50 hover:shadow-lg"
+                        >
+                          <div className="w-full h-48 flex items-center justify-center p-2">
+                            <img
+                              src={`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8080'}${ref.url}`}
+                              alt={ref.description}
+                              className="max-w-full max-h-full object-contain transition-transform group-hover:scale-105"
+                              onError={(e) => {
+                                console.error('Failed to load image:', ref.url);
+                                e.currentTarget.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="100" height="100"%3E%3Ctext x="50%25" y="50%25" text-anchor="middle" fill="%23999"%3EImage not found%3C/text%3E%3C/svg%3E';
+                              }}
+                            />
+                          </div>
+                          <div className="absolute inset-0 bg-slate-900/10 opacity-0 group-hover:opacity-100 transition pointer-events-none" />
+                        </button>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -387,6 +527,106 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
           />
         </GlassCard>
       </div>
+
+      {/* Reference Image Preview Modal */}
+      {previewReference && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ backdropFilter: 'blur(12px)', backgroundColor: 'rgba(0, 0, 0, 0.6)' }}
+          onClick={handleClosePreview}
+        >
+          <div 
+            className="relative max-w-6xl max-h-[90vh] w-full h-full flex items-center justify-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Main Image */}
+            <div className="relative bg-white rounded-2xl shadow-2xl overflow-hidden max-w-full max-h-full flex items-center justify-center p-4">
+              <img
+                src={`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8080'}${previewReference.ref.url}`}
+                alt={previewReference.ref.description}
+                className="max-w-full max-h-[80vh] object-contain"
+              />
+            </div>
+
+            {/* Thumbs Down Button (Left) */}
+            <button
+              onClick={handleClosePreview}
+              className="absolute left-4 top-1/2 -translate-y-1/2 w-16 h-16 rounded-full bg-white shadow-2xl flex items-center justify-center hover:scale-110 transition-all border-2 border-slate-200 hover:border-red-400 hover:bg-red-50"
+              aria-label="Rechazar"
+            >
+              <svg className="w-8 h-8 text-slate-700 hover:text-red-600" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M15 3H6c-.83 0-1.54.5-1.84 1.22l-3.02 7.05c-.09.23-.14.47-.14.73v2c0 1.1.9 2 2 2h6.31l-.95 4.57-.03.32c0 .41.17.79.44 1.06L9.83 23l6.59-6.59c.36-.36.58-.86.58-1.41V5c0-1.1-.9-2-2-2zm4 0v12h4V3h-4z"/>
+              </svg>
+            </button>
+
+            {/* Thumbs Up Button (Right) */}
+            <button
+              onClick={handleApproveReference}
+              className="absolute right-4 top-1/2 -translate-y-1/2 w-16 h-16 rounded-full bg-slate-900 shadow-2xl flex items-center justify-center hover:scale-110 transition-all hover:bg-slate-800"
+              aria-label="Seleccionar"
+            >
+              <svg className="w-8 h-8 text-white" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M14 9V5a3 3 0 00-3-3l-4 9v11h11.28a2 2 0 002-1.7l1.38-9a2 2 0 00-2-2.3zM7 22H4a2 2 0 01-2-2v-7a2 2 0 012-2h3" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Caption Modal for Instagram Publishing */}
+      {showCaptionModal && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ backdropFilter: 'blur(12px)', backgroundColor: 'rgba(0, 0, 0, 0.6)' }}
+          onClick={handleClosePublishModal}
+        >
+          <div 
+            className="relative bg-white rounded-2xl shadow-2xl p-6 max-w-lg w-full"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-xl font-bold text-slate-900 mb-4">Publicar en Instagram</h2>
+            
+            <div className="mb-4">
+              <label htmlFor="caption" className="block text-sm font-medium text-slate-700 mb-2">
+                Escribí el caption para tu publicación:
+              </label>
+              <textarea
+                id="caption"
+                value={captionInput}
+                onChange={(e) => setCaptionInput(e.target.value)}
+                placeholder="Ingresá el texto de tu publicación..."
+                rows={4}
+                disabled={isPublishing}
+                className="w-full px-4 py-3 rounded-xl bg-white border border-slate-200 focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-300 disabled:opacity-50 disabled:cursor-not-allowed text-[15px] resize-none"
+              />
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={handleClosePublishModal}
+                disabled={isPublishing}
+                className="flex-1 py-2.5 px-4 border border-slate-200 text-slate-700 font-medium rounded-xl text-sm hover:bg-slate-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handlePublishToInstagram}
+                disabled={isPublishing || !captionInput.trim()}
+                className="flex-1 py-2.5 px-4 bg-slate-900 text-white font-medium rounded-xl text-sm hover:bg-slate-800 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {isPublishing ? (
+                  <>
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                    Publicando...
+                  </>
+                ) : (
+                  "Publicar"
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

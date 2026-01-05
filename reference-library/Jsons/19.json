@@ -1,0 +1,57 @@
+{
+  "canvas": {
+    "width": 1080,
+    "height": 1350
+  },
+  "texts": [
+    {
+      "id": "brand",
+      "content": "Polo Tejido",
+      "font": {
+        "family": "Great Vibes",
+        "weight": 400,
+        "style": "script"
+      },
+      "size_px": 72,
+      "color": "#FFFFFF",
+      "alignment": "center",
+      "position": {
+        "x": 0.5,
+        "y": 0.08
+      }
+    },
+    {
+      "id": "collection",
+      "content": "STAR CONCEPT",
+      "font": {
+        "family": "Cinzel",
+        "weight": 500,
+        "style": "normal"
+      },
+      "size_px": 28,
+      "color": "#FFFFFF",
+      "letter_spacing": 3,
+      "alignment": "center",
+      "position": {
+        "x": 0.5,
+        "y": 0.14
+      }
+    },
+    {
+      "id": "offer",
+      "content": "3x2 + ENVÍO GRATIS",
+      "font": {
+        "family": "Playfair Display",
+        "weight": 600,
+        "style": "normal"
+      },
+      "size_px": 80,
+      "color": "#E6C15A",
+      "alignment": "left",
+      "position": {
+        "x": 0.08,
+        "y": 0.85
+      }
+    }
+  ]
+}

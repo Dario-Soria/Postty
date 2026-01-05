@@ -1,0 +1,92 @@
+{
+  "canvas": {
+    "width": 1080,
+    "height": 1920
+  },
+  "texts": [
+    {
+      "id": "index",
+      "content": "21",
+      "font": {
+        "family": "Playfair Display",
+        "weight": 600,
+        "style": "italic"
+      },
+      "size_px": 72,
+      "color": "#FFFFFF",
+      "alignment": "center",
+      "position": {
+        "x": 0.5,
+        "y": 0.32
+      },
+      "background_box": {
+        "color": "#000000",
+        "padding_px": 16,
+        "border_radius_px": 20
+      }
+    },
+    {
+      "id": "title",
+      "content": "Old Money",
+      "font": {
+        "family": "Playfair Display",
+        "weight": 600,
+        "style": "italic"
+      },
+      "size_px": 100,
+      "color": "#FFFFFF",
+      "alignment": "center",
+      "position": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "background_box": {
+        "color": "#000000",
+        "padding_px": 28,
+        "border_radius_px": 30
+      }
+    },
+    {
+      "id": "subtitle",
+      "content": "Casual Outfits",
+      "font": {
+        "family": "Playfair Display",
+        "weight": 500,
+        "style": "italic"
+      },
+      "size_px": 86,
+      "color": "#FFFFFF",
+      "alignment": "center",
+      "position": {
+        "x": 0.5,
+        "y": 0.5
+      },
+      "background_box": {
+        "color": "#000000",
+        "padding_px": 26,
+        "border_radius_px": 30
+      }
+    },
+    {
+      "id": "watermark",
+      "content": "girlsharetips.com",
+      "font": {
+        "family": "Montserrat",
+        "weight": 400,
+        "style": "normal"
+      },
+      "size_px": 28,
+      "color": "#000000",
+      "alignment": "center",
+      "position": {
+        "x": 0.5,
+        "y": 0.92
+      },
+      "background_box": {
+        "color": "#FFFFFF",
+        "padding_px": 10,
+        "border_radius_px": 6
+      }
+    }
+  ]
+}

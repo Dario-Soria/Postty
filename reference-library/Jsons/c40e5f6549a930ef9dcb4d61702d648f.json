@@ -1,0 +1,40 @@
+{
+  "canvas": {
+    "width": 1080,
+    "height": 1620
+  },
+  "texts": [
+    {
+      "id": "title",
+      "content": "THE Social CLUB",
+      "font": {
+        "family": "Didot",
+        "weight": 400,
+        "style": "normal"
+      },
+      "size_px": 140,
+      "color": "#FFFFFF",
+      "alignment": "center",
+      "position": {
+        "x": 0.5,
+        "y": 0.48
+      }
+    },
+    {
+      "id": "author",
+      "content": "BY CLARA DU CREST",
+      "font": {
+        "family": "Montserrat",
+        "weight": 500,
+        "style": "normal"
+      },
+      "size_px": 26,
+      "color": "#FFFFFF",
+      "alignment": "center",
+      "position": {
+        "x": 0.5,
+        "y": 0.58
+      }
+    }
+  ]
+}

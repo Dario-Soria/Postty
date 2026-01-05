@@ -1,0 +1,41 @@
+{
+  "canvas": {
+    "width": 1080,
+    "height": 1620
+  },
+  "texts": [
+    {
+      "id": "title_left",
+      "content": "Portfolio",
+      "font": {
+        "family": "Didot",
+        "weight": 400,
+        "style": "normal"
+      },
+      "size_px": 150,
+      "color": "#FFFFFF",
+      "alignment": "left",
+      "position": {
+        "x": 0.08,
+        "y": 0.25
+      }
+    },
+    {
+      "id": "subtitle",
+      "content": "ARTE PARA O LADO E VIAJAR NOS PROJETOS DE IDENTIDADE VISUAL",
+      "font": {
+        "family": "Montserrat",
+        "weight": 400,
+        "style": "normal"
+      },
+      "size_px": 26,
+      "color": "#FFFFFF",
+      "alignment": "left",
+      "position": {
+        "x": 0.08,
+        "y": 0.55
+      },
+      "max_width": 0.5
+    }
+  ]
+}

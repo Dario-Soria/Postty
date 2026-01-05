@@ -7,7 +7,8 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "dev": "ts-node src/server.ts",
-    "verify": "node verify-setup.js"
+    "verify": "node verify-setup.js",
+    "index-references": "ts-node scripts/index-reference-images.ts"
   },
   "keywords": [
     "instagram",

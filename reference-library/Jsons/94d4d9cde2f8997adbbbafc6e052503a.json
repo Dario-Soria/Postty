@@ -1,0 +1,73 @@
+{
+  "canvas": {
+    "width": 1080,
+    "height": 1620
+  },
+  "texts": [
+    {
+      "id": "headline_main",
+      "content": "The way",
+      "font": {
+        "family": "Didot",
+        "weight": 400,
+        "style": "normal"
+      },
+      "size_px": 140,
+      "color": "#FFFFFF",
+      "alignment": "left",
+      "position": {
+        "x": 0.08,
+        "y": 0.18
+      }
+    },
+    {
+      "id": "headline_accent",
+      "content": "she",
+      "font": {
+        "family": "Playfair Display",
+        "weight": 400,
+        "style": "italic"
+      },
+      "size_px": 120,
+      "color": "#B8A295",
+      "alignment": "left",
+      "position": {
+        "x": 0.12,
+        "y": 0.32
+      }
+    },
+    {
+      "id": "headline_secondary",
+      "content": "wears it",
+      "font": {
+        "family": "Didot",
+        "weight": 400,
+        "style": "normal"
+      },
+      "size_px": 140,
+      "color": "#FFFFFF",
+      "alignment": "left",
+      "position": {
+        "x": 0.08,
+        "y": 0.42
+      }
+    },
+    {
+      "id": "body",
+      "content": "Her Collegiate-Meets-Couture Looks Have Made HILARY RHODA One Of The World’s Top Models...",
+      "font": {
+        "family": "Libre Baskerville",
+        "weight": 400,
+        "style": "italic"
+      },
+      "size_px": 28,
+      "color": "#FFFFFF",
+      "alignment": "left",
+      "position": {
+        "x": 0.08,
+        "y": 0.62
+      },
+      "max_width": 0.6
+    }
+  ]
+}

@@ -10,6 +10,7 @@ let isStarting = false;
 let isReady = false;
 let messageQueue: Array<{
   message: string;
+  imagePath?: string;
   resolve: (value: any) => void;
   reject: (error: Error) => void;
 }> = [];
@@ -46,6 +47,7 @@ async function startAgentProcess(): Promise<void> {
         env: {
           ...process.env,
           PYTHONUNBUFFERED: '1',
+          BACKEND_URL: process.env.BACKEND_URL || 'http://localhost:8080', // Ensure correct backend URL
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -58,35 +60,48 @@ async function startAgentProcess(): Promise<void> {
 
       // Process responses from agent
       rl.on('line', (line) => {
+        // Skip empty lines
+        if (!line.trim()) return;
+        
+        // Try to parse as JSON - skip non-JSON lines (debug messages from Python)
+        let response;
         try {
-          const response = JSON.parse(line);
-          
-          // Handle ready signal
-          if (response.status === 'ready') {
-            logger.info(`✅ Agent process ready: ${response.agent_id}`);
-            isReady = true;
-            isStarting = false;
-            resolve();
-            
-            // Process queued messages
-            processQueue();
-            return;
-          }
-          
-          // Handle regular responses
-          if (currentRequest) {
-            if (response.status === 'success') {
-              currentRequest.resolve(response.result);
-            } else {
-              currentRequest.reject(new Error(response.message || 'Unknown error'));
-            }
-            currentRequest = null;
-            
-            // Process next message in queue
-            processQueue();
-          }
+          response = JSON.parse(line);
         } catch (error) {
-          logger.error('Failed to parse agent response:', line);
+          // Not JSON - likely a debug message from Python, ignore it
+          logger.info(`[Agent Debug] ${line}`);
+          return;
+        }
+        
+        logger.info(`[Agent Response] ${JSON.stringify(response)}`);
+        
+        // Handle ready signal
+        if (response.status === 'ready') {
+          logger.info(`✅ Agent process ready: ${response.agent_id}`);
+          isReady = true;
+          isStarting = false;
+          resolve();
+          
+          // Process queued messages
+          processQueue();
+          return;
+        }
+        
+        // Handle regular responses
+        if (currentRequest) {
+          if (response.status === 'success') {
+            logger.info('[Agent] Success response received');
+            currentRequest.resolve(response.result);
+          } else {
+            logger.error(`[Agent] Error response: ${response.message}`);
+            currentRequest.reject(new Error(response.message || 'Unknown error'));
+          }
+          currentRequest = null;
+          
+          // Process next message in queue
+          processQueue();
+        } else {
+          logger.warn('[Agent] Received response but no current request waiting');
         }
       });
 
@@ -149,9 +164,15 @@ function processQueue(): void {
 
   currentRequest = { resolve: item.resolve, reject: item.reject };
   
-  // Send message to agent via stdin
-  const request = JSON.stringify({ message: item.message }) + '\n';
-  agentProcess.stdin?.write(request);
+  // Send message to agent via stdin with optional image_path
+  const request = { 
+    message: item.message,
+    image_path: item.imagePath 
+  };
+  const requestJson = JSON.stringify(request) + '\n';
+  
+  logger.info(`[Agent Request] Sending: ${JSON.stringify(request)}`);
+  agentProcess.stdin?.write(requestJson);
 }
 
 /**
@@ -185,18 +206,16 @@ export async function ensureAgentRunning(): Promise<void> {
 export async function sendMessageToAgent(
   message: string,
   imagePath?: string
-): Promise<{ type: 'text' | 'image'; text: string; file?: string }> {
+): Promise<{ type: 'text' | 'image' | 'reference_options'; text: string; file?: string; references?: any[] }> {
   if (!agentProcess || !isReady) {
     throw new Error('Agent process is not running');
   }
 
-  // Add image path to message if provided
-  const fullMessage = imagePath ? `${message} ${imagePath}` : message;
-
   return new Promise((resolve, reject) => {
     // Add to queue
     messageQueue.push({
-      message: fullMessage,
+      message,
+      imagePath,
       resolve,
       reject,
     });

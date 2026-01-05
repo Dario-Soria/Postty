@@ -1,0 +1,41 @@
+{
+  "canvas": {
+    "width": 1080,
+    "height": 1350
+  },
+  "texts": [
+    {
+      "id": "center_title",
+      "content": "Old Money",
+      "font": {
+        "family": "Playfair Display",
+        "weight": 600,
+        "style": "normal"
+      },
+      "size_px": 110,
+      "color": "#FFFFFF",
+      "alignment": "center",
+      "position": {
+        "x": 0.5,
+        "y": 0.52
+      }
+    },
+    {
+      "id": "subtitle",
+      "content": "Sophisticated",
+      "font": {
+        "family": "Montserrat",
+        "weight": 500,
+        "style": "normal"
+      },
+      "size_px": 24,
+      "color": "#FFFFFF",
+      "letter_spacing": 4,
+      "alignment": "center",
+      "position": {
+        "x": 0.5,
+        "y": 0.45
+      }
+    }
+  ]
+}

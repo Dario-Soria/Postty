@@ -33,23 +33,43 @@ def main():
             line = line.strip()
             if not line:
                 continue
+            
+            # Log incoming request to stderr (won't interfere with JSON output)
+            print(f"[DEBUG] Received: {line}", file=sys.stderr, flush=True)
                 
             request = json.loads(line)
             message = request.get('message', '')
+            image_path = request.get('image_path')  # Optional product image path
             
-            if not message:
-                response = {"status": "error", "message": "No message provided"}
+            print(f"[DEBUG] Message: {message}, Image: {image_path}", file=sys.stderr, flush=True)
+            
+            # Allow empty message if image is provided
+            if not message and not image_path:
+                response = {"status": "error", "message": "No message or image provided"}
             else:
-                # Call agent
-                result = agent.chat(message)
+                # If only image provided, use a placeholder message
+                if not message and image_path:
+                    message = "[User uploaded product image]"
+                    print(f"[DEBUG] Using placeholder message for image", file=sys.stderr, flush=True)
+                
+                # Call agent with optional image path
+                print(f"[DEBUG] Calling agent.chat()", file=sys.stderr, flush=True)
+                result = agent.chat(message, image_path=image_path)
+                print(f"[DEBUG] Agent returned: {result}", file=sys.stderr, flush=True)
                 response = {"status": "success", "result": result}
             
             print(json.dumps(response), flush=True)
             
         except json.JSONDecodeError as e:
-            error_response = {"status": "error", "message": f"Invalid JSON: {str(e)}"}
+            error_msg = f"Invalid JSON: {str(e)}"
+            print(f"[ERROR] {error_msg}", file=sys.stderr, flush=True)
+            error_response = {"status": "error", "message": error_msg}
             print(json.dumps(error_response), flush=True)
         except Exception as e:
+            error_msg = f"Exception: {str(e)}"
+            print(f"[ERROR] {error_msg}", file=sys.stderr, flush=True)
+            import traceback
+            print(f"[ERROR] Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
             error_response = {"status": "error", "message": str(e)}
             print(json.dumps(error_response), flush=True)
 

@@ -155,12 +155,32 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
       // Resolve reference image path
       let referenceImagePath: string | undefined;
       if (formData.referenceImage) {
-        const refDir = path.join(process.cwd(), 'reference-images');
-        const refPath = path.join(refDir, formData.referenceImage);
-        if (fs.existsSync(refPath)) {
-          referenceImagePath = refPath;
+        // Try reference-library first (indexed references)
+        const refLibPath = path.join(process.cwd(), 'reference-library', 'images', formData.referenceImage);
+        if (fs.existsSync(refLibPath)) {
+          referenceImagePath = refLibPath;
+          logger.info(`📚 Using reference from library: ${formData.referenceImage}`);
         } else {
-          logger.warn(`Reference image not found: ${formData.referenceImage}, using random`);
+          // Fall back to reference-images directory
+          const refDir = path.join(process.cwd(), 'reference-images');
+          const refPath = path.join(refDir, formData.referenceImage);
+          if (fs.existsSync(refPath)) {
+            referenceImagePath = refPath;
+            logger.info(`📁 Using reference from reference-images: ${formData.referenceImage}`);
+          } else {
+            logger.warn(`Reference image not found: ${formData.referenceImage}, using random`);
+          }
+        }
+      }
+
+      // Parse textContent if provided as JSON string
+      let textContent: { headline?: string; subheadline?: string; cta?: string } | undefined;
+      if (formData.textContent) {
+        try {
+          textContent = JSON.parse(formData.textContent);
+          logger.info(`📝 Text content parsed: ${JSON.stringify(textContent)}`);
+        } catch (e) {
+          logger.warn(`Failed to parse textContent JSON: ${e}`);
         }
       }
 
@@ -174,6 +194,7 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
         skipText: formData.skipText === 'true',
         style: formData.style || 'Elegante',
         useCase: formData.useCase || 'Promoción',
+        textContent,
       };
 
       logger.info('📋 Pipeline Input:', JSON.stringify({
@@ -308,10 +329,19 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
       // Resolve reference image path
       let referenceImagePath: string | undefined;
       if (body.referenceImage) {
-        const refDir = path.join(process.cwd(), 'reference-images');
-        const refPath = path.join(refDir, body.referenceImage);
-        if (fs.existsSync(refPath)) {
-          referenceImagePath = refPath;
+        // Try reference-library first (indexed references)
+        const refLibPath = path.join(process.cwd(), 'reference-library', 'images', body.referenceImage);
+        if (fs.existsSync(refLibPath)) {
+          referenceImagePath = refLibPath;
+          logger.info(`📚 Using reference from library: ${body.referenceImage}`);
+        } else {
+          // Fall back to reference-images directory
+          const refDir = path.join(process.cwd(), 'reference-images');
+          const refPath = path.join(refDir, body.referenceImage);
+          if (fs.existsSync(refPath)) {
+            referenceImagePath = refPath;
+            logger.info(`📁 Using reference from reference-images: ${body.referenceImage}`);
+          }
         }
       }
 

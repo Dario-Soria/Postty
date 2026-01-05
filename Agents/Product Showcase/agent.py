@@ -169,6 +169,29 @@ def _load_image(source: str) -> Optional[types.Part]:
         return _load_local_image(source)
 
 
+def _load_reference_json(reference_filename: str) -> Optional[Dict[str, Any]]:
+    """
+    Load JSON file associated with a reference image.
+    Returns None if JSON doesn't exist.
+    """
+    try:
+        # Get base name without extension
+        base_name = os.path.splitext(reference_filename)[0]
+        
+        # Try reference-library/Jsons directory
+        json_path = os.path.join(os.getcwd(), 'reference-library', 'Jsons', f'{base_name}.json')
+        
+        if os.path.exists(json_path):
+            with open(json_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        
+        print(f"[DEBUG] No JSON found for reference: {reference_filename}")
+        return None
+    except Exception as e:
+        print(f"[DEBUG] Error loading reference JSON: {e}")
+        return None
+
+
 class NanoBananaAgent:
     """
     Minimal stateful agent:
@@ -193,14 +216,27 @@ class NanoBananaAgent:
             location=self.config.region,
         )
         self.history: List[Dict[str, Any]] = []  # [{"role":"user|assistant","content":"...","image_url":Optional[str]}]
+        
+        # Additional state for tool handlers
+        self.backend_url = os.environ.get('BACKEND_URL', 'http://localhost:3000')
+        self.selected_reference = None  # Store user's reference selection
+        self.product_image_path = None  # Store uploaded product image path
+        self.text_content = None  # Store user's text specifications for overlay
+        self.awaiting_text_input = False  # Flag to track if we're waiting for text input
 
-    def chat(self, user_message: str) -> Dict[str, Any]:
+    def chat(self, user_message: str, image_path: Optional[str] = None) -> Dict[str, Any]:
         """
         Returns:
           { "type": "text", "text": "..." }
         or
           { "type": "image", "file": "timestamp.png" }
+        or
+          { "type": "reference_options", "text": "...", "references": [...] }
         """
+        # Store product image path if provided
+        if image_path:
+            self.product_image_path = image_path
+        
         # Handle special start conversation message
         is_initial_greeting = user_message == "START_CONVERSATION"
         
@@ -248,16 +284,19 @@ IMAGE_PROMPT: <detailed single-line prompt for image generation>
 Otherwise, respond naturally to continue the conversation.
 """.strip()
 
-        # Build content for Gemini - include image if present in current message
-        if image_source:
+        # Build content for Gemini - include image if present in current message or stored product image
+        image_to_analyze = image_source or self.product_image_path
+        
+        if image_to_analyze:
             # Load the image (from URL or local file) and convert to Google GenAI Part
-            image_part = _load_image(image_source)
+            image_part = _load_image(image_to_analyze)
             if image_part:
                 # Multi-part content with text and image
                 content_parts = [full_prompt, image_part]
+                print(f"Including product image in analysis: {image_to_analyze}")
             else:
                 # Image loading failed, use text only
-                print("Warning: Image loading failed, proceeding with text only")
+                print(f"Warning: Image loading failed for {image_to_analyze}, proceeding with text only")
                 content_parts = [full_prompt]
         else:
             # Text-only content
@@ -272,7 +311,85 @@ Otherwise, respond naturally to continue the conversation.
         response_text = response.text or ""
         response_text_stripped = response_text.strip()
 
-        # Check if the agent wants to generate an image
+        # Check if user is selecting a reference (1, 2, 3)
+        if user_message.strip().isdigit():
+            selected_num = int(user_message.strip())
+            if 1 <= selected_num <= 3:
+                # Find the last message with references
+                for msg in reversed(self.history):
+                    if msg.get("references"):
+                        refs = msg["references"]
+                        if selected_num <= len(refs):
+                            self.selected_reference = refs[selected_num - 1]
+                            print(f"[DEBUG] User selected reference #{selected_num}: {self.selected_reference.get('filename')}")
+                            
+                            # After reference selection, ask about text content (Step 5.5)
+                            self.awaiting_text_input = True
+                            text_question = (
+                                "Perfecto! Ahora, ¿qué texto querés que tenga tu post de Instagram?\n\n"
+                                "Podés incluir:\n"
+                                "- Título principal o frase destacada\n"
+                                "- Oferta o beneficio (ej: '3x2', 'Envío gratis')\n"
+                                "- Llamado a acción (ej: 'Comprá ahora', 'Link en bio')\n\n"
+                                "O decime **'sin texto'** si preferís la imagen sola."
+                            )
+                            self.history.append({"role": "assistant", "content": text_question})
+                            return {"type": "text", "text": text_question}
+        
+        # Check if we're waiting for text input from user (Step 5.5 response)
+        if self.awaiting_text_input:
+            self.awaiting_text_input = False
+            
+            # Check if user wants no text
+            user_msg_lower = user_message.lower().strip()
+            no_text_keywords = ['sin texto', 'no texto', 'sin text', 'no text', 'imagen sola', 'ninguno', 'nada', 'skip']
+            
+            if any(keyword in user_msg_lower for keyword in no_text_keywords):
+                # User wants no text
+                self.text_content = None
+                print("[DEBUG] User chose no text overlay")
+                
+                ready_msg = (
+                    "Perfecto! Tengo todo listo para crear tu post sin texto:\n"
+                    f"- {self.selected_reference.get('description', 'Referencia seleccionada')}\n\n"
+                    "**Cuando quieras generar el post, apretá el botón 'Generar' y listo.**"
+                )
+                self.history.append({"role": "assistant", "content": ready_msg})
+                return {"type": "text", "text": ready_msg}
+            else:
+                # Parse user's text specifications
+                self.text_content = self._parse_text_content(user_message)
+                print(f"[DEBUG] User text content parsed: {self.text_content}")
+                
+                # Build preview of what will be included
+                text_preview_parts = []
+                if self.text_content.get('headline'):
+                    text_preview_parts.append(f"- Título: '{self.text_content['headline']}'")
+                if self.text_content.get('subheadline'):
+                    text_preview_parts.append(f"- Oferta/Subtítulo: '{self.text_content['subheadline']}'")
+                if self.text_content.get('cta'):
+                    text_preview_parts.append(f"- Llamado a acción: '{self.text_content['cta']}'")
+                
+                text_preview = "\n".join(text_preview_parts) if text_preview_parts else "- Texto personalizado"
+                
+                ready_msg = (
+                    "Perfecto! Tengo todo listo para crear tu post:\n"
+                    f"{text_preview}\n"
+                    f"- Basado en la referencia que elegiste\n\n"
+                    "**Cuando quieras generar el post, apretá el botón 'Generar' y listo.**"
+                )
+                self.history.append({"role": "assistant", "content": ready_msg})
+                return {"type": "text", "text": ready_msg}
+        
+        # Check for reference search trigger
+        if "[TRIGGER_SEARCH_REFERENCES]" in response_text_stripped:
+            return self._handle_search_references(response_text_stripped)
+        
+        # Check for pipeline generation trigger
+        if "[TRIGGER_GENERATE_PIPELINE]" in response_text_stripped:
+            return self._handle_generate_pipeline(response_text_stripped)
+
+        # Check if the agent wants to generate an image (legacy Gemini direct)
         if "[TRIGGER_GENERATE_NANOBANANA]" in response_text_stripped or "CALL_TOOL: GENERATE_IMAGE" in response_text_stripped:
             # Extract the image prompt
             image_prompt = ""
@@ -320,6 +437,282 @@ Otherwise, respond naturally to continue the conversation.
         # Regular conversation response
         self.history.append({"role": "assistant", "content": response_text_stripped})
         return {"type": "text", "text": response_text_stripped}
+    
+    def _parse_text_content(self, user_message: str) -> Dict[str, str]:
+        """
+        Parse user's text specifications into structured format.
+        Returns dict with headline, subheadline, and/or cta keys.
+        """
+        text_content = {}
+        
+        # Simple heuristic parsing
+        # Look for common patterns in Spanish/English
+        msg_lower = user_message.lower()
+        
+        # Try to identify CTA (call to action) keywords
+        cta_keywords = ['comprá', 'compra', 'buy', 'shop', 'link en bio', 'link in bio', 'visita', 'visit', 'descubrí', 'descubre']
+        
+        # Split by common separators
+        lines = user_message.replace(' y ', '\n').replace(' Y ', '\n').split('\n')
+        
+        # Collect all text pieces
+        text_pieces = []
+        for line in lines:
+            line = line.strip().strip('"').strip("'").strip(',').strip()
+            if line and len(line) > 1:
+                text_pieces.append(line)
+        
+        # Assign pieces to roles based on position and keywords
+        if len(text_pieces) >= 3:
+            # 3+ pieces: headline, subheadline, cta
+            text_content['headline'] = text_pieces[0]
+            text_content['subheadline'] = text_pieces[1]
+            text_content['cta'] = text_pieces[2]
+        elif len(text_pieces) == 2:
+            # 2 pieces: check if second is CTA
+            text_content['headline'] = text_pieces[0]
+            if any(kw in text_pieces[1].lower() for kw in cta_keywords):
+                text_content['cta'] = text_pieces[1]
+            else:
+                text_content['subheadline'] = text_pieces[1]
+        elif len(text_pieces) == 1:
+            # Just one piece: make it headline
+            text_content['headline'] = text_pieces[0]
+        else:
+            # Fallback: use entire message as headline
+            text_content['headline'] = user_message.strip()
+        
+        return text_content
+    
+    def _handle_search_references(self, response_text: str) -> Dict[str, Any]:
+        """
+        Search reference library and present options to user
+        """
+        # Extract QUERY and LIMIT parameters
+        query = ""
+        limit = 3
+        
+        for line in response_text.splitlines():
+            line_stripped = line.strip()
+            if line_stripped.startswith("QUERY:"):
+                query = line_stripped[len("QUERY:"):].strip()
+            elif line_stripped.startswith("LIMIT:"):
+                try:
+                    limit = int(line_stripped[len("LIMIT:"):].strip())
+                except:
+                    limit = 3
+        
+        if not query:
+            # Fallback query from context
+            query = "product photography professional"
+        
+        try:
+            import requests
+            
+            # Call backend search endpoint
+            response = requests.post(
+                f'{self.backend_url}/search-references',
+                json={'query': query, 'limit': limit},
+                timeout=10
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            if result.get('status') == 'success' and result.get('results'):
+                # Format results for user display
+                references = result['results']
+                
+                # Build message showing the references
+                text_before_trigger = response_text.split("[TRIGGER_SEARCH_REFERENCES]")[0].strip()
+                if not text_before_trigger:
+                    text_before_trigger = "Encontré estas referencias que podrían inspirar tu imagen:"
+                
+                message_parts = [text_before_trigger, ""]
+                
+                for i, ref in enumerate(references, 1):
+                    keywords_str = ", ".join(ref['keywords'][:5])
+                    message_parts.append(
+                        f"{i}. {ref['description']}\n"
+                        f"   Estilo: {keywords_str}"
+                    )
+                
+                message_parts.append("")
+                message_parts.append("¿Cuál te gusta más? (1, 2, 3, o 'ninguna' si querés que genere sin referencia)")
+                
+                full_message = "\n".join(message_parts)
+                
+                # Store references in history for later use
+                self.history.append({
+                    "role": "assistant",
+                    "content": full_message,
+                    "references": references
+                })
+                
+                return {
+                    "type": "reference_options",
+                    "text": full_message,
+                    "references": references
+                }
+            else:
+                fallback = "No encontré referencias exactas. ¿Querés que genere la imagen según tu descripción?"
+                self.history.append({"role": "assistant", "content": fallback})
+                return {"type": "text", "text": fallback}
+                
+        except Exception as e:
+            error_msg = f"Error buscando referencias: {str(e)}"
+            print(error_msg)
+            fallback = "Tuve un problema buscando referencias. ¿Seguimos sin referencias visuales?"
+            self.history.append({"role": "assistant", "content": fallback})
+            return {"type": "text", "text": fallback}
+    
+    def _handle_generate_pipeline(self, response_text: str) -> Dict[str, Any]:
+        """
+        Generate image using /pipeline endpoint with product + reference + prompt
+        """
+        # Extract parameters - use stored product image path
+        product_image = self.product_image_path
+        reference_image = ""
+        prompt = ""
+        skip_text = "true"
+        
+        # Use selected reference if available
+        if self.selected_reference:
+            reference_image = self.selected_reference.get('filename', '')
+            print(f"[DEBUG] Using stored selected reference: {reference_image}")
+        
+        for line in response_text.splitlines():
+            line_stripped = line.strip()
+            # NOTE: Don't override product_image - we use the stored path from upload
+            # The LLM might hallucinate incorrect paths
+            # Only override reference if not already set from selection
+            if line_stripped.startswith("REFERENCE_IMAGE:") and not reference_image:
+                reference_image = line_stripped[len("REFERENCE_IMAGE:"):].strip()
+            elif line_stripped.startswith("PROMPT:"):
+                prompt = line_stripped[len("PROMPT:"):].strip()
+            elif line_stripped.startswith("SKIP_TEXT:"):
+                skip_text = line_stripped[len("SKIP_TEXT:"):].strip()
+        
+        if not product_image:
+            error_msg = "No product image available for generation"
+            print(f"[DEBUG] No product image path stored")
+            self.history.append({"role": "assistant", "content": error_msg})
+            return {"type": "text", "text": error_msg}
+        
+        print(f"[DEBUG] Using product image: {product_image}")
+        print(f"[DEBUG] Using reference: {reference_image}")
+        print(f"[DEBUG] Using prompt: {prompt}")
+        
+        if not prompt:
+            prompt = "Professional product photography with elegant composition"
+        
+        try:
+            import requests
+            import json
+            
+            # ALWAYS generate base image without text (we apply JSON after)
+            print(f"[DEBUG] Generating base image (skipText: true)")
+            
+            # Build multipart form data with proper file handle management
+            with open(product_image, 'rb') as product_file:
+                files = {'productImage': product_file}
+                data = {
+                    'textPrompt': prompt,
+                    'referenceImage': reference_image if reference_image else '',
+                    'skipText': 'true',  # ALWAYS true - we apply JSON after
+                    'language': 'es',
+                    'aspectRatio': '1:1',
+                }
+                
+                # Call pipeline endpoint to generate BASE IMAGE only
+                response = requests.post(
+                    f'{self.backend_url}/pipeline',
+                    files=files,
+                    data=data,
+                    timeout=60  # Pipeline can take longer
+                )
+            
+            response.raise_for_status()
+            result = response.json()
+            
+            if not result.get('success') or not result.get('finalImagePath'):
+                error_msg = "La generación de imagen falló. ¿Intentamos de nuevo?"
+                self.history.append({"role": "assistant", "content": error_msg})
+                return {"type": "text", "text": error_msg}
+            
+            base_image_path = result['finalImagePath']
+            print(f"[DEBUG] Base image generated: {base_image_path}")
+            
+            # Check if user provided text content
+            has_text = self.text_content is not None and len(self.text_content) > 0
+            
+            final_image_path = base_image_path
+            
+            if has_text:
+                # User provided text - apply reference JSON
+                print(f"[DEBUG] User provided text: {self.text_content}")
+                
+                # Convert text_content dict to ordered array (by position)
+                text_array = []
+                if self.text_content.get('headline'):
+                    text_array.append(self.text_content['headline'])
+                if self.text_content.get('subheadline'):
+                    text_array.append(self.text_content['subheadline'])
+                if self.text_content.get('cta'):
+                    text_array.append(self.text_content['cta'])
+                
+                print(f"[DEBUG] Text array: {text_array}")
+                
+                # Get reference filename
+                ref_filename = self.selected_reference.get('filename', '') if self.selected_reference else ''
+                
+                if ref_filename:
+                    print(f"[DEBUG] Applying reference JSON for: {ref_filename}")
+                    
+                    # Call new endpoint to apply JSON
+                    json_response = requests.post(
+                        f'{self.backend_url}/apply-reference-json',
+                        json={
+                            'baseImagePath': base_image_path,
+                            'referenceFilename': ref_filename,
+                            'userText': text_array
+                        },
+                        timeout=30
+                    )
+                    
+                    if json_response.ok:
+                        json_result = json_response.json()
+                        if json_result.get('success') and json_result.get('finalImagePath'):
+                            final_image_path = json_result['finalImagePath']
+                            print(f"[DEBUG] JSON applied successfully: {final_image_path}")
+                        else:
+                            print(f"[DEBUG] JSON application failed, using base image")
+                    else:
+                        print(f"[DEBUG] JSON endpoint error: {json_response.status_code}, using base image")
+                else:
+                    print(f"[DEBUG] No reference filename, using base image")
+            else:
+                print(f"[DEBUG] No text content, using base image as-is")
+            
+            # Extract text before trigger
+            text_before_trigger = response_text.split("[TRIGGER_GENERATE_PIPELINE]")[0].strip()
+            if not text_before_trigger:
+                text_before_trigger = "✨ ¡Listo! Acá está tu imagen"
+            
+            assistant_msg = f"{text_before_trigger}\n[Image generated via pipeline]"
+            self.history.append({"role": "assistant", "content": assistant_msg})
+            
+            return {
+                "type": "image",
+                "file": final_image_path,
+                "text": text_before_trigger
+            }
+                
+        except Exception as e:
+            error_msg = f"Error generando imagen: {str(e)}"
+            print(error_msg)
+            fallback = "Tuve un problema generando la imagen. ¿Intentamos de nuevo?"
+            self.history.append({"role": "assistant", "content": fallback})
+            return {"type": "text", "text": fallback}
 
 
 if __name__ == "__main__":

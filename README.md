@@ -11,6 +11,7 @@ Postty is a **Fastify (Node.js + TypeScript) backend** plus a **Next.js frontend
 - **[QUICKSTART.md](QUICKSTART.md)**: fastest setup/run checklist
 - **[SETUP_GUIDE.md](SETUP_GUIDE.md)**: Instagram + AWS + keys setup (detailed)
 - **[API_ENDPOINTS.md](API_ENDPOINTS.md)**: API reference (more verbose than this README)
+- **[REFERENCE_LIBRARY_INDEXING.md](REFERENCE_LIBRARY_INDEXING.md)**: batch index reference images
 - **[CUSTOMER_SETUP.md](CUSTOMER_SETUP.md)**: customer onboarding checklist
 - **[AI_FEATURE_GUIDE.md](AI_FEATURE_GUIDE.md)**: AI feature notes + behavior
 - **[DOCUMENTATION_SUMMARY.md](DOCUMENTATION_SUMMARY.md)**: map of all docs
@@ -35,6 +36,9 @@ Postty is a **Fastify (Node.js + TypeScript) backend** plus a **Next.js frontend
 - **Local output / temp**:
   - `generated-images/` (generated PNGs)
   - `temp-uploads/` (uploads + intermediate files)
+- **Scripts / Tools**:
+  - `scripts/index-reference-images.ts` (batch index images in `reference-library/images/` - see `scripts/README.md`)
+  - `scripts/rembg_cutout.py` (background removal)
 
 ## Run locally
 

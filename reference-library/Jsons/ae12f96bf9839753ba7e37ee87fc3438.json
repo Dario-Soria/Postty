@@ -1,0 +1,62 @@
+{
+  "canvas": {
+    "width": 1080,
+    "height": 1350
+  },
+  "texts": [
+    {
+      "id": "counter",
+      "content": "20+",
+      "font": {
+        "family": "Playfair Display",
+        "weight": 600,
+        "style": "normal"
+      },
+      "size_px": 110,
+      "color": "#FFFFFF",
+      "alignment": "center",
+      "position": {
+        "x": 0.5,
+        "y": 0.45
+      }
+    },
+    {
+      "id": "title",
+      "content": "Casual Old Money Outfits",
+      "font": {
+        "family": "Playfair Display",
+        "weight": 500,
+        "style": "normal"
+      },
+      "size_px": 90,
+      "color": "#FFFFFF",
+      "alignment": "center",
+      "position": {
+        "x": 0.5,
+        "y": 0.58
+      },
+      "background_box": {
+        "color": "rgba(120,110,95,0.55)",
+        "padding_px": 24,
+        "border_radius_px": 6
+      }
+    },
+    {
+      "id": "footer",
+      "content": "FROMTHEWARDROBE",
+      "font": {
+        "family": "Montserrat",
+        "weight": 500,
+        "style": "normal"
+      },
+      "size_px": 28,
+      "color": "#FFFFFF",
+      "letter_spacing": 4,
+      "alignment": "center",
+      "position": {
+        "x": 0.5,
+        "y": 0.8
+      }
+    }
+  ]
+}

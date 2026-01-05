@@ -1,0 +1,44 @@
+{
+  "canvas": {
+    "width": 1080,
+    "height": 1350
+  },
+  "texts": [
+    {
+      "id": "title",
+      "content": "THE MOST FRENCH WAY TO WEAR YOUR JEANS IS THESE 5 OUTFITS",
+      "font": {
+        "family": "Helvetica Neue",
+        "weight": 700,
+        "style": "normal"
+      },
+      "size_px": 48,
+      "color": "#000000",
+      "alignment": "center",
+      "position": {
+        "x": 0.5,
+        "y": 0.5
+      },
+      "background_box": {
+        "color": "rgba(255,255,255,0.9)",
+        "padding_px": 40
+      }
+    },
+    {
+      "id": "source",
+      "content": "WHOWHATWEAR.CO.UK",
+      "font": {
+        "family": "Helvetica Neue",
+        "weight": 500,
+        "style": "normal"
+      },
+      "size_px": 20,
+      "color": "#000000",
+      "alignment": "center",
+      "position": {
+        "x": 0.5,
+        "y": 0.64
+      }
+    }
+  ]
+}

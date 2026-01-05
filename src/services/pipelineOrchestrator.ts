@@ -104,13 +104,30 @@ export async function executePipeline(input: PipelineInput): Promise<PipelineOut
   // Get reference image based on style
   let referenceImagePath = input.referenceImagePath;
   if (!referenceImagePath) {
-    const refs = listReferenceImages();
-    const totalImages = Object.values(refs).flat().length;
-    if (totalImages === 0) {
-      throw new Error('No reference images found');
+    // Try new reference library first
+    const refLibPath = path.join(process.cwd(), 'reference-library', 'images');
+    if (fs.existsSync(refLibPath)) {
+      const files = fs.readdirSync(refLibPath).filter(f => 
+        /\.(png|jpg|jpeg|webp|gif)$/i.test(f)
+      );
+      if (files.length > 0) {
+        // Pick a random reference from new library
+        const randomFile = files[Math.floor(Math.random() * files.length)];
+        referenceImagePath = path.join(refLibPath, randomFile);
+        logger.info(`📚 Using random reference from library: ${randomFile}`);
+      }
     }
-    // Pass style to get reference from the correct folder
-    referenceImagePath = getRandomReferenceImage(style);
+    
+    // Fall back to old reference system if needed
+    if (!referenceImagePath) {
+      const refs = listReferenceImages();
+      const totalImages = Object.values(refs).flat().length;
+      if (totalImages === 0) {
+        throw new Error('No reference images found');
+      }
+      // Pass style to get reference from the correct folder
+      referenceImagePath = getRandomReferenceImage(style);
+    }
   }
 
   let nanoBananaDuration = 0;
@@ -130,10 +147,13 @@ export async function executePipeline(input: PipelineInput): Promise<PipelineOut
     
     const nbStart = Date.now();
     
+    // Use the detailed textPrompt if provided, otherwise fall back to style/useCase
+    const userIntent = input.textPrompt || `${style} style. ${useCase}. Professional advertising image.`;
+    
     nanoBananaResult = await generateBaseImage({
       referenceImagePath,
       productImagePath: input.productImagePath,
-      userIntent: `${style} style. ${useCase}. Professional advertising image.`,
+      userIntent,
       aspectRatio: input.aspectRatio,
     });
     
@@ -305,16 +325,38 @@ export function getAvailableReferences(): { style: string; images: string[] }[] 
 }
 
 export function isPipelineReady(): { ready: boolean; message: string } {
-  ensureReferenceFolder();
-  const refs = listReferenceImages();
-  const totalImages = Object.values(refs).flat().length;
-  
-  if (totalImages === 0) {
-    return { ready: false, message: 'No reference images found' };
-  }
+  // Check GEMINI_API_KEY
   if (!process.env.GEMINI_API_KEY) {
     return { ready: false, message: 'GEMINI_API_KEY not set' };
   }
   
-  return { ready: true, message: `Ready with ${totalImages} reference(s) in ${Object.keys(refs).length} style(s)` };
+  // Check for reference images in both old and new systems
+  const refLibPath = path.join(process.cwd(), 'reference-library', 'images');
+  const oldRefPath = path.join(process.cwd(), 'reference-images');
+  
+  let hasReferences = false;
+  let totalImages = 0;
+  
+  // Check new reference library
+  if (fs.existsSync(refLibPath)) {
+    const files = fs.readdirSync(refLibPath).filter(f => 
+      /\.(png|jpg|jpeg|webp|gif)$/i.test(f)
+    );
+    totalImages += files.length;
+    hasReferences = files.length > 0;
+  }
+  
+  // Fall back to old reference system
+  if (!hasReferences) {
+    ensureReferenceFolder();
+    const refs = listReferenceImages();
+    totalImages = Object.values(refs).flat().length;
+    hasReferences = totalImages > 0;
+  }
+  
+  if (!hasReferences) {
+    return { ready: false, message: 'No reference images found' };
+  }
+  
+  return { ready: true, message: `Ready with ${totalImages} reference(s)` };
 }

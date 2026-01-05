@@ -1,0 +1,56 @@
+{
+  "canvas": {
+    "width": 1080,
+    "height": 1620
+  },
+  "texts": [
+    {
+      "id": "title_script",
+      "content": "Old",
+      "font": {
+        "family": "Bodoni Moda",
+        "weight": 400,
+        "style": "italic"
+      },
+      "size_px": 160,
+      "color": "#FFFFFF",
+      "alignment": "center",
+      "position": {
+        "x": 0.5,
+        "y": 0.22
+      }
+    },
+    {
+      "id": "title_serif",
+      "content": "Money",
+      "font": {
+        "family": "Bodoni Moda",
+        "weight": 500,
+        "style": "normal"
+      },
+      "size_px": 200,
+      "color": "#FFFFFF",
+      "alignment": "center",
+      "position": {
+        "x": 0.5,
+        "y": 0.36
+      }
+    },
+    {
+      "id": "footer_left",
+      "content": "Free шрифты",
+      "font": {
+        "family": "Montserrat",
+        "weight": 400,
+        "style": "normal"
+      },
+      "size_px": 24,
+      "color": "#FFFFFF",
+      "alignment": "left",
+      "position": {
+        "x": 0.05,
+        "y": 0.9
+      }
+    }
+  ]
+}

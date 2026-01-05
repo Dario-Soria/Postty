@@ -145,23 +145,19 @@ export async function saveReferenceImageAsync(params: {
     .run(id, sha256, params.originalFilename, storedPath, params.mime, bytes, width, height, createdAt, '[]', '');
 
   // Background indexing (non-blocking)
+  // NOTE: We DO NOT rename files because they may have paired JSON metadata files
+  // with the same filename. Keywords are stored in the database instead.
   setImmediate(() => {
     void (async () => {
       try {
         const { description, keywords } = await extractKeywordsWithGemini({ imagePath: storedPath, maxKeywords: 12 });
-        const keywordSlug = keywords.slice(0, 5).map(slugify).filter(Boolean).join('_');
-        const finalName = `${Date.now()}_${keywordSlug || 'ref'}_${id}.${ext}`;
-        const finalPath = path.join(imagesDir, finalName);
-
-        try {
-          fs.renameSync(storedPath, finalPath);
-        } catch {
-          // If rename fails, keep original path.
-        }
-
+        
+        // Update database with keywords and description (keep original path)
         dbi
-          .prepare('UPDATE reference_images SET keywords_json = ?, description = ?, stored_path = ? WHERE id = ?')
-          .run(JSON.stringify(keywords), description, fs.existsSync(finalPath) ? finalPath : storedPath, id);
+          .prepare('UPDATE reference_images SET keywords_json = ?, description = ? WHERE id = ?')
+          .run(JSON.stringify(keywords), description, id);
+        
+        logger.info(`Reference image indexed: ${path.basename(storedPath)} (${keywords.length} keywords)`);
       } catch (e) {
         const msg = e instanceof Error ? e.message : 'Unknown error';
         logger.warn(`Reference keyword indexing failed: ${msg}`);
@@ -170,6 +166,141 @@ export async function saveReferenceImageAsync(params: {
   });
 
   return { id, stored_path: storedPath, sha256 };
+}
+
+export type ReferenceImageSearchResult = {
+  id: string;
+  stored_path: string;
+  filename: string;
+  keywords: string[];
+  description: string;
+  relevance_score: number;
+};
+
+function tryParseKeywords(keywordsJson: string): string[] {
+  try {
+    const parsed = JSON.parse(keywordsJson || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Search reference images by keywords or semantic description
+ * Returns top N most relevant images based on keyword/description matching
+ */
+export async function searchReferenceImages(params: {
+  query: string;
+  limit?: number;
+}): Promise<ReferenceImageSearchResult[]> {
+  const dbi = ensureDb();
+  if (!dbi) return [];
+
+  const limit = params.limit || 3;
+  const queryLower = params.query.toLowerCase();
+  
+  // Extract search terms from query
+  const searchTerms = queryLower
+    .split(/\s+/)
+    .filter(term => term.length > 2) // Ignore very short words
+    .map(term => term.replace(/[^a-z0-9]/g, '')); // Clean terms
+
+  if (searchTerms.length === 0) {
+    // No valid search terms, return most recent images
+    const rows = dbi
+      .prepare(`
+        SELECT id, stored_path, original_filename, keywords_json, description 
+        FROM reference_images 
+        WHERE keywords_json != '[]'
+        ORDER BY created_at DESC 
+        LIMIT ?
+      `)
+      .all(limit);
+    
+    return rows.map((row: any) => ({
+      id: row.id,
+      stored_path: row.stored_path,
+      filename: path.basename(row.stored_path),
+      keywords: tryParseKeywords(row.keywords_json),
+      description: row.description || '',
+      relevance_score: 0,
+    }));
+  }
+
+  // Get all indexed images
+  const allImages = dbi
+    .prepare(`
+      SELECT id, stored_path, original_filename, keywords_json, description 
+      FROM reference_images 
+      WHERE keywords_json != '[]'
+    `)
+    .all();
+
+  // Score each image by relevance
+  const scored = allImages
+    .map((row: any) => {
+      const keywords = tryParseKeywords(row.keywords_json);
+      const description = (row.description || '').toLowerCase();
+      const filename = (row.original_filename || '').toLowerCase();
+      
+      let score = 0;
+      
+      // Check each search term against keywords, description, filename
+      for (const term of searchTerms) {
+        // Keyword match (highest weight)
+        const keywordMatch = keywords.filter(kw => 
+          kw.toLowerCase().includes(term) || term.includes(kw.toLowerCase())
+        ).length;
+        score += keywordMatch * 10;
+        
+        // Description match (medium weight)
+        if (description.includes(term)) {
+          score += 5;
+        }
+        
+        // Filename match (low weight)
+        if (filename.includes(term)) {
+          score += 2;
+        }
+      }
+      
+      return {
+        id: row.id,
+        stored_path: row.stored_path,
+        filename: path.basename(row.stored_path),
+        keywords,
+        description: row.description || '',
+        relevance_score: score,
+      };
+    })
+    .filter((img: ReferenceImageSearchResult) => img.relevance_score > 0) // Only return matches
+    .sort((a: ReferenceImageSearchResult, b: ReferenceImageSearchResult) => b.relevance_score - a.relevance_score) // Sort by relevance
+    .slice(0, limit); // Take top N
+
+  // If no matches found, return most recent
+  if (scored.length === 0) {
+    const rows = dbi
+      .prepare(`
+        SELECT id, stored_path, original_filename, keywords_json, description 
+        FROM reference_images 
+        WHERE keywords_json != '[]'
+        ORDER BY created_at DESC 
+        LIMIT ?
+      `)
+      .all(limit);
+    
+    return rows.map((row: any) => ({
+      id: row.id,
+      stored_path: row.stored_path,
+      filename: path.basename(row.stored_path),
+      keywords: tryParseKeywords(row.keywords_json),
+      description: row.description || '',
+      relevance_score: 0,
+    }));
+  }
+
+  return scored;
 }
 
 
