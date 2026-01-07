@@ -206,7 +206,7 @@ export async function ensureAgentRunning(): Promise<void> {
 export async function sendMessageToAgent(
   message: string,
   imagePath?: string
-): Promise<{ type: 'text' | 'image' | 'reference_options'; text: string; file?: string; references?: any[] }> {
+): Promise<{ type: 'text' | 'image' | 'reference_options'; text: string; file?: string; references?: any[]; textLayout?: any }> {
   if (!agentProcess || !isReady) {
     throw new Error('Agent process is not running');
   }

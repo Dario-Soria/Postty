@@ -45,9 +45,44 @@ function safeJsonParse<T>(raw: string): T | null {
   }
 }
 
+// Cache for the analyzer prompt
+let cachedAnalyzerPrompt: string | null = null;
+
+function loadAnalyzerPrompt(): string {
+  if (cachedAnalyzerPrompt) {
+    return cachedAnalyzerPrompt;
+  }
+
+  const promptPath = path.join(process.cwd(), 'reference-library', 'AnalyzerPrompt.md');
+  
+  if (!fs.existsSync(promptPath)) {
+    throw new Error(`AnalyzerPrompt.md not found at: ${promptPath}`);
+  }
+
+  const content = fs.readFileSync(promptPath, 'utf-8');
+  
+  // Extract content between triple backticks in the ## Prompt section
+  const promptSectionMatch = content.match(/## Prompt\s*\n\s*```([\s\S]*?)```/);
+  
+  if (!promptSectionMatch || !promptSectionMatch[1]) {
+    throw new Error('Could not extract prompt from AnalyzerPrompt.md');
+  }
+
+  cachedAnalyzerPrompt = promptSectionMatch[1].trim();
+  return cachedAnalyzerPrompt;
+}
+
 export type GeminiKeywordResult = {
   description: string;
   keywords: string[];
+};
+
+export type GeminiDesignGuidelinesResult = {
+  tags: string[];
+  industry: string;
+  aesthetic: string;
+  mood: string;
+  design_guidelines: object;
 };
 
 export type GeminiSubjectMaskResult = {
@@ -107,6 +142,152 @@ export async function extractKeywordsWithGemini(params: {
     .filter((k) => k.length > 0)
     .slice(0, max);
   return { description: parsed.description.trim(), keywords: Array.from(new Set(keywords)) };
+}
+
+export async function extractDesignGuidelinesWithGemini(params: {
+  imagePath: string;
+}): Promise<GeminiDesignGuidelinesResult> {
+  if (!fs.existsSync(params.imagePath)) throw new Error(`File not found: ${params.imagePath}`);
+
+  const apiKey = requireGeminiApiKey();
+  const model = resolveGeminiVisionModel();
+  const ai = new GoogleGenAI({ apiKey });
+
+  const buf = fs.readFileSync(params.imagePath);
+  const b64 = buf.toString('base64');
+  const mime = guessMimeType(params.imagePath);
+
+  // Load the dynamic prompt from AnalyzerPrompt.md
+  const systemPrompt = loadAnalyzerPrompt();
+
+  const rsp = await ai.models.generateContent({
+    model,
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          { text: systemPrompt },
+          { text: 'Analyze the image and extract comprehensive design guidelines.' },
+          { inlineData: { data: b64, mimeType: mime } },
+        ],
+      },
+    ],
+    config: { temperature: 0.2, maxOutputTokens: 2500 },
+  });
+
+  const raw = (rsp.text || '').trim();
+  const parsed = safeJsonParse<any>(raw);
+  
+  if (!parsed || typeof parsed !== 'object') {
+    logger.warn(`Gemini design guidelines extraction returned non-JSON/invalid. raw="${raw.slice(0, 180)}..."`);
+    return {
+      tags: [],
+      industry: '',
+      aesthetic: '',
+      mood: '',
+      design_guidelines: {},
+    };
+  }
+
+  // Extract searchable fields from the nested structure
+  const overallStyle = parsed.overall_style || {};
+  const industryFit = Array.isArray(overallStyle.industry_fit) ? overallStyle.industry_fit : [];
+  const industry = industryFit.length > 0 ? String(industryFit[0]).toLowerCase() : '';
+  const aesthetic = overallStyle.aesthetic ? String(overallStyle.aesthetic).toLowerCase() : '';
+  const mood = overallStyle.mood ? String(overallStyle.mood).toLowerCase() : '';
+
+  // Generate tags from various fields
+  const tags: string[] = [];
+  
+  // Add aesthetic and mood as tags
+  if (aesthetic) tags.push(aesthetic);
+  if (mood) tags.push(mood);
+  
+  // Add color palette temperature
+  if (parsed.color_palette?.temperature) {
+    tags.push(String(parsed.color_palette.temperature).toLowerCase());
+  }
+  
+  // Add layout info
+  if (parsed.layout?.product_position) {
+    tags.push(String(parsed.layout.product_position).toLowerCase().replace(/-/g, ' '));
+  }
+  
+  // Add background type
+  if (parsed.background?.type) {
+    tags.push(String(parsed.background.type).toLowerCase());
+  }
+  
+  // Add lighting type
+  if (parsed.lighting?.type) {
+    tags.push(String(parsed.lighting.type).toLowerCase().replace(/-/g, ' '));
+  }
+
+  // Add content-specific tags from content_elements
+  const content = parsed.content_elements || {};
+  
+  // Add people attributes
+  if (content.people?.present && content.people.attributes) {
+    const attrs = content.people.attributes;
+    if (Array.isArray(attrs.hair)) {
+      tags.push(...attrs.hair.map((h: any) => String(h).toLowerCase()));
+    }
+    if (Array.isArray(attrs.facial_features)) {
+      tags.push(...attrs.facial_features.map((f: any) => String(f).toLowerCase()));
+    }
+    if (Array.isArray(attrs.clothing)) {
+      tags.push(...attrs.clothing.map((c: any) => String(c).toLowerCase()));
+    }
+    if (Array.isArray(attrs.expression)) {
+      tags.push(...attrs.expression.map((e: any) => String(e).toLowerCase()));
+    }
+    if (Array.isArray(attrs.body_type)) {
+      tags.push(...attrs.body_type.map((b: any) => String(b).toLowerCase()));
+    }
+  }
+  
+  // Add people activities
+  if (content.people?.activity && Array.isArray(content.people.activity)) {
+    tags.push(...content.people.activity.map((a: any) => String(a).toLowerCase()));
+  }
+  
+  // Add objects and props
+  if (content.objects_and_props?.present && Array.isArray(content.objects_and_props.items)) {
+    tags.push(...content.objects_and_props.items.map((i: any) => String(i).toLowerCase()));
+  }
+  
+  // Add setting details
+  if (content.setting?.location) {
+    tags.push(String(content.setting.location).toLowerCase());
+  }
+  if (content.setting?.time_of_day) {
+    tags.push(String(content.setting.time_of_day).toLowerCase());
+  }
+  if (content.setting?.season && content.setting.season !== 'generic') {
+    tags.push(String(content.setting.season).toLowerCase());
+  }
+  if (content.setting?.weather && content.setting.weather !== 'clear') {
+    tags.push(String(content.setting.weather).toLowerCase());
+  }
+  
+  // Add lifestyle category
+  if (content.action_context?.lifestyle_category && Array.isArray(content.action_context.lifestyle_category)) {
+    tags.push(...content.action_context.lifestyle_category.map((l: any) => String(l).toLowerCase()));
+  }
+
+  // Add all industries as tags
+  tags.push(...industryFit.map((i: any) => String(i).toLowerCase()));
+
+  // Remove duplicates and limit to reasonable number (increased from 20 to 30 for richer keywords)
+  const uniqueTags = Array.from(new Set(tags.filter(t => t.length > 0))).slice(0, 30);
+
+  return {
+    tags: uniqueTags,
+    industry,
+    aesthetic,
+    mood,
+    design_guidelines: parsed,
+  };
 }
 
 export async function extractSubjectMaskWithGemini(params: {

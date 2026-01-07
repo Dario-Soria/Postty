@@ -43,6 +43,11 @@ export interface PipelineInput {
   language?: 'es' | 'en';
   aspectRatio?: '1:1' | '9:16' | '16:9' | '4:3' | '3:4';
   skipText?: boolean;
+  
+  // NEW: Gemini text generation params
+  userText?: string[];  // User's text array ["headline", "subheadline", "cta"]
+  typographyStyle?: any;  // design_guidelines.typography from SQLite
+  productAnalysis?: any;  // {colors, category, composition} from agent
 }
 
 export interface PipelineOutput {
@@ -155,16 +160,21 @@ export async function executePipeline(input: PipelineInput): Promise<PipelineOut
       productImagePath: input.productImagePath,
       userIntent,
       aspectRatio: input.aspectRatio,
+      // NEW: Pass text generation params if provided
+      textContent: input.userText,
+      typographyStyle: input.typographyStyle,
+      productColors: input.productAnalysis?.colors,
     });
     
     nanoBananaDuration = Date.now() - nbStart;
     logger.info(`✅ Base image generated in ${nanoBananaDuration}ms`);
 
-    // If no text, return base image only
-    if (input.skipText || !input.textContent || 
-        (!input.textContent.headline && !input.textContent.subheadline && !input.textContent.cta)) {
+    // If no text requested OR text already included by Gemini, return image
+    if (input.skipText || 
+        (input.userText && input.userText.length > 0) ||  // Gemini generated text
+        (!input.textContent || (!input.textContent.headline && !input.textContent.subheadline && !input.textContent.cta))) {
       
-      logger.info('⏭️ No text content, returning base image only');
+      logger.info('⏭️ No additional text overlay needed, returning image');
       
       return {
         finalImagePath: nanoBananaResult.imagePath,

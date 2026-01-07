@@ -3,6 +3,18 @@
  * Applies reference JSON text layout directly to a base image
  * 
  * POST /apply-reference-json - Apply JSON text to image
+ * 
+ * ============================================================================
+ * DEPRECATED 2025-01-07
+ * ============================================================================
+ * This route is deprecated. Text generation now uses SQLite design_guidelines
+ * column instead of JSON files from reference-library/Jsons/ folder.
+ * 
+ * New route: POST /apply-design-guidelines-text (applyDesignGuidelinesText.ts)
+ * 
+ * This route is kept active for backward compatibility but will log deprecation
+ * warnings when called.
+ * ============================================================================
  */
 
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
@@ -37,6 +49,7 @@ export default async function applyReferenceJsonRoutes(fastify: FastifyInstance)
     async (request: FastifyRequest<ApplyJSONRequest>, reply: FastifyReply) => {
       logger.info('═══════════════════════════════════════════════════════════════');
       logger.info('📨 POST /apply-reference-json - Incoming request');
+      logger.warn('⚠️  DEPRECATED: This endpoint is deprecated. Use /apply-design-guidelines-text instead');
       logger.info('═══════════════════════════════════════════════════════════════');
 
       try {
@@ -106,6 +119,39 @@ export default async function applyReferenceJsonRoutes(fastify: FastifyInstance)
         logger.info('✅ JSON application successful');
         logger.info(`📁 Final image: ${result.imagePath}`);
 
+        // Load the reference JSON to extract textLayout structure
+        let textLayout = null;
+        try {
+          const jsonContent = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
+          // Convert JSON format to textLayout format
+          textLayout = {
+            elements: userText.map((text, index) => {
+              const jsonElement = jsonContent.texts[index];
+              if (!jsonElement) return null;
+              
+              return {
+                text: text,
+                type: index === 0 ? 'headline' : index === 1 ? 'subheadline' : 'body',
+                position: {
+                  x: jsonElement.position.x * 100, // Convert 0-1 to 0-100
+                  y: jsonElement.position.y * 100,
+                  anchor: jsonElement.alignment || 'center',
+                },
+                style: {
+                  fontFamily: jsonElement.font.family,
+                  fontSize: jsonElement.size_px,
+                  fontWeight: jsonElement.font.weight.toString(),
+                  color: jsonElement.color,
+                  letterSpacing: jsonElement.letter_spacing,
+                  maxWidth: jsonElement.max_width ? jsonElement.max_width * 100 : undefined,
+                },
+              };
+            }).filter(Boolean),
+          };
+        } catch (e) {
+          logger.warn('Could not extract textLayout from JSON');
+        }
+
         // Return result
         return reply.send({
           success: true,
@@ -113,6 +159,7 @@ export default async function applyReferenceJsonRoutes(fastify: FastifyInstance)
           finalImage: `data:image/png;base64,${result.imageBase64}`,
           width: result.width,
           height: result.height,
+          textLayout: textLayout,
         });
       } catch (error) {
         const msg = error instanceof Error ? error.message : 'Unknown error';

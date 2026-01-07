@@ -4,6 +4,7 @@ import * as React from "react";
 import { GlassCard } from "./ui/GlassCard";
 import { TopBar } from "./ui/TopBar";
 import { useHoldToTalk } from "./hooks/useHoldToTalk";
+import { openTextEditor, type BackendTextLayout } from "@/lib/features/text-editor";
 
 type ReferenceOption = {
   id: string;
@@ -19,6 +20,7 @@ type Message = {
   content: string;
   imageUrl?: string;
   references?: ReferenceOption[];
+  textLayout?: BackendTextLayout;
 };
 
 type Props = {
@@ -113,7 +115,7 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Only run once on mount
 
-  const addAssistantMessage = (content: string, imageUrl?: string) => {
+  const addAssistantMessage = (content: string, imageUrl?: string, textLayout?: any) => {
     setIsTyping(true);
     setTimeout(() => {
       setMessages((prev) => [
@@ -123,6 +125,7 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
           role: "assistant",
           content,
           imageUrl,
+          textLayout,
         },
       ]);
       setIsTyping(false);
@@ -203,7 +206,7 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
       } else if (result.type === "image") {
         // Agent generated an image
         const text = result.text || "¡Listo! Acá está tu imagen 🎉";
-        addAssistantMessage(text, result.imageUrl);
+        addAssistantMessage(text, result.imageUrl, result.textLayout);
       }
     } catch (error) {
       console.error("Error sending message:", error);
@@ -250,6 +253,86 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
     setShowCaptionModal(false);
     setPublishingImageUrl(null);
     setCaptionInput("");
+  };
+
+  const handleEditText = async (imageUrl: string, textLayout: any) => {
+    console.log('[AgentChat] handleEditText called with:', { imageUrl, textLayout });
+    
+    if (!textLayout || !textLayout.elements || textLayout.elements.length === 0) {
+      console.error('[AgentChat] Invalid textLayout:', textLayout);
+      return;
+    }
+
+    try {
+      console.log('[AgentChat] Opening text editor with:', {
+        baseImageUrl: imageUrl,
+        textLayout: textLayout,
+      });
+      
+      const result = await openTextEditor({
+        baseImageUrl: imageUrl,
+        textLayout: textLayout,
+      });
+      
+      console.log('[AgentChat] Text editor returned:', result);
+      if (result) {
+        // User clicked Done - show success message
+        showToast("Texto actualizado! La regeneración estará disponible pronto.", "info");
+        // TODO: Implement regeneration with updated text
+      }
+    } catch (error) {
+      console.error("Error opening text editor:", error);
+      showToast("Error al abrir el editor de texto", "error");
+    }
+  };
+
+  const handleCreateAnother = async () => {
+    // Add a divider message to show new conversation is starting
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: "───────────────────",
+      },
+    ]);
+
+    // Send a reset message to the agent to start fresh
+    setIsSending(true);
+    try {
+      const formData = new FormData();
+      formData.append("agentType", agentId);
+      formData.append("message", "RESET_CONVERSATION");
+
+      const response = await fetch("/api/agent-chat", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (data.status === "success" && data.result) {
+        const result = data.result;
+        
+        // Add agent's fresh greeting
+        setTimeout(() => {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: result.text || "¡Listo! Subí la foto de tu nuevo producto usando el botón (+) 📸",
+            },
+          ]);
+        }, 500);
+      }
+    } catch (error) {
+      console.error("Error resetting conversation:", error);
+      // Fallback greeting if reset fails
+      addAssistantMessage("¡Perfecto! Subí la foto de tu nuevo producto usando el botón (+) 📸");
+    } finally {
+      setIsSending(false);
+    }
   };
 
   const handlePublishToInstagram = async () => {
@@ -383,8 +466,16 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
                         >
                           Publicar
                         </button>
+                        {(msg.textLayout?.elements?.length ?? 0) > 0 && (
+                          <button
+                            onClick={() => handleEditText(msg.imageUrl!, msg.textLayout)}
+                            className="flex-1 py-2.5 px-3 border border-slate-200 text-slate-700 font-medium rounded-xl text-sm hover:bg-slate-50 transition"
+                          >
+                            Editar texto
+                          </button>
+                        )}
                         <button
-                          onClick={onBack}
+                          onClick={handleCreateAnother}
                           className="flex-1 py-2.5 px-3 border border-slate-200 text-slate-700 font-medium rounded-xl text-sm hover:bg-slate-50 transition"
                         >
                           Crear otra

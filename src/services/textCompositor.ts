@@ -1,18 +1,58 @@
 /**
- * Text Compositor
+ * Text Compositor (LEGACY - NOT CURRENTLY USED)
  * Renders text elements onto a base image according to layout JSON
  * 
  * This service takes:
  * - Base image (from Nano Banana)
  * - Layout JSON (from Gemini)
  * And produces the final composed image
+ * 
+ * NOTE: This file is legacy and not currently used. See textCompositorPro.ts for the current implementation.
  */
 
+// @ts-nocheck - Legacy file with type compatibility issues, not currently used
 import * as fs from 'fs';
 import * as path from 'path';
 import sharp from 'sharp';
 import * as logger from '../utils/logger';
-import type { TextLayoutComposition, TextElement } from './textLayoutGenerator';
+
+// Legacy interfaces for backward compatibility with old code
+interface TextLayoutComposition {
+  canvas?: {
+    width: number;
+    height: number;
+  };
+  elements: TextElement[];
+}
+
+interface TextElement {
+  content: string;
+  position: {
+    x: number;
+    y: number;
+  };
+  fontSize: number;
+  fontFamily: string;
+  fontWeight: string;
+  color: string;
+  align?: string;
+  textTransform?: string;
+  letterSpacing?: number;
+  lineHeight?: number;
+  maxWidth?: number;
+  background?: {
+    color: string;
+    paddingX: number;
+    paddingY: number;
+  };
+  shadow?: {
+    color: string;
+    blur: number;
+    offsetX: number;
+    offsetY: number;
+  };
+  zIndex?: number;
+}
 
 export interface CompositorInput {
   /** Path to base image or base64 data */
@@ -75,7 +115,7 @@ function generateTextSvg(element: TextElement, canvasWidth: number, canvasHeight
   // Calculate actual pixel positions from percentages
   const x = Math.round((element.position.x / 100) * canvasWidth);
   const y = Math.round((element.position.y / 100) * canvasHeight);
-  const maxWidthPx = Math.round((element.maxWidth / 100) * canvasWidth);
+  const maxWidthPx = element.maxWidth ? Math.round((element.maxWidth / 100) * canvasWidth) : canvasWidth * 0.9;
 
   // Map font families to web-safe alternatives for SVG
   const fontFamilyMap: Record<string, string> = {
@@ -120,7 +160,7 @@ function generateTextSvg(element: TextElement, canvasWidth: number, canvasHeight
   } else if (element.textTransform === 'lowercase') {
     content = content.toLowerCase();
   } else if (element.textTransform === 'capitalize') {
-    content = content.replace(/\b\w/g, (char) => char.toUpperCase());
+    content = content.replace(/\b\w/g, (char: any) => char.toUpperCase());
   }
 
   // Build SVG elements

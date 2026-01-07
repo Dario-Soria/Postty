@@ -23,6 +23,7 @@ import serveReferenceImageRoute from './routes/serve-reference-image';
 import searchReferencesRoute from './routes/search-references';
 import testEnvRoute from './routes/test-env';
 import applyReferenceJsonRoute from './routes/applyReferenceJson';
+import applyDesignGuidelinesTextRoute from './routes/applyDesignGuidelinesText';
 import * as logger from './utils/logger';
 
 // Configuration
@@ -73,6 +74,7 @@ async function start(): Promise<void> {
     await fastify.register(serveReferenceImageRoute);
     await fastify.register(searchReferencesRoute);
     await fastify.register(applyReferenceJsonRoute);
+    await fastify.register(applyDesignGuidelinesTextRoute);
     await fastify.register(testEnvRoute);
 
     // Health check endpoint
@@ -105,6 +107,7 @@ async function start(): Promise<void> {
     logger.info('  GET  /pipeline/references - List available reference images');
     logger.info('  POST /search-references - Search indexed reference images by query');
     logger.info('  POST /apply-reference-json - Apply reference JSON text to base image');
+    logger.info('  POST /apply-design-guidelines-text - Apply text using SQLite design guidelines');
     logger.info('  GET  /reference-library/images/* - Serve reference library images');
     logger.info('  GET  /health - Health check');
   } catch (err) {

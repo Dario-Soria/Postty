@@ -3,7 +3,7 @@ import * as path from 'path';
 import crypto from 'crypto';
 import sharp from 'sharp';
 import * as logger from '../utils/logger';
-import { extractKeywordsWithGemini } from './geminiMultimodal';
+import { extractDesignGuidelinesWithGemini } from './geminiMultimodal';
 
 type SqliteDb = any;
 
@@ -63,12 +63,18 @@ function ensureDb(): SqliteDb | null {
       width INTEGER,
       height INTEGER,
       created_at TEXT,
-      keywords_json TEXT,
-      description TEXT
+      tags TEXT,
+      industry TEXT,
+      aesthetic TEXT,
+      mood TEXT,
+      design_guidelines TEXT
     );
   `);
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_reference_images_created_at ON reference_images(created_at);`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_reference_images_industry ON reference_images(industry);`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_reference_images_aesthetic ON reference_images(aesthetic);`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_reference_images_tags ON reference_images(tags);`);
   return db;
 }
 
@@ -95,27 +101,25 @@ export async function saveReferenceImageAsync(params: {
 
   // Dedupe (but if the existing row hasn't been indexed yet, re-run indexing async)
   const existing = dbi
-    .prepare('SELECT id, stored_path, sha256, keywords_json, description FROM reference_images WHERE sha256 = ?')
+    .prepare('SELECT id, stored_path, sha256, tags, industry, aesthetic, mood, design_guidelines FROM reference_images WHERE sha256 = ?')
     .get(sha256);
   if (existing?.id && existing?.stored_path) {
-    const keywordsJson = typeof existing.keywords_json === 'string' ? existing.keywords_json : '[]';
-    const description = typeof existing.description === 'string' ? existing.description : '';
-    const needsIndex = keywordsJson.trim() === '[]' || description.trim().length === 0;
+    const designGuidelines = typeof existing.design_guidelines === 'string' ? existing.design_guidelines : '';
+    const needsIndex = designGuidelines.trim().length === 0;
 
     if (needsIndex && fs.existsSync(existing.stored_path)) {
       setImmediate(() => {
         void (async () => {
           try {
-            const { description: desc, keywords } = await extractKeywordsWithGemini({
+            const { tags, industry, aesthetic, mood, design_guidelines } = await extractDesignGuidelinesWithGemini({
               imagePath: existing.stored_path,
-              maxKeywords: 12,
             });
             dbi
-              .prepare('UPDATE reference_images SET keywords_json = ?, description = ? WHERE id = ?')
-              .run(JSON.stringify(keywords), desc, existing.id);
+              .prepare('UPDATE reference_images SET tags = ?, industry = ?, aesthetic = ?, mood = ?, design_guidelines = ? WHERE id = ?')
+              .run(tags.join(', '), industry, aesthetic, mood, JSON.stringify(design_guidelines), existing.id);
           } catch (e) {
             const msg = e instanceof Error ? e.message : 'Unknown error';
-            logger.warn(`Reference keyword re-indexing failed: ${msg}`);
+            logger.warn(`Reference design guidelines re-indexing failed: ${msg}`);
           }
         })();
       });
@@ -139,28 +143,28 @@ export async function saveReferenceImageAsync(params: {
   dbi
     .prepare(
       `INSERT INTO reference_images
-        (id, sha256, original_filename, stored_path, mime, bytes, width, height, created_at, keywords_json, description)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        (id, sha256, original_filename, stored_path, mime, bytes, width, height, created_at, tags, industry, aesthetic, mood, design_guidelines)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(id, sha256, params.originalFilename, storedPath, params.mime, bytes, width, height, createdAt, '[]', '');
+    .run(id, sha256, params.originalFilename, storedPath, params.mime, bytes, width, height, createdAt, '', '', '', '', '');
 
   // Background indexing (non-blocking)
   // NOTE: We DO NOT rename files because they may have paired JSON metadata files
-  // with the same filename. Keywords are stored in the database instead.
+  // with the same filename. Design guidelines are stored in the database instead.
   setImmediate(() => {
     void (async () => {
       try {
-        const { description, keywords } = await extractKeywordsWithGemini({ imagePath: storedPath, maxKeywords: 12 });
+        const { tags, industry, aesthetic, mood, design_guidelines } = await extractDesignGuidelinesWithGemini({ imagePath: storedPath });
         
-        // Update database with keywords and description (keep original path)
+        // Update database with design guidelines (keep original path)
         dbi
-          .prepare('UPDATE reference_images SET keywords_json = ?, description = ? WHERE id = ?')
-          .run(JSON.stringify(keywords), description, id);
+          .prepare('UPDATE reference_images SET tags = ?, industry = ?, aesthetic = ?, mood = ?, design_guidelines = ? WHERE id = ?')
+          .run(tags.join(', '), industry, aesthetic, mood, JSON.stringify(design_guidelines), id);
         
-        logger.info(`Reference image indexed: ${path.basename(storedPath)} (${keywords.length} keywords)`);
+        logger.info(`Reference image indexed: ${path.basename(storedPath)} (${tags.length} tags)`);
       } catch (e) {
         const msg = e instanceof Error ? e.message : 'Unknown error';
-        logger.warn(`Reference keyword indexing failed: ${msg}`);
+        logger.warn(`Reference design guidelines indexing failed: ${msg}`);
       }
     })();
   });
@@ -172,23 +176,31 @@ export type ReferenceImageSearchResult = {
   id: string;
   stored_path: string;
   filename: string;
-  keywords: string[];
-  description: string;
+  tags: string[];
+  industry: string;
+  aesthetic: string;
+  mood: string;
+  design_guidelines: object;
   relevance_score: number;
 };
 
-function tryParseKeywords(keywordsJson: string): string[] {
+function parseTags(tagsString: string): string[] {
+  if (!tagsString || typeof tagsString !== 'string') return [];
+  return tagsString.split(',').map(t => t.trim()).filter(t => t.length > 0);
+}
+
+function tryParseDesignGuidelines(designGuidelinesJson: string): object {
   try {
-    const parsed = JSON.parse(keywordsJson || '[]');
-    return Array.isArray(parsed) ? parsed : [];
+    const parsed = JSON.parse(designGuidelinesJson || '{}');
+    return typeof parsed === 'object' ? parsed : {};
   } catch {
-    return [];
+    return {};
   }
 }
 
 /**
- * Search reference images by keywords or semantic description
- * Returns top N most relevant images based on keyword/description matching
+ * Search reference images by tags, industry, aesthetic, mood
+ * Returns top N most relevant images based on design guideline matching
  */
 export async function searchReferenceImages(params: {
   query: string;
@@ -210,9 +222,9 @@ export async function searchReferenceImages(params: {
     // No valid search terms, return most recent images
     const rows = dbi
       .prepare(`
-        SELECT id, stored_path, original_filename, keywords_json, description 
+        SELECT id, stored_path, original_filename, tags, industry, aesthetic, mood, design_guidelines 
         FROM reference_images 
-        WHERE keywords_json != '[]'
+        WHERE design_guidelines != ''
         ORDER BY created_at DESC 
         LIMIT ?
       `)
@@ -222,8 +234,11 @@ export async function searchReferenceImages(params: {
       id: row.id,
       stored_path: row.stored_path,
       filename: path.basename(row.stored_path),
-      keywords: tryParseKeywords(row.keywords_json),
-      description: row.description || '',
+      tags: parseTags(row.tags),
+      industry: row.industry || '',
+      aesthetic: row.aesthetic || '',
+      mood: row.mood || '',
+      design_guidelines: tryParseDesignGuidelines(row.design_guidelines),
       relevance_score: 0,
     }));
   }
@@ -231,31 +246,43 @@ export async function searchReferenceImages(params: {
   // Get all indexed images
   const allImages = dbi
     .prepare(`
-      SELECT id, stored_path, original_filename, keywords_json, description 
+      SELECT id, stored_path, original_filename, tags, industry, aesthetic, mood, design_guidelines 
       FROM reference_images 
-      WHERE keywords_json != '[]'
+      WHERE design_guidelines != ''
     `)
     .all();
 
   // Score each image by relevance
   const scored = allImages
     .map((row: any) => {
-      const keywords = tryParseKeywords(row.keywords_json);
-      const description = (row.description || '').toLowerCase();
+      const tags = parseTags(row.tags);
+      const industry = (row.industry || '').toLowerCase();
+      const aesthetic = (row.aesthetic || '').toLowerCase();
+      const mood = (row.mood || '').toLowerCase();
       const filename = (row.original_filename || '').toLowerCase();
       
       let score = 0;
       
-      // Check each search term against keywords, description, filename
+      // Check each search term against tags, industry, aesthetic, mood, filename
       for (const term of searchTerms) {
-        // Keyword match (highest weight)
-        const keywordMatch = keywords.filter(kw => 
-          kw.toLowerCase().includes(term) || term.includes(kw.toLowerCase())
+        // Tags match (highest weight)
+        const tagMatch = tags.filter(tag => 
+          tag.toLowerCase().includes(term) || term.includes(tag.toLowerCase())
         ).length;
-        score += keywordMatch * 10;
+        score += tagMatch * 10;
         
-        // Description match (medium weight)
-        if (description.includes(term)) {
+        // Industry exact match (high weight)
+        if (industry === term || industry.includes(term)) {
+          score += 8;
+        }
+        
+        // Aesthetic exact match (medium-high weight)
+        if (aesthetic === term || aesthetic.includes(term)) {
+          score += 6;
+        }
+        
+        // Mood match (medium weight)
+        if (mood === term || mood.includes(term)) {
           score += 5;
         }
         
@@ -269,8 +296,11 @@ export async function searchReferenceImages(params: {
         id: row.id,
         stored_path: row.stored_path,
         filename: path.basename(row.stored_path),
-        keywords,
-        description: row.description || '',
+        tags,
+        industry: row.industry || '',
+        aesthetic: row.aesthetic || '',
+        mood: row.mood || '',
+        design_guidelines: tryParseDesignGuidelines(row.design_guidelines),
         relevance_score: score,
       };
     })
@@ -282,9 +312,9 @@ export async function searchReferenceImages(params: {
   if (scored.length === 0) {
     const rows = dbi
       .prepare(`
-        SELECT id, stored_path, original_filename, keywords_json, description 
+        SELECT id, stored_path, original_filename, tags, industry, aesthetic, mood, design_guidelines 
         FROM reference_images 
-        WHERE keywords_json != '[]'
+        WHERE design_guidelines != ''
         ORDER BY created_at DESC 
         LIMIT ?
       `)
@@ -294,8 +324,11 @@ export async function searchReferenceImages(params: {
       id: row.id,
       stored_path: row.stored_path,
       filename: path.basename(row.stored_path),
-      keywords: tryParseKeywords(row.keywords_json),
-      description: row.description || '',
+      tags: parseTags(row.tags),
+      industry: row.industry || '',
+      aesthetic: row.aesthetic || '',
+      mood: row.mood || '',
+      design_guidelines: tryParseDesignGuidelines(row.design_guidelines),
       relevance_score: 0,
     }));
   }

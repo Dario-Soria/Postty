@@ -20,7 +20,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import crypto from 'crypto';
 import sharp from 'sharp';
-import { extractKeywordsWithGemini } from '../src/services/geminiMultimodal';
+import { extractDesignGuidelinesWithGemini } from '../src/services/geminiMultimodal';
 
 type SqliteDb = any;
 
@@ -62,12 +62,18 @@ function ensureDb(): SqliteDb | null {
       width INTEGER,
       height INTEGER,
       created_at TEXT,
-      keywords_json TEXT,
-      description TEXT
+      tags TEXT,
+      industry TEXT,
+      aesthetic TEXT,
+      mood TEXT,
+      design_guidelines TEXT
     );
   `);
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_reference_images_created_at ON reference_images(created_at);`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_reference_images_industry ON reference_images(industry);`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_reference_images_aesthetic ON reference_images(aesthetic);`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_reference_images_tags ON reference_images(tags);`);
   
   return db;
 }
@@ -116,47 +122,44 @@ async function indexImage(
 
     // Check if already indexed
     const existing = db
-      .prepare('SELECT id, stored_path, keywords_json, description FROM reference_images WHERE sha256 = ?')
+      .prepare('SELECT id, stored_path, tags, industry, aesthetic, mood, design_guidelines FROM reference_images WHERE sha256 = ?')
       .get(sha256);
 
     if (existing && !force) {
-      const keywordsJson = typeof existing.keywords_json === 'string' ? existing.keywords_json : '[]';
-      const description = typeof existing.description === 'string' ? existing.description : '';
-      const needsIndex = keywordsJson.trim() === '[]' || description.trim().length === 0;
+      const designGuidelines = typeof existing.design_guidelines === 'string' ? existing.design_guidelines : '';
+      const needsIndex = designGuidelines.trim().length === 0;
 
       if (!needsIndex) {
         return { success: true, message: 'Already indexed (skip)' };
       }
       
-      // Has record but no keywords - update it
-      console.log(`  ↻ Re-indexing (missing keywords): ${filename}`);
-      const { description: desc, keywords } = await extractKeywordsWithGemini({
+      // Has record but no design guidelines - update it
+      console.log(`  ↻ Re-indexing (missing design guidelines): ${filename}`);
+      const { tags, industry, aesthetic, mood, design_guidelines } = await extractDesignGuidelinesWithGemini({
         imagePath,
-        maxKeywords: 12,
       });
 
-      db.prepare('UPDATE reference_images SET keywords_json = ?, description = ? WHERE id = ?')
-        .run(JSON.stringify(keywords), desc, existing.id);
+      db.prepare('UPDATE reference_images SET tags = ?, industry = ?, aesthetic = ?, mood = ?, design_guidelines = ? WHERE id = ?')
+        .run(tags.join(', '), industry, aesthetic, mood, JSON.stringify(design_guidelines), existing.id);
 
       return {
         success: true,
-        message: `Updated with ${keywords.length} keywords`,
+        message: `Updated with ${tags.length} tags`,
       };
     }
 
     if (existing && force) {
       console.log(`  ↻ Force re-indexing: ${filename}`);
-      const { description: desc, keywords } = await extractKeywordsWithGemini({
+      const { tags, industry, aesthetic, mood, design_guidelines } = await extractDesignGuidelinesWithGemini({
         imagePath,
-        maxKeywords: 12,
       });
 
-      db.prepare('UPDATE reference_images SET keywords_json = ?, description = ? WHERE id = ?')
-        .run(JSON.stringify(keywords), desc, existing.id);
+      db.prepare('UPDATE reference_images SET tags = ?, industry = ?, aesthetic = ?, mood = ?, design_guidelines = ? WHERE id = ?')
+        .run(tags.join(', '), industry, aesthetic, mood, JSON.stringify(design_guidelines), existing.id);
 
       return {
         success: true,
-        message: `Force updated with ${keywords.length} keywords`,
+        message: `Force updated with ${tags.length} tags`,
       };
     }
 
@@ -169,24 +172,23 @@ async function indexImage(
     const bytes = buffer.byteLength;
     const createdAt = new Date().toISOString();
 
-    // Extract keywords with Gemini
-    const { description, keywords } = await extractKeywordsWithGemini({
+    // Extract design guidelines with Gemini
+    const { tags, industry, aesthetic, mood, design_guidelines } = await extractDesignGuidelinesWithGemini({
       imagePath,
-      maxKeywords: 12,
     });
 
     // Insert into database
     db.prepare(
       `INSERT INTO reference_images
-        (id, sha256, original_filename, stored_path, mime, bytes, width, height, created_at, keywords_json, description)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(id, sha256, filename, imagePath, mime, bytes, width, height, createdAt, JSON.stringify(keywords), description);
+        (id, sha256, original_filename, stored_path, mime, bytes, width, height, created_at, tags, industry, aesthetic, mood, design_guidelines)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(id, sha256, filename, imagePath, mime, bytes, width, height, createdAt, tags.join(', '), industry, aesthetic, mood, JSON.stringify(design_guidelines));
 
     // DO NOT rename files - they may have paired JSON metadata files
-    // The keywords are stored in the database for searching/filtering
+    // The design guidelines are stored in the database for searching/filtering
     return {
       success: true,
-      message: `Indexed with ${keywords.length} keywords (filename preserved for JSON pairing)`,
+      message: `Indexed with ${tags.length} tags (filename preserved for JSON pairing)`,
     };
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Unknown error';

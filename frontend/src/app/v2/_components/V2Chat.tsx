@@ -5,6 +5,7 @@ import { Button, Spinner } from "@nextui-org/react";
 import { GlassCard } from "./ui/GlassCard";
 import { TopBar } from "./ui/TopBar";
 import { IconSend } from "./ui/Icons";
+import { openTextEditor, type BackendTextLayout } from "@/lib/features/text-editor";
 
 type ChatMessage = {
   id: string;
@@ -32,6 +33,7 @@ type ChatMessage = {
     caption_language?: string;
     caption_prompt_used?: string;
     style_profile?: unknown;
+    textLayout?: BackendTextLayout;
     candidates?: Array<{
       candidate_id: string;
       preview_data_url: string;
@@ -1794,7 +1796,7 @@ export function V2Chat({
 
       if (isGeneratingAction) {
         // Always generate 1 image for now
-        const requestedCandidates = 1;
+        const requestedCandidates: 1 | 3 = 1;
 
         if (!isRegenerating) {
           // If the user already decided references (from the pre-generate intake), skip the extra "do you have references?" roundtrip.
@@ -1850,7 +1852,7 @@ export function V2Chat({
             {
               id: crypto.randomUUID(),
               role: "assistant",
-              content: requestedCandidates === 3 ? "Generating the three images..." : "Generating your image...",
+              content: "Generating your image...",
             },
           ]);
         }
@@ -2059,6 +2061,39 @@ export function V2Chat({
       if (isRegenerating && regen) {
         setRegeneratingIds((p) => ({ ...p, [regenKey as string]: false }));
       }
+    }
+  }
+
+  async function handleEditText(
+    messageId: string,
+    imageUrl: string,
+    textLayout: any,
+  ) {
+    if (!textLayout || !textLayout.elements || textLayout.elements.length === 0) {
+      return;
+    }
+
+    try {
+      const result = await openTextEditor({
+        baseImageUrl: imageUrl,
+        textLayout: textLayout,
+      });
+
+      if (result) {
+        // User clicked Done - regenerate with new text content
+        // For now, we'll show a message that this feature is coming soon
+        // In the full implementation, this would call the regeneration API
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: "Text editor saved! Regeneration with updated text coming soon.",
+          },
+        ]);
+      }
+    } catch (error) {
+      console.error("Error opening text editor:", error);
     }
   }
 
@@ -2509,6 +2544,19 @@ export function V2Chat({
                           >
                             {m.meta?.published_at ? "Published" : "Publish"}
                           </Button>
+                          {!m.meta?.published_at && (m.meta?.textLayout?.elements?.length ?? 0) > 0 && (
+                            <Button
+                              size="sm"
+                              radius="full"
+                              className="rounded-full px-4 font-semibold bg-white/70 border border-white/60 shadow-[0_0_14px_rgba(148,163,184,0.25)] hover:shadow-[0_0_22px_rgba(148,163,184,0.45)] transition-all duration-200"
+                              isDisabled={!!publishingIds[m.id]}
+                              onPress={() =>
+                                handleEditText(m.id, m.meta?.uploaded_image_url || "", m.meta?.textLayout)
+                              }
+                            >
+                              Edit text
+                            </Button>
+                          )}
                           <Button
                             size="sm"
                             radius="full"

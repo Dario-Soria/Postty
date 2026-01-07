@@ -2,6 +2,18 @@
  * JSON Text Applicator
  * Applies reference JSON text layout directly to a base image
  * Replaces text content while preserving all styling from the JSON
+ * 
+ * ============================================================================
+ * DEPRECATED 2025-01-07
+ * ============================================================================
+ * This service is deprecated. Text generation now uses SQLite design_guidelines
+ * column instead of JSON files from reference-library/Jsons/ folder.
+ * 
+ * New service: designGuidelinesTextApplicator.ts
+ * New endpoint: POST /apply-design-guidelines-text
+ * 
+ * This file is kept for backward compatibility and potential future reference.
+ * ============================================================================
  */
 
 import * as fs from 'fs';

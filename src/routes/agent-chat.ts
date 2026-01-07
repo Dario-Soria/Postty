@@ -90,11 +90,18 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
         // Return full backend URL so frontend can access it
         const backendUrl = process.env.BACKEND_URL || 'http://localhost:8080';
         
-        return reply.send({
+        const response: any = {
           type: 'image',
           text: result.text,
           imageUrl: `${backendUrl}/generated-images/${filename}`,
-        });
+        };
+        
+        // Include textLayout if present
+        if (result.textLayout) {
+          response.textLayout = result.textLayout;
+        }
+        
+        return reply.send(response);
       }
 
       // Text response

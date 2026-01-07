@@ -184,6 +184,39 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
         }
       }
 
+      // Parse userText array (for Gemini-generated text)
+      let userText: string[] | undefined;
+      if (formData.userText) {
+        try {
+          userText = JSON.parse(formData.userText);
+          logger.info(`✏️  User text array: ${JSON.stringify(userText)}`);
+        } catch (e) {
+          logger.warn(`Failed to parse userText JSON: ${e}`);
+        }
+      }
+
+      // Parse typographyStyle (design guidelines from SQLite)
+      let typographyStyle: any | undefined;
+      if (formData.typographyStyle) {
+        try {
+          typographyStyle = JSON.parse(formData.typographyStyle);
+          logger.info(`🎨 Typography style provided (${Object.keys(typographyStyle).length} elements)`);
+        } catch (e) {
+          logger.warn(`Failed to parse typographyStyle JSON: ${e}`);
+        }
+      }
+
+      // Parse productAnalysis (colors, category, composition)
+      let productAnalysis: any | undefined;
+      if (formData.productAnalysis) {
+        try {
+          productAnalysis = JSON.parse(formData.productAnalysis);
+          logger.info(`🔍 Product analysis provided: category=${productAnalysis.category}`);
+        } catch (e) {
+          logger.warn(`Failed to parse productAnalysis JSON: ${e}`);
+        }
+      }
+
       // Build pipeline input
       const pipelineInput: PipelineInput = {
         productImagePath,
@@ -195,6 +228,9 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
         style: formData.style || 'Elegante',
         useCase: formData.useCase || 'Promoción',
         textContent,
+        userText,
+        typographyStyle,
+        productAnalysis,
       };
 
       logger.info('📋 Pipeline Input:', JSON.stringify({

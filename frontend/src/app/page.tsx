@@ -5,6 +5,7 @@ import {
   Button,
   Spinner,
 } from "@nextui-org/react";
+import { openTextEditor, type BackendTextLayout } from "@/lib/features/text-editor";
 
 type ChatMessage = {
   id: string;
@@ -33,6 +34,7 @@ type ChatMessage = {
     caption_language?: string;
     caption_prompt_used?: string;
     style_profile?: unknown;
+    textLayout?: BackendTextLayout;
     candidates?: Array<{
       candidate_id: string;
       preview_data_url: string;
@@ -1645,6 +1647,39 @@ export default function Home() {
     }
   }
 
+  async function handleEditText(
+    messageId: string,
+    imageUrl: string,
+    textLayout: any,
+  ) {
+    if (!textLayout || !textLayout.elements || textLayout.elements.length === 0) {
+      return;
+    }
+
+    try {
+      const result = await openTextEditor({
+        baseImageUrl: imageUrl,
+        textLayout: textLayout,
+      });
+
+      if (result) {
+        // User clicked Done - regenerate with new text content
+        // For now, we'll show a message that this feature is coming soon
+        // In the full implementation, this would call the regeneration API
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: "Text editor saved! Regeneration with updated text coming soon.",
+          },
+        ]);
+      }
+    } catch (error) {
+      console.error("Error opening text editor:", error);
+    }
+  }
+
   async function handlePublish(
     messageId: string,
     publishKey: string,
@@ -1899,6 +1934,19 @@ export default function Home() {
                             >
                               {m.meta?.published_at ? "Published" : "Publish"}
                             </Button>
+                            {!m.meta?.published_at && (m.meta?.textLayout?.elements?.length ?? 0) > 0 && (
+                              <Button
+                                size="sm"
+                                radius="full"
+                                className="rounded-full px-4 font-semibold bg-white/70 dark:bg-slate-900/60 border border-white/70 dark:border-white/10 shadow-[0_0_14px_rgba(148,163,184,0.25)] hover:shadow-[0_0_22px_rgba(148,163,184,0.45)] transition-all duration-200"
+                                isDisabled={!!publishingIds[m.id] || !!regeneratingIds[`${m.id}:message`]}
+                                onPress={() =>
+                                  handleEditText(m.id, m.meta?.uploaded_image_url || "", m.meta?.textLayout)
+                                }
+                              >
+                                Edit text
+                              </Button>
+                            )}
                             <Button
                               size="sm"
                               radius="full"

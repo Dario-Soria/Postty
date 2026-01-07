@@ -17,6 +17,29 @@ import * as logger from '../utils/logger';
 // Modelo Gemini 2.5 Flash Image (Nano Banana)
 const NANO_BANANA_MODEL = 'gemini-2.5-flash-image';
 
+/**
+ * Build a descriptive font specification from typography style object
+ */
+function buildFontDescription(style: any): string {
+  const fontStyle = style.font_style || 'sans-serif';
+  const fontCharacter = style.font_character || '';
+  const fontNotes = style.font_specific_notes || '';
+  
+  let description = fontStyle;
+  
+  // Add character description if available
+  if (fontCharacter) {
+    description += ` with ${fontCharacter} character`;
+  }
+  
+  // Add specific notes if available
+  if (fontNotes) {
+    description += ` (${fontNotes})`;
+  }
+  
+  return description;
+}
+
 export interface NanoBananaInput {
   /** Path to reference image (from local folder) */
   referenceImagePath: string;
@@ -26,6 +49,14 @@ export interface NanoBananaInput {
   userIntent?: string;
   /** Output aspect ratio */
   aspectRatio?: '1:1' | '9:16' | '16:9' | '4:3' | '3:4';
+  
+  // NEW: Text generation params
+  /** User's text to display in the image */
+  textContent?: string[];
+  /** Typography style from design_guidelines */
+  typographyStyle?: any;
+  /** Product dominant colors for text contrast */
+  productColors?: string[];
 }
 
 export interface NanoBananaOutput {
@@ -42,6 +73,8 @@ export interface NanoBananaOutput {
     timestamp: number;
     referenceUsed: string;
     productUsed: string;
+    textRequested?: number;
+    textNote?: string;
   };
 }
 
@@ -85,6 +118,9 @@ function imageToBase64(filePath: string): string {
 function buildGenerationPrompt(params: {
   userIntent?: string;
   aspectRatio: string;
+  textContent?: string[];
+  typographyStyle?: any;
+  productColors?: string[];
 }): string {
   // Parse user intent to detect scene requirements
   const intent = params.userIntent?.toLowerCase() || '';
@@ -104,7 +140,118 @@ function buildGenerationPrompt(params: {
     sceneDescription = `SCENE: Clean product photography with minimal background.`;
   }
 
-  const basePrompt = `🚫🚫🚫 ABSOLUTELY NO TEXT IN THE OUTPUT IMAGE 🚫🚫🚫
+  // Check if text generation is requested
+  let basePrompt = '';
+  
+  if (params.textContent && params.textContent.length > 0) {
+    // Text generation mode - include text in the image
+    basePrompt = `TASK: Create a promotional image with TEXT OVERLAY.
+
+INPUTS:
+1. REFERENCE IMAGE: Use for style inspiration - match the color palette, lighting mood, and especially the TYPOGRAPHY STYLE
+   
+2. PRODUCT IMAGE: Study this product carefully and RECREATE it in the scene. DO NOT paste or overlay this image. Generate a photorealistic version of this product integrated naturally into the scene.
+
+CRITICAL: The product image is PROVIDED AS REFERENCE ONLY. You must GENERATE the product in the scene, not paste the original image. The product should look like it belongs in the scene naturally.
+
+USER REQUEST: ${params.userIntent || 'Product photography'}
+
+${sceneDescription}
+
+TEXT OVERLAY REQUIREMENTS:
+🚨 CRITICAL: You MUST include text overlays in the generated image. Text is not optional.
+
+Generate the following text directly rendered into the image:
+`;
+
+    // Add each text element with its styling
+    params.textContent.forEach((text, index) => {
+      const style = index === 0 
+        ? params.typographyStyle?.headline 
+        : index === 1 
+          ? params.typographyStyle?.subheadline 
+          : params.typographyStyle?.badges;
+      
+      if (style) {
+        basePrompt += `\n\nText ${index + 1}: "${text}"`;
+        
+        // Enhanced font description with character and specific notes
+        const fontDesc = buildFontDescription(style);
+        basePrompt += `\n- Typography: ${fontDesc}`;
+        
+        basePrompt += `\n- Weight: ${style.font_weight || 'regular'}`;
+        basePrompt += `\n- Case: ${style.case || 'normal'}`;
+        basePrompt += `\n- Color: ${style.color || '#FFFFFF'}`;
+        
+        // More specific positioning with Y percentage
+        if (style.position_y_percent) {
+          basePrompt += `\n- Vertical Position: ${style.position_y_percent}% from top edge`;
+        } else if (style.position) {
+          basePrompt += `\n- Position: ${style.position}`;
+        }
+        
+        basePrompt += `\n- Size: ${style.size || 'medium'} (relative to canvas)`;
+        basePrompt += `\n- Alignment: ${style.alignment || 'center'}`;
+        basePrompt += `\n- Letter Spacing: ${style.letter_spacing || 'normal'}`;
+        
+        // Add spacing guidance for subheadline
+        if (index === 1 && style.spacing_from_headline) {
+          basePrompt += `\n- Spacing: ${style.spacing_from_headline} gap from headline above`;
+        }
+      } else {
+        basePrompt += `\n\nText ${index + 1}: "${text}"`;
+      }
+    });
+
+    // Add color adaptation guidance
+    if (params.productColors && params.productColors.length > 0) {
+      basePrompt += `\n\nPRODUCT DOMINANT COLORS: ${params.productColors.join(', ')}`;
+      basePrompt += `\nIMPORTANT: Ensure text has excellent contrast against the background. If the product or background uses similar colors to the text, adjust the text color or add subtle shadows/outlines for readability.`;
+    }
+
+    basePrompt += `\n\nTYPOGRAPHY MATCHING INSTRUCTIONS:
+🎯 CRITICAL: Study the REFERENCE IMAGE typography in extreme detail and REPLICATE it precisely:
+
+1. FONT CHARACTERISTICS:
+   - Analyze the exact letter forms, stroke weights, and character shapes in the reference
+   - Match the font style (serif/sans-serif/script/display) AND the character mood (elegant/bold/luxury/etc.)
+   - If reference shows script fonts, determine if they're elegant calligraphic vs casual brush style
+   - If reference shows serif, note if they're traditional, modern, or decorative
+
+2. POSITIONING & SPACING:
+   - Match the vertical positioning EXACTLY - measure where text sits in the reference
+   - Maintain the same spacing between headline and subheadline as shown in reference
+   - Preserve the relationship between text and other elements (person, product, background)
+
+3. VISUAL INTEGRATION:
+   - Text should look like it belongs in the scene, not just overlaid
+   - Match how the reference integrates text with imagery
+   - If reference shows text with effects (shadows, outlines), replicate those
+   - Text must be crisp, clear, and highly readable
+
+4. HIERARCHY & SCALE:
+   - Maintain the same size relationships between text elements as the reference
+   - Headline should dominate with the same visual weight as reference
+   - Subheadline should have similar relative sizing
+
+🚨 The specifications above describe the reference typography - use them to MATCH the reference style precisely.
+
+🚨 TEXT GENERATION IS MANDATORY: The output image MUST contain the specified text overlays. Do not generate an image without text.
+
+OUTPUT REQUIREMENTS:
+- ${params.aspectRatio} aspect ratio
+- Photorealistic, high quality
+- Product must be clearly visible and featured (but GENERATED, not pasted from product image)
+- Professional advertising quality with text integrated naturally
+- Text should be crisp, clear, and readable
+- VERIFY: All specified text elements are present and visible in the output`;
+
+    logger.info(`📝 Nano Banana prompt built (WITH TEXT):`);
+    logger.info(`   - Text elements: ${params.textContent.length}`);
+    logger.info(`   - Typography style provided: ${!!params.typographyStyle}`);
+  } else {
+    // No text mode - clean image
+    basePrompt = `🚫🚫🚫 ABSOLUTELY NO TEXT IN THE OUTPUT IMAGE 🚫🚫🚫
 
 CRITICAL RULE #1: The generated image MUST NOT contain ANY text, letters, words, numbers, symbols, buttons, CTAs, labels, or any written content whatsoever. This includes:
 - NO "SHOP NOW" or any call-to-action buttons
@@ -122,7 +269,9 @@ INPUTS:
 1. REFERENCE IMAGE: Use ONLY for color palette, lighting mood, and style inspiration
    - Ignore any text, buttons, or overlays in reference
    
-2. PRODUCT IMAGE: The product to feature prominently
+2. PRODUCT IMAGE: Study this product and RECREATE it in the scene. DO NOT paste or overlay this image. Generate a photorealistic version integrated naturally.
+
+CRITICAL: The product image is PROVIDED AS REFERENCE ONLY. You must GENERATE the product in the scene, not paste the original image.
 
 USER REQUEST: ${params.userIntent || 'Product photography'}
 
@@ -137,6 +286,7 @@ OUTPUT REQUIREMENTS:
 - 🚫 ZERO TEXT - completely clean image for text to be added later
 
 Generate the image following the user's scene description with ABSOLUTELY NO TEXT OR WRITTEN ELEMENTS.`;
+  }
   
   logger.info(`📝 Nano Banana prompt built:`);
   logger.info(`   - Wants person: ${wantsPerson}`);
@@ -218,10 +368,13 @@ export async function generateBaseImage(input: NanoBananaInput): Promise<NanoBan
   const referenceMime = guessMimeType(input.referenceImagePath);
   const productMime = guessMimeType(input.productImagePath);
 
-  // Build prompt
+  // Build prompt (with optional text parameters)
   const prompt = buildGenerationPrompt({
     userIntent: input.userIntent,
     aspectRatio,
+    textContent: input.textContent,
+    typographyStyle: input.typographyStyle,
+    productColors: input.productColors,
   });
 
   // Build parts for generation
@@ -362,6 +515,13 @@ export async function generateBaseImage(input: NanoBananaInput): Promise<NanoBan
     logger.info(`📐 Dimensions: ${metadata.width}x${metadata.height}`);
     logger.info('═══════════════════════════════════════════════════════════════');
 
+    // Add note about text generation if it was requested
+    let textNote = undefined;
+    if (input.textContent && input.textContent.length > 0) {
+      textNote = `Text generation was requested (${input.textContent.length} elements). If text is not visible in the output, this may be a limitation of the ${NANO_BANANA_MODEL} model.`;
+      logger.warn(`⚠️  ${textNote}`);
+    }
+
     return {
       imagePath: outputPath,
       imageBase64: finalImageBase64,
@@ -372,6 +532,8 @@ export async function generateBaseImage(input: NanoBananaInput): Promise<NanoBan
         timestamp,
         referenceUsed: path.basename(input.referenceImagePath),
         productUsed: path.basename(input.productImagePath),
+        textRequested: input.textContent ? input.textContent.length : 0,
+        textNote,
       },
     };
   } catch (error) {

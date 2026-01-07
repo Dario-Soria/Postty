@@ -169,11 +169,16 @@ def _load_image(source: str) -> Optional[types.Part]:
         return _load_local_image(source)
 
 
-def _load_reference_json(reference_filename: str) -> Optional[Dict[str, Any]]:
-    """
+# ============================================================================
+# DEPRECATED 2025-01-07: JSON file-based text generation
+# Text overlays now use SQLite design_guidelines column instead of JSON files
+# This function is preserved for potential future reference but is no longer used
+# ============================================================================
+"""
+def _load_reference_json(reference_filename: str) -> Optional[Dict[str, Any]:
     Load JSON file associated with a reference image.
     Returns None if JSON doesn't exist.
-    """
+    DEPRECATED: Text now uses SQLite design_guidelines column
     try:
         # Get base name without extension
         base_name = os.path.splitext(reference_filename)[0]
@@ -190,6 +195,7 @@ def _load_reference_json(reference_filename: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         print(f"[DEBUG] Error loading reference JSON: {e}")
         return None
+"""
 
 
 class NanoBananaAgent:
@@ -223,6 +229,8 @@ class NanoBananaAgent:
         self.product_image_path = None  # Store uploaded product image path
         self.text_content = None  # Store user's text specifications for overlay
         self.awaiting_text_input = False  # Flag to track if we're waiting for text input
+        self.design_guidelines = None  # Typography specs from selected reference (from SQLite)
+        self.product_analysis = None  # Product image characteristics (colors, category, composition)
 
     def chat(self, user_message: str, image_path: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -236,6 +244,51 @@ class NanoBananaAgent:
         # Store product image path if provided
         if image_path:
             self.product_image_path = image_path
+        
+        # Handle special reset conversation message
+        if user_message == "RESET_CONVERSATION":
+            # Clear all state to start fresh
+            self.history = []
+            self.selected_reference = None
+            self.product_image_path = None
+            self.text_content = None
+            self.awaiting_text_input = False
+            self.design_guidelines = None
+            self.product_analysis = None
+            
+            # Return fresh greeting
+            return {
+                "type": "text",
+                "text": "¡Hola! Soy tu especialista en fotografía de producto para Instagram. Para empezar, **subí la foto de tu producto** usando el botón (+) y te voy a ayudar a crear contenido profesional que destaque tu producto. 📸"
+            }
+        
+        # Detect if user wants to start over with a new product
+        user_msg_lower = user_message.lower()
+        start_over_keywords = [
+            'otro producto', 'nueva imagen', 'nuevo producto', 'empezar de nuevo',
+            'start over', 'different product', 'another product', 'new product',
+            'quiero crear otra', 'vamos a crear una nueva', 'crear algo con otro',
+            'imagen de producto nueva', 'producto nueva'
+        ]
+        
+        if any(keyword in user_msg_lower for keyword in start_over_keywords):
+            # User wants to start over - reset all state
+            print("[DEBUG] User requested to start over with new product - resetting state")
+            self.history = []
+            self.selected_reference = None
+            self.product_image_path = None
+            self.text_content = None
+            self.awaiting_text_input = False
+            self.design_guidelines = None
+            self.product_analysis = None
+            
+            reset_msg = "¡Claro que sí! Entendido, vamos a empezar de nuevo. **Subí la foto del nuevo producto** y te ayudo a crear algo increíble. 📸"
+            # Add a special marker to history to indicate a reset point
+            self.history.append({"role": "assistant", "content": reset_msg, "is_reset": True})
+            return {
+                "type": "text",
+                "text": reset_msg
+            }
         
         # Handle special start conversation message
         is_initial_greeting = user_message == "START_CONVERSATION"
@@ -315,24 +368,106 @@ Otherwise, respond naturally to continue the conversation.
         if user_message.strip().isdigit():
             selected_num = int(user_message.strip())
             if 1 <= selected_num <= 3:
-                # Find the last message with references
+                # Find the last message with references (after any reset points)
                 for msg in reversed(self.history):
+                    # Stop searching if we hit a reset point
+                    if msg.get("is_reset"):
+                        break
                     if msg.get("references"):
                         refs = msg["references"]
                         if selected_num <= len(refs):
                             self.selected_reference = refs[selected_num - 1]
                             print(f"[DEBUG] User selected reference #{selected_num}: {self.selected_reference.get('filename')}")
                             
-                            # After reference selection, ask about text content (Step 5.5)
+                            # Store design_guidelines from selected reference (Step 5)
+                            self.design_guidelines = self.selected_reference.get('design_guidelines', {})
+                            print(f"[DEBUG] Stored design_guidelines with typography: {self.design_guidelines.get('typography', {}) if isinstance(self.design_guidelines, dict) else 'N/A'}")
+                            
+                            # Analyze product image for text adaptation (Step 5.4)
+                            if self.product_image_path:
+                                try:
+                                    self.product_analysis = self._analyze_product_for_text_context()
+                                    print(f"[DEBUG] Product analysis completed: {self.product_analysis}")
+                                except Exception as e:
+                                    print(f"[DEBUG] Product analysis failed: {e}")
+                                    self.product_analysis = None
+                            
+                            # After reference selection and product analysis, ask about text content (Step 5.5)
                             self.awaiting_text_input = True
-                            text_question = (
-                                "Perfecto! Ahora, ¿qué texto querés que tenga tu post de Instagram?\n\n"
-                                "Podés incluir:\n"
-                                "- Título principal o frase destacada\n"
-                                "- Oferta o beneficio (ej: '3x2', 'Envío gratis')\n"
-                                "- Llamado a acción (ej: 'Comprá ahora', 'Link en bio')\n\n"
-                                "O decime **'sin texto'** si preferís la imagen sola."
-                            )
+                            
+                            # Build dynamic text question based on design_guidelines from reference
+                            text_elements = []
+                            if isinstance(self.design_guidelines, dict):
+                                typography = self.design_guidelines.get('typography', {})
+                                
+                                # Check for headline
+                                headline = typography.get('headline', {})
+                                if headline:
+                                    purpose = headline.get('text_purpose', 'frase destacada')
+                                    if purpose == 'product name':
+                                        text_elements.append("- **Nombre del producto** (título principal)")
+                                    elif purpose == 'benefit':
+                                        text_elements.append("- **Beneficio principal** (ej: 'Hidratación profunda', 'Rendimiento mejorado')")
+                                    elif purpose == 'offer':
+                                        text_elements.append("- **Oferta destacada** (ej: '50% OFF', '3x2')")
+                                    elif purpose == 'question':
+                                        text_elements.append("- **Pregunta destacada** (ej: '¿Listo para el cambio?')")
+                                    else:
+                                        text_elements.append("- **Título principal o frase destacada**")
+                                
+                                # Check for subheadline
+                                subheadline = typography.get('subheadline', {})
+                                if subheadline and subheadline.get('present', False):
+                                    purpose = subheadline.get('text_purpose', 'descripción')
+                                    if purpose == 'benefits':
+                                        text_elements.append("- **Beneficios adicionales** (características del producto)")
+                                    elif purpose == 'features':
+                                        text_elements.append("- **Características** (detalles técnicos o ingredientes)")
+                                    elif purpose == 'tagline':
+                                        text_elements.append("- **Tagline o frase secundaria**")
+                                    elif purpose == 'ingredients':
+                                        text_elements.append("- **Ingredientes o componentes principales**")
+                                    else:
+                                        text_elements.append("- **Texto secundario o subtítulo**")
+                                
+                                # Check for badges
+                                badges = typography.get('badges', {})
+                                if badges and badges.get('present', False):
+                                    content = badges.get('content', '')
+                                    if 'discount' in content or 'price' in content:
+                                        text_elements.append("- **Descuento o precio especial** (ej: '30% OFF', '$999')")
+                                    elif 'certification' in content:
+                                        text_elements.append("- **Certificación o badge** (ej: 'Orgánico', 'Vegan', 'Cruelty-free')")
+                                    elif 'size' in content:
+                                        text_elements.append("- **Tamaño o cantidad** (ej: '500ml', 'Pack x3')")
+                                    else:
+                                        text_elements.append("- **Badge o etiqueta destacada**")
+                                
+                                # Check for CTA button
+                                cta = self.design_guidelines.get('cta_button', {})
+                                if cta and cta.get('present', False):
+                                    text_elements.append("- **Llamado a acción** (ej: 'Comprá ahora', 'Ver más', 'Link en bio')")
+                            
+                            # Build the question
+                            if text_elements:
+                                elements_text = "\n".join(text_elements)
+                                text_question = (
+                                    f"Perfecto! Basándome en la referencia que elegiste, necesito:\n\n"
+                                    f"{elements_text}\n\n"
+                                    "O decime **'sin texto'** si preferís la imagen sola."
+                                )
+                            else:
+                                # Fallback to generic if no typography info available
+                                text_question = (
+                                    "Perfecto! Ahora, ¿qué texto querés que tenga tu post de Instagram?\n\n"
+                                    "Podés incluir:\n"
+                                    "- Título principal o frase destacada\n"
+                                    "- Oferta o beneficio (ej: '3x2', 'Envío gratis')\n"
+                                    "- Llamado a acción (ej: 'Comprá ahora', 'Link en bio')\n\n"
+                                    "O decime **'sin texto'** si preferís la imagen sola."
+                                )
+                            
+                            print(f"[DEBUG] Generated dynamic text question with {len(text_elements)} elements from design_guidelines")
                             self.history.append({"role": "assistant", "content": text_question})
                             return {"type": "text", "text": text_question}
         
@@ -484,6 +619,75 @@ Otherwise, respond naturally to continue the conversation.
         
         return text_content
     
+    def _analyze_product_for_text_context(self) -> Dict[str, Any]:
+        """
+        Analyze product image to extract context for text adaptation.
+        Returns dict with colors, category, and composition information.
+        This is Step 5.4 in the workflow.
+        """
+        if not self.product_image_path:
+            return {
+                'colors': [],
+                'category': 'neutral',
+                'composition': 'center'
+            }
+        
+        try:
+            # Build a simple prompt to analyze product image for text context
+            analysis_prompt = """Analyze this product image and extract:
+1. Dominant colors (up to 3 hex codes)
+2. Product category/aesthetic (luxury, casual, tech, organic, minimal, bold)
+3. Product position in image (center, left, right, top, bottom)
+4. Available text zones (areas where text won't obscure the product)
+
+Return ONLY a JSON object with this structure:
+{
+  "colors": ["#hex1", "#hex2", "#hex3"],
+  "category": "luxury|casual|tech|organic|minimal|bold",
+  "composition": {
+    "product_position": "center|left|right|top|bottom",
+    "available_zones": ["top", "bottom", "left", "right"]
+  }
+}"""
+            
+            # Load product image
+            image_part = _load_image(self.product_image_path)
+            if not image_part:
+                raise Exception("Failed to load product image")
+            
+            # Call Gemini for analysis
+            response = self.client.models.generate_content(
+                model=self.config.text_model,
+                contents=[analysis_prompt, image_part],
+            )
+            
+            response_text = (response.text or "").strip()
+            
+            # Try to parse JSON response
+            import json
+            # Remove markdown code blocks if present
+            if response_text.startswith('```'):
+                response_text = response_text.split('```')[1]
+                if response_text.startswith('json'):
+                    response_text = response_text[4:]
+                response_text = response_text.strip()
+            
+            analysis = json.loads(response_text)
+            print(f"[DEBUG] Product analysis result: {analysis}")
+            return analysis
+            
+        except Exception as e:
+            print(f"[DEBUG] Product analysis error: {e}")
+            # Return safe defaults
+            return {
+                'colors': ['#000000'],
+                'category': 'neutral',
+                'composition': {
+                    'product_position': 'center',
+                    'available_zones': ['top', 'bottom']
+                }
+            }
+    
     def _handle_search_references(self, response_text: str) -> Dict[str, Any]:
         """
         Search reference library and present options to user
@@ -530,10 +734,26 @@ Otherwise, respond naturally to continue the conversation.
                 message_parts = [text_before_trigger, ""]
                 
                 for i, ref in enumerate(references, 1):
-                    keywords_str = ", ".join(ref['keywords'][:5])
+                    # Use 'tags' instead of 'keywords' (backend returns 'tags')
+                    tags = ref.get('tags', [])
+                    # Tags might be a string (comma-separated) or list
+                    if isinstance(tags, str):
+                        tags = [t.strip() for t in tags.split(',') if t.strip()]
+                    tags_str = ", ".join(tags[:5]) if tags else ref.get('aesthetic', 'Sin estilo')
+                    
+                    # Build description from available fields (backend doesn't return 'description')
+                    description_parts = []
+                    if ref.get('industry'):
+                        description_parts.append(ref['industry'])
+                    if ref.get('aesthetic'):
+                        description_parts.append(ref['aesthetic'])
+                    if ref.get('mood'):
+                        description_parts.append(ref['mood'])
+                    description = " - ".join(description_parts) if description_parts else ref.get('filename', 'Referencia')
+                    
                     message_parts.append(
-                        f"{i}. {ref['description']}\n"
-                        f"   Estilo: {keywords_str}"
+                        f"{i}. {description}\n"
+                        f"   Estilo: {tags_str}"
                     )
                 
                 message_parts.append("")
@@ -609,8 +829,8 @@ Otherwise, respond naturally to continue the conversation.
             import requests
             import json
             
-            # ALWAYS generate base image without text (we apply JSON after)
-            print(f"[DEBUG] Generating base image (skipText: true)")
+            # Check if user provided text content
+            has_text = self.text_content is not None and len(self.text_content) > 0
             
             # Build multipart form data with proper file handle management
             with open(product_image, 'rb') as product_file:
@@ -618,12 +838,43 @@ Otherwise, respond naturally to continue the conversation.
                 data = {
                     'textPrompt': prompt,
                     'referenceImage': reference_image if reference_image else '',
-                    'skipText': 'true',  # ALWAYS true - we apply JSON after
+                    'skipText': 'false',  # Let Gemini generate text
                     'language': 'es',
                     'aspectRatio': '1:1',
                 }
                 
-                # Call pipeline endpoint to generate BASE IMAGE only
+                # Add text specifications if user provided text
+                if has_text:
+                    print(f"[DEBUG] User provided text: {self.text_content}")
+                    
+                    # Convert text_content dict to ordered array (by position)
+                    text_array = []
+                    if self.text_content.get('headline'):
+                        text_array.append(self.text_content['headline'])
+                    if self.text_content.get('subheadline'):
+                        text_array.append(self.text_content['subheadline'])
+                    if self.text_content.get('cta'):
+                        text_array.append(self.text_content['cta'])
+                    
+                    print(f"[DEBUG] Text array: {text_array}")
+                    data['userText'] = json.dumps(text_array)
+                    
+                    # Add typography guidelines from design_guidelines
+                    if self.design_guidelines and self.design_guidelines.get('typography'):
+                        print(f"[DEBUG] Including typography guidelines from SQLite")
+                        data['typographyStyle'] = json.dumps(self.design_guidelines['typography'])
+                    
+                    # Add product analysis for color adaptation
+                    if self.product_analysis:
+                        print(f"[DEBUG] Including product analysis for color adaptation")
+                        data['productAnalysis'] = json.dumps(self.product_analysis)
+                else:
+                    # No text requested - generate base image only
+                    data['skipText'] = 'true'
+                    print(f"[DEBUG] No text content, generating base image only")
+                
+                # Call pipeline endpoint - Gemini generates complete image with text
+                print(f"[DEBUG] Calling pipeline with skipText={data['skipText']}")
                 response = requests.post(
                     f'{self.backend_url}/pipeline',
                     files=files,
@@ -639,59 +890,8 @@ Otherwise, respond naturally to continue the conversation.
                 self.history.append({"role": "assistant", "content": error_msg})
                 return {"type": "text", "text": error_msg}
             
-            base_image_path = result['finalImagePath']
-            print(f"[DEBUG] Base image generated: {base_image_path}")
-            
-            # Check if user provided text content
-            has_text = self.text_content is not None and len(self.text_content) > 0
-            
-            final_image_path = base_image_path
-            
-            if has_text:
-                # User provided text - apply reference JSON
-                print(f"[DEBUG] User provided text: {self.text_content}")
-                
-                # Convert text_content dict to ordered array (by position)
-                text_array = []
-                if self.text_content.get('headline'):
-                    text_array.append(self.text_content['headline'])
-                if self.text_content.get('subheadline'):
-                    text_array.append(self.text_content['subheadline'])
-                if self.text_content.get('cta'):
-                    text_array.append(self.text_content['cta'])
-                
-                print(f"[DEBUG] Text array: {text_array}")
-                
-                # Get reference filename
-                ref_filename = self.selected_reference.get('filename', '') if self.selected_reference else ''
-                
-                if ref_filename:
-                    print(f"[DEBUG] Applying reference JSON for: {ref_filename}")
-                    
-                    # Call new endpoint to apply JSON
-                    json_response = requests.post(
-                        f'{self.backend_url}/apply-reference-json',
-                        json={
-                            'baseImagePath': base_image_path,
-                            'referenceFilename': ref_filename,
-                            'userText': text_array
-                        },
-                        timeout=30
-                    )
-                    
-                    if json_response.ok:
-                        json_result = json_response.json()
-                        if json_result.get('success') and json_result.get('finalImagePath'):
-                            final_image_path = json_result['finalImagePath']
-                            print(f"[DEBUG] JSON applied successfully: {final_image_path}")
-                        else:
-                            print(f"[DEBUG] JSON application failed, using base image")
-                    else:
-                        print(f"[DEBUG] JSON endpoint error: {json_response.status_code}, using base image")
-                else:
-                    print(f"[DEBUG] No reference filename, using base image")
-            else:
-                print(f"[DEBUG] No text content, using base image as-is")
+            final_image_path = result['finalImagePath']
+            print(f"[DEBUG] Complete image generated: {final_image_path}")
             
             # Extract text before trigger
             text_before_trigger = response_text.split("[TRIGGER_GENERATE_PIPELINE]")[0].strip()
@@ -701,11 +901,18 @@ Otherwise, respond naturally to continue the conversation.
             assistant_msg = f"{text_before_trigger}\n[Image generated via pipeline]"
             self.history.append({"role": "assistant", "content": assistant_msg})
             
-            return {
+            # Build response with textLayout if available
+            response = {
                 "type": "image",
                 "file": final_image_path,
                 "text": text_before_trigger
             }
+            
+            # Add textLayout if it was captured from JSON application
+            if 'text_layout' in locals() and text_layout:
+                response['textLayout'] = text_layout
+            
+            return response
                 
         except Exception as e:
             error_msg = f"Error generando imagen: {str(e)}"

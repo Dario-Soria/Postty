@@ -32,8 +32,11 @@ export default async function searchReferencesRoute(fastify: FastifyInstance): P
         id: result.id,
         filename: result.filename,
         url: `/reference-library/images/${result.filename}`,
-        keywords: result.keywords,
-        description: result.description,
+        tags: result.tags,
+        industry: result.industry,
+        aesthetic: result.aesthetic,
+        mood: result.mood,
+        design_guidelines: result.design_guidelines,
         relevance_score: result.relevance_score,
       }));
 
