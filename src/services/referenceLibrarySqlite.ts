@@ -67,7 +67,8 @@ function ensureDb(): SqliteDb | null {
       industry TEXT,
       aesthetic TEXT,
       mood TEXT,
-      design_guidelines TEXT
+      design_guidelines TEXT,
+      ranking INTEGER DEFAULT 1
     );
   `);
 
@@ -75,6 +76,21 @@ function ensureDb(): SqliteDb | null {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_reference_images_industry ON reference_images(industry);`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_reference_images_aesthetic ON reference_images(aesthetic);`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_reference_images_tags ON reference_images(tags);`);
+  
+  // Migration: Add ranking column if it doesn't exist
+  try {
+    // Try to select ranking - if it fails, the column doesn't exist
+    db.prepare('SELECT ranking FROM reference_images LIMIT 1').get();
+  } catch (error) {
+    // Column doesn't exist, add it
+    logger.info('Adding ranking column to reference_images table...');
+    db.exec(`ALTER TABLE reference_images ADD COLUMN ranking INTEGER DEFAULT 1;`);
+    db.exec(`UPDATE reference_images SET ranking = 1 WHERE ranking IS NULL;`);
+    logger.info('Ranking column added successfully');
+  }
+  
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_reference_images_ranking ON reference_images(ranking DESC);`);
+  
   return db;
 }
 
@@ -101,7 +117,7 @@ export async function saveReferenceImageAsync(params: {
 
   // Dedupe (but if the existing row hasn't been indexed yet, re-run indexing async)
   const existing = dbi
-    .prepare('SELECT id, stored_path, sha256, tags, industry, aesthetic, mood, design_guidelines FROM reference_images WHERE sha256 = ?')
+    .prepare('SELECT id, stored_path, sha256, tags, industry, aesthetic, mood, design_guidelines, ranking FROM reference_images WHERE sha256 = ?')
     .get(sha256);
   if (existing?.id && existing?.stored_path) {
     const designGuidelines = typeof existing.design_guidelines === 'string' ? existing.design_guidelines : '';
@@ -143,10 +159,10 @@ export async function saveReferenceImageAsync(params: {
   dbi
     .prepare(
       `INSERT INTO reference_images
-        (id, sha256, original_filename, stored_path, mime, bytes, width, height, created_at, tags, industry, aesthetic, mood, design_guidelines)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        (id, sha256, original_filename, stored_path, mime, bytes, width, height, created_at, tags, industry, aesthetic, mood, design_guidelines, ranking)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(id, sha256, params.originalFilename, storedPath, params.mime, bytes, width, height, createdAt, '', '', '', '', '');
+    .run(id, sha256, params.originalFilename, storedPath, params.mime, bytes, width, height, createdAt, '', '', '', '', '', 1);
 
   // Background indexing (non-blocking)
   // NOTE: We DO NOT rename files because they may have paired JSON metadata files
@@ -182,6 +198,7 @@ export type ReferenceImageSearchResult = {
   mood: string;
   design_guidelines: object;
   relevance_score: number;
+  ranking?: number;
 };
 
 function parseTags(tagsString: string): string[] {
@@ -219,13 +236,13 @@ export async function searchReferenceImages(params: {
     .map(term => term.replace(/[^a-z0-9]/g, '')); // Clean terms
 
   if (searchTerms.length === 0) {
-    // No valid search terms, return most recent images
+    // No valid search terms, return by ranking first, then most recent
     const rows = dbi
       .prepare(`
-        SELECT id, stored_path, original_filename, tags, industry, aesthetic, mood, design_guidelines 
+        SELECT id, stored_path, original_filename, tags, industry, aesthetic, mood, design_guidelines, ranking
         FROM reference_images 
         WHERE design_guidelines != ''
-        ORDER BY created_at DESC 
+        ORDER BY ranking DESC, created_at DESC 
         LIMIT ?
       `)
       .all(limit);
@@ -240,13 +257,14 @@ export async function searchReferenceImages(params: {
       mood: row.mood || '',
       design_guidelines: tryParseDesignGuidelines(row.design_guidelines),
       relevance_score: 0,
+      ranking: row.ranking || 1,
     }));
   }
 
-  // Get all indexed images
+  // Get all indexed images with ranking
   const allImages = dbi
     .prepare(`
-      SELECT id, stored_path, original_filename, tags, industry, aesthetic, mood, design_guidelines 
+      SELECT id, stored_path, original_filename, tags, industry, aesthetic, mood, design_guidelines, ranking
       FROM reference_images 
       WHERE design_guidelines != ''
     `)
@@ -302,20 +320,27 @@ export async function searchReferenceImages(params: {
         mood: row.mood || '',
         design_guidelines: tryParseDesignGuidelines(row.design_guidelines),
         relevance_score: score,
+        ranking: row.ranking || 1,
       };
     })
     .filter((img: ReferenceImageSearchResult) => img.relevance_score > 0) // Only return matches
-    .sort((a: ReferenceImageSearchResult, b: ReferenceImageSearchResult) => b.relevance_score - a.relevance_score) // Sort by relevance
+    .sort((a: ReferenceImageSearchResult, b: ReferenceImageSearchResult) => {
+      // Sort by relevance first, then by ranking as tiebreaker
+      if (b.relevance_score !== a.relevance_score) {
+        return b.relevance_score - a.relevance_score;
+      }
+      return (b.ranking || 1) - (a.ranking || 1);
+    })
     .slice(0, limit); // Take top N
 
-  // If no matches found, return most recent
+  // If no matches found, return by ranking then most recent
   if (scored.length === 0) {
     const rows = dbi
       .prepare(`
-        SELECT id, stored_path, original_filename, tags, industry, aesthetic, mood, design_guidelines 
+        SELECT id, stored_path, original_filename, tags, industry, aesthetic, mood, design_guidelines, ranking
         FROM reference_images 
         WHERE design_guidelines != ''
-        ORDER BY created_at DESC 
+        ORDER BY ranking DESC, created_at DESC 
         LIMIT ?
       `)
       .all(limit);
@@ -330,10 +355,40 @@ export async function searchReferenceImages(params: {
       mood: row.mood || '',
       design_guidelines: tryParseDesignGuidelines(row.design_guidelines),
       relevance_score: 0,
+      ranking: row.ranking || 1,
     }));
   }
 
   return scored;
+}
+
+/**
+ * Increment ranking for a reference image after successful generation
+ * Called when a user successfully generates an image using this reference
+ */
+export function incrementReferenceRanking(referenceFilename: string): void {
+  const dbi = ensureDb();
+  if (!dbi) return;
+
+  try {
+    // Find by stored_path containing the filename
+    const stmt = dbi.prepare(`
+      UPDATE reference_images 
+      SET ranking = ranking + 1 
+      WHERE stored_path LIKE ?
+    `);
+    
+    const result = stmt.run(`%${referenceFilename}`);
+    
+    if (result.changes > 0) {
+      logger.info(`Incremented ranking for reference: ${referenceFilename}`);
+    } else {
+      logger.warn(`No reference found to increment ranking: ${referenceFilename}`);
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Unknown error';
+    logger.error(`Failed to increment ranking: ${msg}`);
+  }
 }
 
 

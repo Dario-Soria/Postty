@@ -52,15 +52,15 @@ Return ONLY a valid JSON object with the following structure:
         "expression": ["smiling | laughing | serious | contemplative | energetic"],
         "clothing": ["casual | formal | athletic | swimwear | outerwear | accessories"]
       },
-      "activity": ["exercising | running | yoga | tennis | cycling | working | reading | cooking | eating | drinking | relaxing | celebrating | shopping | traveling"]
+      "activity": ["exercising | running | walking | jogging | sprinting | yoga | pilates | stretching | tennis | playing-tennis | golf | playing-golf | basketball | football | soccer | volleyball | swimming | surfing | skiing | snowboarding | cycling | biking | horseback-riding | working | reading | cooking | eating | drinking | relaxing | celebrating | shopping | traveling | sitting | standing | posing | modeling | jumping | dancing"]
     },
     "objects_and_props": {
       "present": true | false,
-      "items": ["glasses | newspaper | magazine | book | phone | laptop | coffee-cup | water-bottle | bag | watch | jewelry | headphones | plants | flowers | furniture | towel | mat | equipment"],
+      "items": ["glasses | sunglasses | eyeglasses | prescription-glasses | watch | wristwatch | smartwatch | bag | handbag | purse | backpack | tote-bag | clutch | duffle-bag | tennis-bag | gym-bag | jewelry | necklace | earrings | bracelet | ring | headphones | earbuds | phone | smartphone | laptop | tablet | newspaper | magazine | book | coffee-cup | mug | water-bottle | thermos | plants | flowers | bouquet | furniture | chair | table | bench | towel | mat | yoga-mat | equipment | sports-equipment | tennis-racket | golf-club | basketball | football | volleyball | baseball-bat | car | automobile | sports-car | vintage-car | sedan | suv | convertible | motorcycle | motorbike | scooter | bicycle | bike | mountain-bike | road-bike | skateboard"],
       "prominence": "background | supporting | featured"
     },
     "setting": {
-      "location": "indoor | outdoor | studio | home | office | gym | park | beach | urban | nature",
+      "location": "indoor | outdoor | studio | home | office | gym | fitness-center | spa | park | garden | backyard | beach | seaside | oceanfront | lakeside | poolside | urban | city | downtown | street | alley | rooftop | nature | forest | woods | mountain | hillside | valley | desert | countryside | field | meadow | tennis-court | basketball-court | sports-field | track | restaurant | cafe | bar | hotel | resort",
       "time_of_day": "morning | afternoon | evening | night | golden-hour",
       "season": "spring | summer | fall | winter | generic",
       "weather": "sunny | cloudy | rainy | snowy | clear"
@@ -198,6 +198,22 @@ Return ONLY a valid JSON object with the following structure:
     "replication_priority": ["list top 3-5 elements critical to maintain this style"]
   }
 }
+
+## Tagging Priority Guidelines
+
+When analyzing images, prioritize SPECIFIC over GENERAL tags:
+
+**Activities:**
+- If person is clearly playing a sport (holding equipment, in sports attire, on sports venue), tag the SPECIFIC sport
+- Examples: Use "tennis" not "exercising", "golf" not "walking", "basketball" not "running"
+
+**Objects:**
+- Tag specific vehicle types: "sports-car", "vintage-car", "motorcycle" vs generic "vehicle"
+- Tag specific accessories: "sunglasses" vs "glasses", "tennis-racket" vs "equipment"
+
+**Locations:**
+- Tag specific scenery: "tennis-court" not just "outdoor", "mountain" not just "nature"
+- Include both general and specific: ["outdoor", "tennis-court"] is better than just ["outdoor"]
 
 ## Rules
 1. Be precise with colors - use hex when identifiable, descriptive names when not

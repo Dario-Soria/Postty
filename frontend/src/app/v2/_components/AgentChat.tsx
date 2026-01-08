@@ -5,6 +5,7 @@ import { GlassCard } from "./ui/GlassCard";
 import { TopBar } from "./ui/TopBar";
 import { useHoldToTalk } from "./hooks/useHoldToTalk";
 import { openTextEditor, type BackendTextLayout } from "@/lib/features/text-editor";
+import { useAuth } from "@/contexts/AuthContext";
 
 type ReferenceOption = {
   id: string;
@@ -31,6 +32,7 @@ type Props = {
 };
 
 export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
+  const { user, loading } = useAuth();
   const [messages, setMessages] = React.useState<Message[]>([]);
   const [inputValue, setInputValue] = React.useState("");
   const [isTyping, setIsTyping] = React.useState(false);
@@ -69,8 +71,8 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
   const hasGreetedRef = React.useRef(false);
   
   React.useEffect(() => {
-    // Prevent duplicate calls (React may run effects twice in dev mode)
-    if (hasGreetedRef.current) return;
+    // Wait for auth to load before making initial request
+    if (loading || hasGreetedRef.current) return;
     hasGreetedRef.current = true;
     
     const fetchInitialGreeting = async () => {
@@ -81,6 +83,11 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
         formData.append("agentType", agentId);
         formData.append("message", "START_CONVERSATION"); // Special message to trigger greeting
         formData.append("conversationHistory", JSON.stringify([]));
+        
+        // Add userId for session isolation
+        if (user?.uid) {
+          formData.append("userId", user.uid);
+        }
         
         const response = await fetch("/api/agent-chat", {
           method: "POST",
@@ -113,7 +120,7 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
 
     fetchInitialGreeting();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Only run once on mount
+  }, [agentId, loading]);
 
   const addAssistantMessage = (content: string, imageUrl?: string, textLayout?: any) => {
     setIsTyping(true);
@@ -169,6 +176,11 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
       
       if (uploadedFile) {
         formData.append("image", uploadedFile);
+      }
+
+      // Add userId for session isolation
+      if (user?.uid) {
+        formData.append("userId", user.uid);
       }
 
       const response = await fetch("/api/agent-chat", {
@@ -303,6 +315,11 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
       const formData = new FormData();
       formData.append("agentType", agentId);
       formData.append("message", "RESET_CONVERSATION");
+
+      // Add userId for session isolation
+      if (user?.uid) {
+        formData.append("userId", user.uid);
+      }
 
       const response = await fetch("/api/agent-chat", {
         method: "POST",

@@ -178,6 +178,28 @@ export default function V2Page() {
       );
     }
 
+    // Step 7: Agent Chat - Allow this BEFORE profile check so agents can work
+    if (step === 7 && selectedAgent) {
+      const agentNames: Record<string, string> = {
+        "product-showcase": "Product Showcase",
+        "agent-2": "Agent 2",
+        "agent-3": "Agent 3",
+        "agent-4": "Agent 4",
+      };
+
+      return (
+        <AgentChat
+          agentId={selectedAgent}
+          agentName={agentNames[selectedAgent] || "Agent"}
+          onBack={() => {
+            setSelectedAgent(null);
+            setStep(2);
+          }}
+          showToast={showToast}
+        />
+      );
+    }
+
     // Wait for userProfile to load for verified users before proceeding
     // Google users can proceed without profile (it loads in background)
     // After 3 seconds timeout, proceed anyway to prevent infinite loading
@@ -216,28 +238,6 @@ export default function V2Page() {
           onAgentSelect={(agentId) => {
             setSelectedAgent(agentId);
             setStep(7); // Go to agent chat
-          }}
-          showToast={showToast}
-        />
-      );
-    }
-
-    // Step 7: Agent Chat (NEW)
-    if (step === 7 && selectedAgent) {
-      const agentNames: Record<string, string> = {
-        "product-showcase": "Product Showcase",
-        "agent-2": "Agent 2",
-        "agent-3": "Agent 3",
-        "agent-4": "Agent 4",
-      };
-
-      return (
-        <AgentChat
-          agentId={selectedAgent}
-          agentName={agentNames[selectedAgent] || "Agent"}
-          onBack={() => {
-            setSelectedAgent(null);
-            setStep(2);
           }}
           showToast={showToast}
         />

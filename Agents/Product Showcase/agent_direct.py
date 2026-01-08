@@ -6,28 +6,77 @@ Communicates via JSON messages instead of HTTP
 import json
 import sys
 import os
+import time
+import threading
 from agent import NanoBananaAgent, load_config
 
 # Ensure output is flushed immediately
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
 
+# Session management for multi-user support
+agents: dict[str, NanoBananaAgent] = {}
+MAX_AGENTS = 100
+SESSION_TIMEOUT = 3600  # 1 hour in seconds
+session_last_used: dict[str, float] = {}
+
+def get_or_create_agent(session_id: str, project_id: str, config) -> NanoBananaAgent:
+    """Get existing agent for session or create new one"""
+    if len(agents) >= MAX_AGENTS:
+        cleanup_old_sessions()
+    
+    if session_id not in agents:
+        print(f"[DEBUG] Creating new agent for session: {session_id[:8]}...", 
+              file=sys.stderr, flush=True)
+        agents[session_id] = NanoBananaAgent(project_id=project_id, config=config)
+    
+    session_last_used[session_id] = time.time()
+    return agents[session_id]
+
+def cleanup_old_sessions():
+    """Remove sessions inactive for more than SESSION_TIMEOUT"""
+    current_time = time.time()
+    sessions_to_remove = [
+        sid for sid, last_used in session_last_used.items()
+        if current_time - last_used > SESSION_TIMEOUT
+    ]
+    for sid in sessions_to_remove:
+        print(f"[DEBUG] Removing inactive session: {sid[:8]}...", 
+              file=sys.stderr, flush=True)
+        agents.pop(sid, None)
+        session_last_used.pop(sid, None)
+
+def periodic_cleanup():
+    """Background thread for session cleanup"""
+    while True:
+        time.sleep(300)  # Every 5 minutes
+        try:
+            cleanup_old_sessions()
+            if len(agents) > 0:
+                print(f"[DEBUG] Active sessions: {len(agents)}", file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"[ERROR] Cleanup failed: {e}", file=sys.stderr, flush=True)
+
 def main():
-    # Initialize agent
+    # Initialize configuration
     PROJECT_ID = os.environ.get('GOOGLE_CLOUD_PROJECT', 'postty-482019')
     
     try:
         config = load_config()
-        agent = NanoBananaAgent(project_id=PROJECT_ID, config=config)
         
-        # Send ready signal
+        # Send ready signal (don't create agent yet, will create per session)
         print(json.dumps({"status": "ready", "agent_id": config.agent_id}), flush=True)
         
     except Exception as e:
         print(json.dumps({"status": "error", "message": str(e)}), flush=True)
         sys.exit(1)
     
-    # Process messages from stdin
+    # Start background cleanup thread
+    cleanup_thread = threading.Thread(target=periodic_cleanup, daemon=True)
+    cleanup_thread.start()
+    print("[DEBUG] Started session cleanup thread", file=sys.stderr, flush=True)
+    
+    # Process messages from stdin with session isolation
     for line in sys.stdin:
         try:
             line = line.strip()
@@ -40,8 +89,13 @@ def main():
             request = json.loads(line)
             message = request.get('message', '')
             image_path = request.get('image_path')  # Optional product image path
+            session_id = request.get('session_id', 'default')  # Session ID for multi-user support
             
-            print(f"[DEBUG] Message: {message}, Image: {image_path}", file=sys.stderr, flush=True)
+            print(f"[DEBUG] Session: {session_id[:12]}..., Message: {message[:50] if message else 'None'}, Image: {image_path}", 
+                  file=sys.stderr, flush=True)
+            
+            # Get or create agent for this specific session
+            agent = get_or_create_agent(session_id, PROJECT_ID, config)
             
             # Allow empty message if image is provided
             if not message and not image_path:
@@ -52,10 +106,10 @@ def main():
                     message = "[User uploaded product image]"
                     print(f"[DEBUG] Using placeholder message for image", file=sys.stderr, flush=True)
                 
-                # Call agent with optional image path
-                print(f"[DEBUG] Calling agent.chat()", file=sys.stderr, flush=True)
+                # Call session-specific agent with optional image path
+                print(f"[DEBUG] Calling agent.chat() for session {session_id[:8]}...", file=sys.stderr, flush=True)
                 result = agent.chat(message, image_path=image_path)
-                print(f"[DEBUG] Agent returned: {result}", file=sys.stderr, flush=True)
+                print(f"[DEBUG] Agent returned type: {result.get('type', 'unknown')}", file=sys.stderr, flush=True)
                 response = {"status": "success", "result": result}
             
             print(json.dumps(response), flush=True)

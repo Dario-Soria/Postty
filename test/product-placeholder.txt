@@ -1,0 +1,29 @@
+# Product Image Placeholder
+
+**IMPORTANT:** You need to add your product image to this folder.
+
+## Instructions:
+
+1. Copy or export your product image to this folder
+2. Name it: `product.webp` or `product.jpg` or `product.png`
+3. The test script will automatically detect it
+
+## Original Product Details:
+
+The original generation used:
+- File: `agent-upload-1767876159795-vita-pr02018-d0d66814e71b6f57ae17635557213662-1024-1024.webp`
+- This file was automatically cleaned up after generation
+- It was black leather knee-high boots with buckles
+
+## To Add Your Product:
+
+```bash
+# Option 1: Copy from wherever you have it
+cp /path/to/your/product.webp test/product.webp
+
+# Option 2: Use the same product from the frontend upload
+# (You'll need to upload it again through the UI or copy from temp-uploads)
+```
+
+Once you add the product image, you can run the test script.
+

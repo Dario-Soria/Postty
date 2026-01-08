@@ -236,6 +236,17 @@ Generate the following text directly rendered into the image:
 
 🚨 The specifications above describe the reference typography - use them to MATCH the reference style precisely.
 
+🚨 TEXT SPELLING ACCURACY - CRITICAL:
+⚠️ PERFECT SPELLING IS MANDATORY: Each word MUST be rendered with 100% accurate spelling, letter by letter.
+- Before generating, mentally spell out each word character-by-character
+- Double-check EVERY letter in EVERY word before finalizing
+- Pay special attention to Spanish characters: ñ, á, é, í, ó, ú, ü
+- Common mistakes to avoid:
+  * Mixing 'j' and 'h' sounds (e.g., "agujeros" has 'j', not 'h')
+  * Missing or wrong letters in middle of words (e.g., "hermana" not "harmana")
+  * Confusing similar-looking letters (e.g., 'o' vs '0', 'l' vs 'I')
+- VERIFICATION STEP: After rendering text, verify spelling matches EXACTLY what was specified above
+
 🚨 TEXT GENERATION IS MANDATORY: The output image MUST contain the specified text overlays. Do not generate an image without text.
 
 OUTPUT REQUIREMENTS:

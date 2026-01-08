@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import requests
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
@@ -892,6 +893,21 @@ Return ONLY a JSON object with this structure:
             
             final_image_path = result['finalImagePath']
             print(f"[DEBUG] Complete image generated: {final_image_path}")
+            
+            # Increment ranking for the reference that was used
+            if reference_image:
+                try:
+                    import os
+                    import requests
+                    reference_filename = os.path.basename(reference_image)
+                    print(f"[DEBUG] Incrementing ranking for reference: {reference_filename}", file=sys.stderr)
+                    requests.post(
+                        f'{self.backend_url}/increment-reference-ranking',
+                        json={'referenceFilename': reference_filename},
+                        timeout=5
+                    )
+                except Exception as e:
+                    print(f"[DEBUG] Failed to increment ranking: {e}", file=sys.stderr)
             
             # Extract text before trigger
             text_before_trigger = response_text.split("[TRIGGER_GENERATE_PIPELINE]")[0].strip()

@@ -24,6 +24,7 @@ import searchReferencesRoute from './routes/search-references';
 import testEnvRoute from './routes/test-env';
 import applyReferenceJsonRoute from './routes/applyReferenceJson';
 import applyDesignGuidelinesTextRoute from './routes/applyDesignGuidelinesText';
+import incrementReferenceRankingRoute from './routes/increment-reference-ranking';
 import * as logger from './utils/logger';
 
 // Configuration
@@ -75,6 +76,7 @@ async function start(): Promise<void> {
     await fastify.register(searchReferencesRoute);
     await fastify.register(applyReferenceJsonRoute);
     await fastify.register(applyDesignGuidelinesTextRoute);
+    await fastify.register(incrementReferenceRankingRoute);
     await fastify.register(testEnvRoute);
 
     // Health check endpoint

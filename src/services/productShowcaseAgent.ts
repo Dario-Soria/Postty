@@ -11,6 +11,7 @@ let isReady = false;
 let messageQueue: Array<{
   message: string;
   imagePath?: string;
+  sessionId: string;
   resolve: (value: any) => void;
   reject: (error: Error) => void;
 }> = [];
@@ -164,10 +165,11 @@ function processQueue(): void {
 
   currentRequest = { resolve: item.resolve, reject: item.reject };
   
-  // Send message to agent via stdin with optional image_path
+  // Send message to agent via stdin with optional image_path and session_id
   const request = { 
     message: item.message,
-    image_path: item.imagePath 
+    image_path: item.imagePath,
+    session_id: item.sessionId
   };
   const requestJson = JSON.stringify(request) + '\n';
   
@@ -205,7 +207,8 @@ export async function ensureAgentRunning(): Promise<void> {
  */
 export async function sendMessageToAgent(
   message: string,
-  imagePath?: string
+  imagePath?: string,
+  sessionId: string = 'default'
 ): Promise<{ type: 'text' | 'image' | 'reference_options'; text: string; file?: string; references?: any[]; textLayout?: any }> {
   if (!agentProcess || !isReady) {
     throw new Error('Agent process is not running');
@@ -216,6 +219,7 @@ export async function sendMessageToAgent(
     messageQueue.push({
       message,
       imagePath,
+      sessionId,
       resolve,
       reject,
     });

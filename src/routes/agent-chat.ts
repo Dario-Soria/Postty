@@ -35,7 +35,7 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
         }
       }
 
-      const { agentType, message, conversationHistory } = fields;
+      const { agentType, message, conversationHistory, userId } = fields;
 
       if (!agentType) {
         return reply.status(400).send({
@@ -60,6 +60,10 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
         });
       }
 
+      // Extract userId with fallback for backward compatibility
+      const sessionId = userId || `anon-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+      logger.info(`[Agent Chat] Session ID: ${sessionId.substring(0, 12)}...`);
+
       // Ensure the Python agent process is running
       logger.info(`[Agent Chat] Ensuring agent is running...`);
       await ensureAgentRunning();
@@ -67,9 +71,9 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
       // If message is empty but image is provided, use a placeholder
       const messageToSend = message || (imageFile ? "" : "");
 
-      // Send message to Python agent with image path (don't delete it yet, agent may need it for pipeline)
+      // Send message to Python agent with image path and session ID
       logger.info(`[Agent Chat] Sending message: "${messageToSend}", image: ${imageFile?.path || 'none'}`);
-      const result = await sendMessageToAgent(messageToSend, imageFile?.path);
+      const result = await sendMessageToAgent(messageToSend, imageFile?.path, sessionId);
       logger.info(`[Agent Chat] Received result type: ${result.type}`);
 
       // Handle different response types

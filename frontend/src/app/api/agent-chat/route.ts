@@ -12,7 +12,8 @@ export async function POST(request: NextRequest) {
     // Get the form data from the request
     const formData = await request.formData();
 
-    // Forward the form data to the backend
+    // userId is already in formData from frontend, just forward it
+    // Forward the form data to the backend (includes userId if present)
     const response = await fetch(`${BACKEND_URL}/agent-chat`, {
       method: 'POST',
       body: formData,
