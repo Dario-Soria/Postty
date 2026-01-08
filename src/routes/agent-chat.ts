@@ -60,8 +60,16 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
         });
       }
 
+      // Allow client-provided sessionId (used to force a true "start over" / fresh run)
+      const clientSessionIdRaw = fields.sessionId;
+      const clientSessionId =
+        typeof clientSessionIdRaw === 'string' && clientSessionIdRaw.trim()
+          ? clientSessionIdRaw.trim()
+          : undefined;
+
       // Extract userId with fallback for backward compatibility
-      const sessionId = userId || `anon-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+      const sessionId =
+        clientSessionId || userId || `anon-${Date.now()}-${Math.random().toString(36).substring(7)}`;
       logger.info(`[Agent Chat] Session ID: ${sessionId.substring(0, 12)}...`);
 
       // Ensure the Python agent process is running

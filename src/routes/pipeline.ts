@@ -201,6 +201,7 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
         try {
           typographyStyle = JSON.parse(formData.typographyStyle);
           logger.info(`🎨 Typography style provided (${Object.keys(typographyStyle).length} elements)`);
+          logger.info(`🎨 Typography style content: ${JSON.stringify(typographyStyle, null, 2)}`);
         } catch (e) {
           logger.warn(`Failed to parse typographyStyle JSON: ${e}`);
         }

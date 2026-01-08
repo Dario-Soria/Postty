@@ -1,224 +1,389 @@
-# Nano Banana Prompt Testing Environment
+# Test Environment: Prompt-Driven Image Generation
 
-This is an isolated test environment for iterating on the Nano Banana (Gemini 2.5 Flash Image) generation prompt without affecting the main system.
+This folder contains an isolated test environment to experiment with prompt-based image generation using Gemini 2.5 Flash Image.
 
-## 📁 Contents
-
-- **`prompt.md`** - The exact prompt sent to Gemini (edit this!)
-- **`reference.jpg`** - Reference image for style inspiration (cd685fd...)
-- **`product-placeholder.txt`** - Instructions for adding product image
-- **`test-generate.ts`** - Standalone script to call Gemini API
-- **`results/`** - Output folder for generated images
-
-## 🚀 Quick Start
-
-### 1. Add Your Product Image
-
-**REQUIRED:** You need to add a product image before running tests.
-
-```bash
-# Copy your product image to the test folder
-# Name it one of: product.webp, product.jpg, or product.png
-
-cp /path/to/your/product-image.webp test/product.webp
-```
-
-The original generation used black leather knee-high boots. Use the same product image you want to test with.
-
-### 2. Run Your First Test
-
-```bash
-# Make sure you have GEMINI_API_KEY set
-export GEMINI_API_KEY="your-api-key-here"
-
-# Run the test
-npx ts-node test/test-generate.ts
-```
-
-This will:
-- Read `prompt.md`, `reference.jpg`, and your product image
-- Send the request to Gemini 2.5 Flash Image
-- Save the result to `results/test_TIMESTAMP.png`
-- Show you the generation time and output details
-
-### 3. Iterate on the Prompt
-
-```bash
-# Edit the prompt
-code test/prompt.md  # or use your favorite editor
-
-# Run another test
-npx ts-node test/test-generate.ts
-
-# Compare results in the results folder
-ls -lh test/results/
-```
-
-## 📝 What's in the Prompt?
-
-The `prompt.md` file contains the **exact prompt** that was sent to Gemini for generation `1767876654154_nanobanana_base.png`.
-
-Key sections:
-1. **TASK** - What we're asking Gemini to do
-2. **INPUTS** - How to use the reference and product images
-3. **USER REQUEST** - The scene description
-4. **TEXT OVERLAY REQUIREMENTS** - Typography specifications
-5. **TYPOGRAPHY MATCHING INSTRUCTIONS** - How to match reference style
-6. **OUTPUT REQUIREMENTS** - Quality and format specifications
-
-## 🔧 Advanced Usage
-
-### Use a Custom Prompt File
-
-```bash
-# Create a modified version of the prompt
-cp test/prompt.md test/prompt-v2.md
-
-# Edit your custom prompt
-code test/prompt-v2.md
-
-# Run test with custom prompt
-npx ts-node test/test-generate.ts --prompt=prompt-v2.md
-```
-
-### Compare Multiple Versions
-
-```bash
-# Run baseline
-npx ts-node test/test-generate.ts
-# Result: results/test_1767876640000.png
-
-# Edit prompt
-code test/prompt.md
-
-# Run again
-npx ts-node test/test-generate.ts
-# Result: results/test_1767876650000.png
-
-# Compare side-by-side
-open results/test_*.png
-```
-
-## 🎯 Testing Strategy
-
-Based on the diagnosis in `REFERENCE_GENERATION_DIAGNOSIS.md`, here are key areas to focus on:
-
-### Problem Areas to Test:
-
-1. **Text Position Accuracy**
-   - Current: "Vertical Position: 40% from top edge"
-   - Try: More specific positioning like "centered horizontally, 40% from top"
-   - Try: Pixel-based positioning: "400px from top in a 1080px canvas"
-
-2. **Font Description Clarity**
-   - Current: "serif elegant (thin strokes, flowing style)"
-   - Try: More specific fonts: "serif font similar to Playfair Display or Didot"
-   - Try: More descriptive: "thin, high-contrast serif with elegant curves"
-
-3. **Text Contrast/Readability**
-   - Current: "Color: black"
-   - Try: "Color: black with subtle white outline for readability"
-   - Try: "Color: deep charcoal (#2C2C2C) with 50% opacity white shadow"
-
-4. **Spelling Accuracy**
-   - The prompt already has detailed spelling instructions
-   - Test with different text to see if issues persist
-   - Try: ALL CAPS vs Title Case vs sentence case
-
-### Example Iterations:
-
-**Iteration 1: Simplify Typography Instructions**
-- Remove the long "TYPOGRAPHY MATCHING INSTRUCTIONS" section
-- Make font descriptions more direct and specific
-- See if simpler is better
-
-**Iteration 2: Add Visual Examples**
-- Add more explicit font references: "like Playfair Display", "like Great Vibes"
-- Add percentage-based positioning: "centered at X=50%, Y=40%"
-
-**Iteration 3: Focus on Contrast**
-- Emphasize text readability and contrast
-- Add explicit instructions about text effects (shadows, outlines)
-- Test with different text colors
-
-## 📊 Understanding Results
-
-Each test generates:
-- **Timestamp**: Unique identifier for each generation
-- **Console output**: Shows request details and timing
-- **PNG file**: The generated image in results/
-
-Compare generations by:
-1. Opening multiple images side-by-side
-2. Checking text positioning accuracy
-3. Verifying font style matches reference
-4. Confirming spelling is correct
-5. Assessing overall image quality
-
-## ⚠️ Known Limitations
-
-From the main diagnosis:
-
-1. **Gemini 2.5 Flash Image cannot analyze reference typography visually**
-   - It uses reference for general style only
-   - Typography specs must be explicit in text
-   - It doesn't "study" the reference font like the prompt claims
-
-2. **Text generation is unreliable**
-   - Sometimes text doesn't appear
-   - Positioning may be inaccurate
-   - Spelling errors can occur despite instructions
-
-3. **Better approach may be separate text overlay**
-   - Generate base image without text
-   - Add text in post-processing with canvas/HTML
-   - This gives pixel-perfect control
-
-## 🧹 Cleanup
-
-When you're done testing, just delete the test folder:
-
-```bash
-rm -rf test/
-```
-
-Or keep it for future reference and testing.
-
-## 💡 Tips
-
-1. **Start small** - Make one change at a time to see what works
-2. **Document changes** - Keep notes on what you tried
-3. **Compare results** - Look at multiple generations side-by-side
-4. **Test edge cases** - Try very long text, special characters, etc.
-5. **Check the reference** - Open `reference.jpg` to see what style you're matching
-
-## 🐛 Troubleshooting
-
-**"GEMINI_API_KEY not set"**
-```bash
-export GEMINI_API_KEY="your-key-here"
-```
-
-**"Product image not found"**
-- Make sure you've added `product.webp`, `product.jpg`, or `product.png` to the test folder
-
-**"No image data in response"**
-- Check API quota/limits
-- Verify API key is valid
-- Check console output for API error messages
-
-**Text doesn't appear in output**
-- This is a known limitation of the model
-- Try making text instructions more explicit
-- Consider using the separate text overlay approach instead
-
-## 📚 Related Files
-
-- **Main prompt builder**: `src/services/nanoBananaGenerator.ts` (lines 118-308)
-- **Full diagnosis**: `REFERENCE_GENERATION_DIAGNOSIS.md`
-- **Reference indexer**: `reference-library/AnalyzerPrompt.md`
+**Philosophy:** The prompt template should control everything. To improve results, edit the prompt - not the code.
 
 ---
 
-**Happy testing! 🧪**
+## 🎯 Quick Start
 
+### 1. Run Current Production Method
+
+Uses the hardcoded prompt from `prompt.md`:
+
+```bash
+npx ts-node test/test-generate.ts --mode=current
+```
+
+### 2. Run New Agent Method
+
+Uses the dynamic template from `prompt-template-section.md`:
+
+```bash
+npx ts-node test/test-generate.ts --mode=agent
+```
+
+### 3. Compare Both Approaches
+
+```bash
+npx ts-node test/compare-prompts.ts
+```
+
+### 4. View Results
+
+```bash
+open test/results/current_*.png    # Production method output
+open test/results/agent_*.png      # Agent method output
+```
+
+---
+
+## 📁 Files in This Folder
+
+### Core Files
+
+- **`test-generate.ts`** - Main test script with two modes (current/agent)
+- **`agent-prompt-builder.ts`** - Builds prompts dynamically from template
+- **`compare-prompts.ts`** - Compares current vs agent approaches
+- **`iteration-guide.md`** - Complete guide to iterating on prompts
+
+### Template Files
+
+- **`prompt-template-section.md`** - The agent's Gemini prompt template (EDIT THIS!)
+- **`prompt.md`** - Current production prompt (for comparison)
+
+### Input Files
+
+- **`reference.jpg`** - Reference image for style matching
+- **`product.webp`** - Product image (place your product here)
+
+### Output Files
+
+- **`results/`** - Generated images saved here
+- **`comparison-report.md`** - Detailed prompt comparison (auto-generated)
+
+---
+
+## 🔄 The Two Approaches
+
+### Current Approach (Hardcoded)
+
+**How it works:**
+- Prompt template is hardcoded in `src/services/nanoBananaGenerator.ts` (TypeScript)
+- To change: Edit code → Restart server → Test
+
+**Pros:**
+- Already in production
+- Well-tested
+
+**Cons:**
+- Slow iteration (5-10 minutes per change)
+- Only developers can modify
+- All agents share the same template
+
+### Agent Approach (Dynamic)
+
+**How it works:**
+- Prompt template lives in `prompt-template-section.md` (Markdown)
+- Code reads template and fills in variables
+- To change: Edit markdown → Test
+
+**Pros:**
+- Fast iteration (30 seconds per change)
+- Anyone can modify (no coding needed)
+- Each agent can have its own template
+
+**Cons:**
+- New approach (needs testing)
+
+---
+
+## 🚀 Iteration Workflow
+
+This is THE recommended workflow for improving image generation:
+
+### 1. Generate Test Image
+
+```bash
+npx ts-node test/test-generate.ts --mode=agent
+```
+
+### 2. Review Output
+
+```bash
+open test/results/agent_*.png
+```
+
+### 3. Edit Template
+
+Not satisfied? Edit `prompt-template-section.md`:
+
+```markdown
+BEFORE:
+- Lighting: Natural lighting
+
+AFTER:
+- Lighting: Soft natural window light from 45° left, creating gentle wrap-around
+```
+
+### 4. Test Again
+
+```bash
+npx ts-node test/test-generate.ts --mode=agent
+```
+
+### 5. Repeat
+
+Each iteration takes ~30 seconds. Run dozens of tests to perfect the prompt!
+
+---
+
+## 📝 Example: Fixing the White Dress Issue
+
+**Problem:** Gemini sometimes generates black dress instead of white
+
+**Solution:** Edit `prompt-template-section.md`
+
+```markdown
+Find this section:
+
+SCENE COMPOSITION:
+- Subject wearing: [OUTFIT_DESCRIPTION]
+
+Add explicit color requirement:
+
+SCENE COMPOSITION:
+- Subject wearing: [OUTFIT_DESCRIPTION]
+- 🚨 CRITICAL: Outfit colors are MANDATORY
+- Model wearing WHITE elegant dress (not black, not gray, WHITE)
+```
+
+Save file → Run test → Check if fixed → Iterate again if needed
+
+**No code changes. No server restart. Just edit markdown.**
+
+---
+
+## 🔬 A/B Testing Different Prompts
+
+Want to test different lighting styles?
+
+### Test 1: Soft Natural
+
+Edit `prompt-template-section.md`:
+
+```markdown
+- Lighting: Soft natural window light, diffused daylight
+```
+
+Run:
+
+```bash
+npx ts-node test/test-generate.ts --mode=agent
+# Saves to: test/results/agent_1234567890.png
+```
+
+### Test 2: Golden Hour
+
+Edit `prompt-template-section.md`:
+
+```markdown
+- Lighting: Golden hour lighting, warm sunset glow
+```
+
+Run:
+
+```bash
+npx ts-node test/test-generate.ts --mode=agent
+# Saves to: test/results/agent_1234567891.png
+```
+
+### Compare
+
+```bash
+open test/results/agent_1234567890.png
+open test/results/agent_1234567891.png
+```
+
+Pick the better approach!
+
+---
+
+## 📊 Understanding the Comparison
+
+Run the comparison tool:
+
+```bash
+npx ts-node test/compare-prompts.ts
+```
+
+This shows you:
+
+### Current Approach
+- ⏱️ Iteration: 5-10 minutes
+- 👥 Who: Developers only
+- 📁 Location: TypeScript code
+- 🔄 Server: Restart required
+
+### Agent Approach
+- ⏱️ Iteration: 30 seconds
+- 👥 Who: Anyone
+- 📁 Location: Markdown file
+- 🔄 Server: No restart needed
+
+If agent approach produces equal/better results with 10x faster iteration, that's a huge win!
+
+---
+
+## 🎨 Common Improvements
+
+See `iteration-guide.md` for detailed examples, but here are quick fixes:
+
+### Wrong Colors
+Add: "🚨 CRITICAL: [COLOR] is MANDATORY, not optional"
+
+### Text Positioning Off
+Add: "Text MUST appear in top 20% of canvas"
+
+### Product Cropped
+Add: "NO cropping of product at any point, full visibility required"
+
+### Typography Doesn't Match
+Add: "Study reference typography CHARACTER BY CHARACTER, replicate exact stroke weight"
+
+---
+
+## 🚀 Going to Production
+
+Once you're happy with the agent template:
+
+1. **Copy refined template**
+   - From: `test/prompt-template-section.md`
+   - To: `Agents/Product Showcase/prompt.md` (add as new section)
+
+2. **Update production code**
+   - Modify `src/services/nanoBananaGenerator.ts`
+   - Make it read template from agent's `prompt.md`
+   - Build prompt dynamically instead of using hardcoded template
+
+3. **Repeat for all 4 agents**
+   - Each agent gets its own optimized template
+   - Independent iteration per agent style
+
+---
+
+## 💡 Pro Tips
+
+1. **Be Specific, Not Generic**
+   - ❌ "Natural lighting"
+   - ✅ "Soft window light from 45° left creating gentle wrap-around"
+
+2. **Use Emojis for Critical Instructions**
+   - 🚨 CRITICAL
+   - 🎯 IMPORTANT
+   - ⚠️ WARNING
+
+3. **Test Edge Cases**
+   - Different colors
+   - Different text lengths
+   - Different product types
+
+4. **Iterate Rapidly**
+   - Don't overthink
+   - Make small changes
+   - Test immediately
+
+5. **Keep Production Running**
+   - This is an isolated test environment
+   - Nothing here affects production
+   - Experiment freely!
+
+---
+
+## 📚 Documentation
+
+- **`iteration-guide.md`** - Complete iteration workflows and examples
+- **`prompt-template-section.md`** - The template itself (well-commented)
+- **`comparison-report.md`** - Auto-generated comparison (run compare-prompts.ts)
+
+---
+
+## ⚙️ Technical Details
+
+### Test Script (`test-generate.ts`)
+
+Both modes use EXACTLY the same:
+- ✅ API: `@google/generative-ai` library
+- ✅ Model: `gemini-2.5-flash-image`
+- ✅ Config: temperature 0.4, topP 0.95, topK 40
+- ✅ Parts: [prompt text, reference image, product image]
+
+**ONLY DIFFERENCE:** Where the prompt text comes from
+
+- Current mode: Reads `prompt.md` (hardcoded)
+- Agent mode: Builds from `prompt-template-section.md` (dynamic)
+
+### Prompt Builder (`agent-prompt-builder.ts`)
+
+Simple class that:
+1. Reads the template markdown
+2. Replaces placeholders with actual values
+3. Returns complete prompt string
+
+Example:
+```typescript
+const builder = new AgentPromptBuilder();
+const prompt = builder.buildCompletePrompt({
+  userDescription: "...",
+  framingType: "Full-length shot",
+  outfitDescription: "white elegant dress",
+  // ... more params
+});
+```
+
+---
+
+## 🎯 Success Criteria
+
+You know your prompt is working when:
+
+1. ✅ Image matches reference vibe
+2. ✅ Product is hero of composition
+3. ✅ Typography matches reference
+4. ✅ Text is crisp and readable
+5. ✅ Colors are accurate
+6. ✅ No cropping of product
+7. ✅ Professional advertising quality
+
+---
+
+## 🆘 Troubleshooting
+
+### "GEMINI_API_KEY not found"
+Make sure `.env` file exists in project root with your API key.
+
+### "Product image not found"
+Place your product image as `test/product.webp` (or .jpg, .png)
+
+### "Template file not found"
+Make sure `test/prompt-template-section.md` exists
+
+### "Generated image is very different from reference"
+This is expected - Gemini is creative! Edit the template to add more specific constraints.
+
+### "Text spelling is wrong"
+The spelling accuracy section in the template should help, but Gemini is not perfect. Consider emphasizing the correct spelling even more.
+
+---
+
+## 📞 Need Help?
+
+1. Read `iteration-guide.md` for detailed examples
+2. Run `compare-prompts.ts` to understand differences
+3. Check `comparison-report.md` for full prompt text
+4. Review generated images in `test/results/`
+
+---
+
+**Remember:** The prompt is your code. Change prompts, not TypeScript! 🎨

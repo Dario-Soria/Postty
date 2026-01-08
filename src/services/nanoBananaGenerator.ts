@@ -10,6 +10,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as logger from '../utils/logger';
+import { getPromptTemplateReader } from './promptTemplateReader';
 
 // Note: We use dynamic import for @google/generative-ai to support both libraries
 // The @google/genai library doesn't support gemini-2.5-flash-image model
@@ -19,6 +20,7 @@ const NANO_BANANA_MODEL = 'gemini-2.5-flash-image';
 
 /**
  * Build a descriptive font specification from typography style object
+ * Format: "serif elegant (thin strokes, flowing style)"
  */
 function buildFontDescription(style: any): string {
   const fontStyle = style.font_style || 'sans-serif';
@@ -27,12 +29,12 @@ function buildFontDescription(style: any): string {
   
   let description = fontStyle;
   
-  // Add character description if available
+  // Add character description if available (inline, not as a separate phrase)
   if (fontCharacter) {
-    description += ` with ${fontCharacter} character`;
+    description += ` ${fontCharacter}`;
   }
   
-  // Add specific notes if available
+  // Add specific notes in parentheses if available
   if (fontNotes) {
     description += ` (${fontNotes})`;
   }
@@ -145,26 +147,8 @@ function buildGenerationPrompt(params: {
   
   if (params.textContent && params.textContent.length > 0) {
     // Text generation mode - include text in the image
-    basePrompt = `TASK: Create a promotional image with TEXT OVERLAY.
-
-INPUTS:
-1. REFERENCE IMAGE: Use for style inspiration - match the color palette, lighting mood, and especially the TYPOGRAPHY STYLE
-   
-2. PRODUCT IMAGE: Study this product carefully and RECREATE it in the scene. DO NOT paste or overlay this image. Generate a photorealistic version of this product integrated naturally into the scene.
-
-CRITICAL: The product image is PROVIDED AS REFERENCE ONLY. You must GENERATE the product in the scene, not paste the original image. The product should look like it belongs in the scene naturally.
-
-USER REQUEST: ${params.userIntent || 'Product photography'}
-
-${sceneDescription}
-
-TEXT OVERLAY REQUIREMENTS:
-🚨 CRITICAL: You MUST include text overlays in the generated image. Text is not optional.
-
-Generate the following text directly rendered into the image:
-`;
-
-    // Add each text element with its styling
+    // Build text elements string with typography from design_guidelines
+    let textElements = '';
     params.textContent.forEach((text, index) => {
       const style = index === 0 
         ? params.typographyStyle?.headline 
@@ -173,93 +157,68 @@ Generate the following text directly rendered into the image:
           : params.typographyStyle?.badges;
       
       if (style) {
-        basePrompt += `\n\nText ${index + 1}: "${text}"`;
+        textElements += `\nText ${index + 1}: "${text}"`;
         
         // Enhanced font description with character and specific notes
         const fontDesc = buildFontDescription(style);
-        basePrompt += `\n- Typography: ${fontDesc}`;
+        logger.info(`   📝 Text ${index + 1} font description: "${fontDesc}"`);
+        logger.info(`   📝 Text ${index + 1} style object: ${JSON.stringify(style, null, 2)}`);
+        textElements += `\n- Typography: ${fontDesc}`;
         
-        basePrompt += `\n- Weight: ${style.font_weight || 'regular'}`;
-        basePrompt += `\n- Case: ${style.case || 'normal'}`;
-        basePrompt += `\n- Color: ${style.color || '#FFFFFF'}`;
+        textElements += `\n- Weight: ${style.font_weight || 'regular'}`;
+        textElements += `\n- Case: ${style.case || 'normal'}`;
+        textElements += `\n- Color: ${style.color || '#FFFFFF'}`;
         
         // More specific positioning with Y percentage
         if (style.position_y_percent) {
-          basePrompt += `\n- Vertical Position: ${style.position_y_percent}% from top edge`;
+          textElements += `\n- Vertical Position: ${style.position_y_percent}% from top edge`;
         } else if (style.position) {
-          basePrompt += `\n- Position: ${style.position}`;
+          textElements += `\n- Position: ${style.position}`;
         }
         
-        basePrompt += `\n- Size: ${style.size || 'medium'} (relative to canvas)`;
-        basePrompt += `\n- Alignment: ${style.alignment || 'center'}`;
-        basePrompt += `\n- Letter Spacing: ${style.letter_spacing || 'normal'}`;
+        textElements += `\n- Size: ${style.size || 'medium'} (relative to canvas)`;
+        textElements += `\n- Alignment: ${style.alignment || 'center'}`;
+        textElements += `\n- Letter Spacing: ${style.letter_spacing || 'normal'}`;
         
         // Add spacing guidance for subheadline
         if (index === 1 && style.spacing_from_headline) {
-          basePrompt += `\n- Spacing: ${style.spacing_from_headline} gap from headline above`;
+          textElements += `\n- Spacing: ${style.spacing_from_headline} gap from headline above`;
         }
+        textElements += '\n';
       } else {
-        basePrompt += `\n\nText ${index + 1}: "${text}"`;
+        textElements += `\nText ${index + 1}: "${text}"\n`;
       }
     });
 
-    // Add color adaptation guidance
+    // Build product colors string
+    let productColors = '';
     if (params.productColors && params.productColors.length > 0) {
-      basePrompt += `\n\nPRODUCT DOMINANT COLORS: ${params.productColors.join(', ')}`;
-      basePrompt += `\nIMPORTANT: Ensure text has excellent contrast against the background. If the product or background uses similar colors to the text, adjust the text color or add subtle shadows/outlines for readability.`;
+      productColors = `PRODUCT DOMINANT COLORS: ${params.productColors.join(', ')}`;
     }
 
-    basePrompt += `\n\nTYPOGRAPHY MATCHING INSTRUCTIONS:
-🎯 CRITICAL: Study the REFERENCE IMAGE typography in extreme detail and REPLICATE it precisely:
+    // Use template reader to build final prompt from prompt.md
+    const reader = getPromptTemplateReader();
+    basePrompt = reader.buildPrompt({
+      userIntent: params.userIntent || 'Professional product photography with elegant composition',
+      sceneDescription,
+      textElements,
+      productColors,
+      aspectRatio: params.aspectRatio,
+    });
 
-1. FONT CHARACTERISTICS:
-   - Analyze the exact letter forms, stroke weights, and character shapes in the reference
-   - Match the font style (serif/sans-serif/script/display) AND the character mood (elegant/bold/luxury/etc.)
-   - If reference shows script fonts, determine if they're elegant calligraphic vs casual brush style
-   - If reference shows serif, note if they're traditional, modern, or decorative
-
-2. POSITIONING & SPACING:
-   - Match the vertical positioning EXACTLY - measure where text sits in the reference
-   - Maintain the same spacing between headline and subheadline as shown in reference
-   - Preserve the relationship between text and other elements (person, product, background)
-
-3. VISUAL INTEGRATION:
-   - Text should look like it belongs in the scene, not just overlaid
-   - Match how the reference integrates text with imagery
-   - If reference shows text with effects (shadows, outlines), replicate those
-   - Text must be crisp, clear, and highly readable
-
-4. HIERARCHY & SCALE:
-   - Maintain the same size relationships between text elements as the reference
-   - Headline should dominate with the same visual weight as reference
-   - Subheadline should have similar relative sizing
-
-🚨 The specifications above describe the reference typography - use them to MATCH the reference style precisely.
-
-🚨 TEXT SPELLING ACCURACY - CRITICAL:
-⚠️ PERFECT SPELLING IS MANDATORY: Each word MUST be rendered with 100% accurate spelling, letter by letter.
-- Before generating, mentally spell out each word character-by-character
-- Double-check EVERY letter in EVERY word before finalizing
-- Pay special attention to Spanish characters: ñ, á, é, í, ó, ú, ü
-- Common mistakes to avoid:
-  * Mixing 'j' and 'h' sounds (e.g., "agujeros" has 'j', not 'h')
-  * Missing or wrong letters in middle of words (e.g., "hermana" not "harmana")
-  * Confusing similar-looking letters (e.g., 'o' vs '0', 'l' vs 'I')
-- VERIFICATION STEP: After rendering text, verify spelling matches EXACTLY what was specified above
-
-🚨 TEXT GENERATION IS MANDATORY: The output image MUST contain the specified text overlays. Do not generate an image without text.
-
-OUTPUT REQUIREMENTS:
-- ${params.aspectRatio} aspect ratio
-- Photorealistic, high quality
-- Product must be clearly visible and featured (but GENERATED, not pasted from product image)
-- Professional advertising quality with text integrated naturally
-- Text should be crisp, clear, and readable
-- VERIFY: All specified text elements are present and visible in the output`;
-
-    logger.info(`📝 Nano Banana prompt built (WITH TEXT):`);
+    logger.info(`📝 Nano Banana prompt built (WITH TEXT) from template:`);
     logger.info(`   - Text elements: ${params.textContent.length}`);
     logger.info(`   - Typography style provided: ${!!params.typographyStyle}`);
+    
+    // Save prompt to file for debugging
+    const debugPromptPath = path.join(process.cwd(), 'temp-uploads', `prompt_${Date.now()}.txt`);
+    fs.writeFileSync(debugPromptPath, basePrompt);
+    logger.info(`📝 FULL PROMPT saved to: ${debugPromptPath}`);
+    
+    logger.info(`📝 FULL PROMPT being sent to Gemini:`);
+    logger.info('═'.repeat(80));
+    logger.info(basePrompt);
+    logger.info('═'.repeat(80));
   } else {
     // No text mode - clean image
     basePrompt = `🚫🚫🚫 ABSOLUTELY NO TEXT IN THE OUTPUT IMAGE 🚫🚫🚫

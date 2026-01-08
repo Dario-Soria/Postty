@@ -37,6 +37,7 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
   const [inputValue, setInputValue] = React.useState("");
   const [isTyping, setIsTyping] = React.useState(false);
   const [isSending, setIsSending] = React.useState(false);
+  const [clientSessionId, setClientSessionId] = React.useState<string | null>(null);
   const [previewReference, setPreviewReference] = React.useState<{ ref: ReferenceOption; index: number } | null>(null);
   const [showCaptionModal, setShowCaptionModal] = React.useState(false);
   const [captionInput, setCaptionInput] = React.useState("");
@@ -45,6 +46,17 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLTextAreaElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const makeFreshSessionId = React.useCallback(() => {
+    const base = user?.uid ? `uid-${user.uid}` : "anon";
+    return `${base}-${crypto.randomUUID()}`;
+  }, [user?.uid]);
+
+  // Ensure we always have a session id (and regenerate when the user changes)
+  React.useEffect(() => {
+    if (loading) return;
+    setClientSessionId(makeFreshSessionId());
+  }, [loading, makeFreshSessionId]);
 
   // Scroll to bottom when messages change
   React.useEffect(() => {
@@ -68,12 +80,14 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
   }, [previewReference]);
 
   // Initial greeting from agent when component mounts
-  const hasGreetedRef = React.useRef(false);
+  const lastGreetedSessionRef = React.useRef<string | null>(null);
   
   React.useEffect(() => {
     // Wait for auth to load before making initial request
-    if (loading || hasGreetedRef.current) return;
-    hasGreetedRef.current = true;
+    if (loading) return;
+    if (!clientSessionId) return;
+    if (lastGreetedSessionRef.current === clientSessionId) return;
+    lastGreetedSessionRef.current = clientSessionId;
     
     const fetchInitialGreeting = async () => {
       setIsTyping(true);
@@ -83,6 +97,7 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
         formData.append("agentType", agentId);
         formData.append("message", "START_CONVERSATION"); // Special message to trigger greeting
         formData.append("conversationHistory", JSON.stringify([]));
+        formData.append("sessionId", clientSessionId);
         
         // Add userId for session isolation
         if (user?.uid) {
@@ -120,7 +135,7 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
 
     fetchInitialGreeting();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentId, loading]);
+  }, [agentId, loading, clientSessionId, user?.uid]);
 
   const addAssistantMessage = (content: string, imageUrl?: string, textLayout?: any) => {
     setIsTyping(true);
@@ -151,10 +166,111 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
     ]);
   };
 
+  const hardReset = React.useCallback(async () => {
+    // New session id guarantees the backend creates a completely fresh agent instance
+    const nextSessionId = makeFreshSessionId();
+    setClientSessionId(nextSessionId);
+    // Prevent the auto-greeting effect from also firing for this new session
+    lastGreetedSessionRef.current = nextSessionId;
+
+    // Clear all UI state (messages, images, reference selection, modals)
+    setIsTyping(false);
+    setIsSending(false);
+    setInputValue("");
+    setPreviewReference(null);
+    setShowCaptionModal(false);
+    setCaptionInput("");
+    setPublishingImageUrl(null);
+    setIsPublishing(false);
+    setMessages([]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+
+    // Ask agent to hard-reset server-side state and return a fresh greeting
+    setIsTyping(true);
+    try {
+      const formData = new FormData();
+      formData.append("agentType", agentId);
+      formData.append("message", "RESET_CONVERSATION");
+      formData.append("conversationHistory", JSON.stringify([]));
+      formData.append("sessionId", nextSessionId);
+      if (user?.uid) formData.append("userId", user.uid);
+
+      const response = await fetch("/api/agent-chat", { method: "POST", body: formData });
+      if (!response.ok) throw new Error("Failed to reset conversation");
+      const result = await response.json();
+      if (result?.type === "text" && result.text) {
+        // Add immediately (no typing delay) so it feels like a true fresh start
+        setMessages([
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: result.text,
+          },
+        ]);
+      } else {
+        setMessages([
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: "¡Listo! Subí la foto de tu nuevo producto usando el botón (+) 📸",
+          },
+        ]);
+      }
+    } catch (error) {
+      console.error("Error hard-resetting conversation:", error);
+      setMessages([
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: "¡Listo! Subí la foto de tu nuevo producto usando el botón (+) 📸",
+        },
+      ]);
+    } finally {
+      setIsTyping(false);
+    }
+  }, [agentId, makeFreshSessionId, user?.uid]);
+
+  const isStartOverIntent = React.useCallback((text: string) => {
+    const msg = text.trim().toLowerCase();
+    if (!msg) return false;
+    const keywords = [
+      "otro producto",
+      "nueva imagen",
+      "nuevo producto",
+      "empezar de nuevo",
+      "otra imagen",
+      "generar otra",
+      "generar otra imagen",
+      "generar una nueva imagen",
+      "start over",
+      "different product",
+      "another product",
+      "new product",
+      "create another",
+      "quiero crear otra",
+      "vamos a crear una nueva",
+      "crear algo con otro",
+      "imagen de producto nueva",
+      "producto nueva",
+      "generate another",
+      "generate a new image",
+      "another picture",
+      "new picture",
+      "restart",
+    ];
+    return keywords.some((k) => msg.includes(k));
+  }, []);
+
   const handleSendMessage = async (text?: string, uploadedFile?: File) => {
     const messageText = text || inputValue.trim();
     if (!messageText && !uploadedFile) return;
     if (isSending || isTyping) return;
+
+    // If the user is asking to start over, do a full reset (forget images + references + conversation)
+    if (messageText && isStartOverIntent(messageText)) {
+      await hardReset();
+      return;
+    }
 
     setInputValue("");
     
@@ -173,6 +289,7 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
       formData.append("agentType", agentId);
       formData.append("message", messageText);
       formData.append("conversationHistory", JSON.stringify(messages));
+      if (clientSessionId) formData.append("sessionId", clientSessionId);
       
       if (uploadedFile) {
         formData.append("image", uploadedFile);
@@ -299,57 +416,7 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
   };
 
   const handleCreateAnother = async () => {
-    // Add a divider message to show new conversation is starting
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: "───────────────────",
-      },
-    ]);
-
-    // Send a reset message to the agent to start fresh
-    setIsSending(true);
-    try {
-      const formData = new FormData();
-      formData.append("agentType", agentId);
-      formData.append("message", "RESET_CONVERSATION");
-
-      // Add userId for session isolation
-      if (user?.uid) {
-        formData.append("userId", user.uid);
-      }
-
-      const response = await fetch("/api/agent-chat", {
-        method: "POST",
-        body: formData,
-      });
-
-      const data = await response.json();
-
-      if (data.status === "success" && data.result) {
-        const result = data.result;
-        
-        // Add agent's fresh greeting
-        setTimeout(() => {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              role: "assistant",
-              content: result.text || "¡Listo! Subí la foto de tu nuevo producto usando el botón (+) 📸",
-            },
-          ]);
-        }, 500);
-      }
-    } catch (error) {
-      console.error("Error resetting conversation:", error);
-      // Fallback greeting if reset fails
-      addAssistantMessage("¡Perfecto! Subí la foto de tu nuevo producto usando el botón (+) 📸");
-    } finally {
-      setIsSending(false);
-    }
+    await hardReset();
   };
 
   const handlePublishToInstagram = async () => {

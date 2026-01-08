@@ -1,20 +1,36 @@
 /**
  * Standalone Nano Banana Test Script
  * 
- * This script EXACTLY replicates the Gemini API call from production
- * Uses the same library, same configuration, same prompt building logic
+ * This script supports TWO modes:
+ * 1. CURRENT MODE: Uses hardcoded prompt from prompt.md (production method)
+ * 2. AGENT MODE: Uses agent-generated prompt from prompt-template-section.md
+ * 
+ * Both modes use EXACTLY the same Gemini API call - only the prompt source differs
  * 
  * Usage:
- *   npx ts-node test/test-generate.ts
+ *   npx ts-node test/test-generate.ts              # defaults to current mode
+ *   npx ts-node test/test-generate.ts --mode=current
+ *   npx ts-node test/test-generate.ts --mode=agent
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import sharp from 'sharp';
 import dotenv from 'dotenv';
+import { AgentPromptBuilder } from './agent-prompt-builder';
 
 // Load environment variables from .env
 dotenv.config();
+
+// Parse command line arguments
+const args = process.argv.slice(2);
+const modeArg = args.find(arg => arg.startsWith('--mode='));
+const MODE = modeArg ? modeArg.split('=')[1] : 'current';
+
+if (!['current', 'agent'].includes(MODE)) {
+  console.error('❌ Invalid mode. Use --mode=current or --mode=agent');
+  process.exit(1);
+}
 
 // Configuration - EXACTLY as production
 const TEST_DIR = path.join(process.cwd(), 'test');
@@ -25,8 +41,15 @@ const API_KEY = process.env.GEMINI_API_KEY;
 const NANO_BANANA_MODEL = 'gemini-2.5-flash-image';
 
 console.log('='.repeat(80));
-console.log('🧪 NANO BANANA ISOLATED TEST - EXACT PRODUCTION REPLICATION');
+console.log('🧪 NANO BANANA ISOLATED TEST');
 console.log('='.repeat(80));
+console.log();
+console.log(`📋 MODE: ${MODE.toUpperCase()}`);
+if (MODE === 'current') {
+  console.log('   Using hardcoded prompt from prompt.md (production method)');
+} else {
+  console.log('   Using agent-generated prompt from prompt-template-section.md');
+}
 console.log();
 
 // Validate API key
@@ -96,10 +119,62 @@ async function runTest() {
     console.log(`✅ Prompt file: ${path.basename(PROMPT_PATH)}`);
     console.log();
     
-    // 2. Load prompt
+    // 2. Load prompt (different based on mode)
     console.log('📝 Loading prompt...');
-    const prompt = fs.readFileSync(PROMPT_PATH, 'utf-8');
-    console.log(`   Length: ${prompt.length} characters`);
+    let prompt: string;
+    
+    if (MODE === 'current') {
+      // Current mode: Use hardcoded prompt from prompt.md
+      prompt = fs.readFileSync(PROMPT_PATH, 'utf-8');
+      console.log(`   Source: ${path.basename(PROMPT_PATH)} (hardcoded)`);
+      console.log(`   Length: ${prompt.length} characters`);
+    } else {
+      // Agent mode: Generate prompt using template
+      console.log('   Source: agent-prompt-builder.ts (dynamic generation)');
+      const builder = new AgentPromptBuilder();
+      
+      // These parameters would normally come from the agent's analysis
+      // For this test, we use the same values as the current prompt
+      prompt = builder.buildCompletePrompt({
+        userDescription: "Professional fashion photography. A sophisticated woman wearing black leather knee-high boots with buckles (the hero product) from the user's uploaded image, sitting gracefully on a pristine green tennis court, reading a newspaper. The composition is calm and luxurious. Full-length view of the woman, with the boots clearly visible and extending to the ground.",
+        framingType: "Full-length shot",
+        outfitDescription: "white elegant dress",
+        productDescription: "black leather knee-high boots with buckles",
+        locationDescription: "pristine green tennis court",
+        moodDescription: "elegant, serene ambiance, in line with a luxurious and calm mood",
+        lightingDescription: "Soft, warm natural lighting",
+        depthDescription: "Shallow depth of field",
+        sceneType: "Clean product photography with minimal background",
+        textElements: [
+          {
+            text: 'Botas "el Uli',
+            typography: 'serif elegant (thin strokes, flowing style)',
+            weight: 'regular',
+            case: 'title-case',
+            color: 'black',
+            position: '40%',
+            size: 'large',
+            alignment: 'center',
+            letterSpacing: 'normal',
+          },
+          {
+            text: '50% off en toda la tienda',
+            typography: 'script elegant',
+            weight: 'regular',
+            color: 'black',
+            position: '45%',
+            size: 'medium',
+            alignment: 'center',
+            letterSpacing: 'normal',
+            spacing: 'tight (5-10%)',
+          },
+        ],
+        productColors: ['#F6F4EF', '#2E2F31', '#B2B1AE'],
+        aspectRatio: '1:1',
+      });
+      console.log(`   Length: ${prompt.length} characters`);
+      console.log('   Template: prompt-template-section.md');
+    }
     console.log();
     
     // 3. Convert images to base64 - EXACTLY as production
@@ -219,21 +294,30 @@ async function runTest() {
     
     // 10. Save result
     const timestamp = Date.now();
-    const outputPath = path.join(RESULTS_DIR, `test_${timestamp}.png`);
+    const modePrefix = MODE === 'agent' ? 'agent' : 'current';
+    const outputPath = path.join(RESULTS_DIR, `${modePrefix}_${timestamp}.png`);
     fs.writeFileSync(outputPath, imageBuffer);
     
     console.log('='.repeat(80));
-    console.log('✅ TEST COMPLETE - EXACT PRODUCTION REPLICATION');
+    console.log(`✅ TEST COMPLETE - ${MODE.toUpperCase()} MODE`);
     console.log('='.repeat(80));
     console.log();
     console.log(`📁 Output: ${outputPath}`);
     console.log(`⏱️  Generation: ${(duration / 1000).toFixed(1)}s`);
     console.log(`📐 Size: ${metadata.width}x${metadata.height}`);
+    console.log(`🎯 Mode: ${MODE}`);
     console.log();
     console.log('💡 Next steps:');
-    console.log('   1. Compare with original: generated-images/1767876654154_nanobanana_base.png');
-    console.log('   2. Edit test/prompt.md to iterate');
-    console.log('   3. Run again: npx ts-node test/test-generate.ts');
+    if (MODE === 'current') {
+      console.log('   1. Edit test/prompt.md to iterate');
+      console.log('   2. Run again: npx ts-node test/test-generate.ts --mode=current');
+      console.log('   3. Try agent mode: npx ts-node test/test-generate.ts --mode=agent');
+    } else {
+      console.log('   1. Edit test/prompt-template-section.md to iterate');
+      console.log('   2. Run again: npx ts-node test/test-generate.ts --mode=agent');
+      console.log('   3. Compare with current mode: npx ts-node test/test-generate.ts --mode=current');
+      console.log('   4. Use test/compare-prompts.ts to see differences');
+    }
     console.log();
     
   } catch (error: any) {
