@@ -4,7 +4,7 @@ import * as React from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 import { TopBar } from "../_components/ui/TopBar";
-import { IconRefresh } from "../_components/ui/Icons";
+import { IconComment, IconHeart, IconPlay, IconRefresh, IconShare } from "../_components/ui/Icons";
 
 type PostKind = "image" | "video";
 type PostStatus = "ready_to_upload" | "published" | "discarded" | "failed" | "generating" | "publishing";
@@ -22,6 +22,14 @@ type UserPost = {
   instagramPermalink?: string | null;
   instagramMediaId?: string | null;
   error?: string | null;
+};
+
+type PostAnalytics = {
+  likes?: number;
+  comments?: number;
+  viewsOrReach?: number;
+  shares?: number;
+  source?: { views: "views" | "reach" | "impressions" | null };
 };
 
 function formatStatusLabel(status: PostStatus): string {
@@ -50,9 +58,12 @@ export default function MisPostsPage() {
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [selected, setSelected] = React.useState<UserPost | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const [analyticsByMediaId, setAnalyticsByMediaId] = React.useState<Record<string, PostAnalytics>>(
+    {}
+  );
 
-  const load = React.useCallback(async () => {
-    if (!user) return;
+  const load = React.useCallback(async (): Promise<UserPost[]> => {
+    if (!user) return [];
     setError(null);
     const token = await user.getIdToken();
     const res = await fetch("/api/posts", {
@@ -63,8 +74,56 @@ export default function MisPostsPage() {
     if (!res.ok || data?.status !== "success") {
       throw new Error(data?.message || "Failed to load posts");
     }
-    setItems(Array.isArray(data.posts) ? (data.posts as UserPost[]) : []);
+    const posts = Array.isArray(data.posts) ? (data.posts as UserPost[]) : [];
+    setItems(posts);
+    return posts;
   }, [user]);
+
+  const loadAnalytics = React.useCallback(
+    async (posts: UserPost[]) => {
+      if (!user) return;
+      const mediaIds = Array.from(
+        new Set(
+          posts
+            .filter((p) => p.status === "published" && !!p.instagramMediaId)
+            .map((p) => p.instagramMediaId!)
+        )
+      );
+
+      if (mediaIds.length === 0) {
+        setAnalyticsByMediaId({});
+        return;
+      }
+
+      const token = await user.getIdToken();
+      const res = await fetch("/api/posts/analytics", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ mediaIds }),
+        cache: "no-store",
+      });
+
+      const data = await res.json();
+      if (!res.ok || data?.status !== "success") {
+        throw new Error(data?.message || "Failed to load analytics");
+      }
+
+      const analytics =
+        data?.analyticsByMediaId && typeof data.analyticsByMediaId === "object"
+          ? (data.analyticsByMediaId as Record<string, PostAnalytics>)
+          : {};
+      setAnalyticsByMediaId(analytics);
+    },
+    [user]
+  );
+
+  const refreshAll = React.useCallback(async () => {
+    const posts = await load();
+    await loadAnalytics(posts);
+  }, [load, loadAnalytics]);
 
   // Auto-refresh while any items are generating so the UI swaps to the ready preview quickly.
   React.useEffect(() => {
@@ -84,8 +143,8 @@ export default function MisPostsPage() {
 
   React.useEffect(() => {
     if (!user) return;
-    load().catch((e) => setError(e instanceof Error ? e.message : "Error"));
-  }, [load, user]);
+    refreshAll().catch((e) => setError(e instanceof Error ? e.message : "Error"));
+  }, [refreshAll, user]);
 
   const handleUpload = async (postId: string) => {
     if (!user) return;
@@ -187,7 +246,7 @@ export default function MisPostsPage() {
           </div>
           <button
             type="button"
-            onClick={() => load().catch((e) => setError(e instanceof Error ? e.message : "Error"))}
+            onClick={() => refreshAll().catch((e) => setError(e instanceof Error ? e.message : "Error"))}
             className="h-11 px-4 rounded-2xl bg-white/70 border border-white/80 backdrop-blur-xl shadow-sm font-semibold text-slate-900 hover:bg-white/80 transition"
           >
             Actualizar
@@ -204,6 +263,13 @@ export default function MisPostsPage() {
           {items.map((p) => {
             const isReady = p.kind === "video" && p.status === "ready_to_upload";
             const isPublished = p.status === "published" && !!p.instagramPermalink;
+            const a = p.instagramMediaId ? analyticsByMediaId[p.instagramMediaId] : undefined;
+
+            const fmt = (n?: number) =>
+              typeof n === "number"
+                ? new Intl.NumberFormat("es-ES", { maximumFractionDigits: 0 }).format(n)
+                : "—";
+
             return (
               <button
                 key={p.id}
@@ -258,6 +324,37 @@ export default function MisPostsPage() {
                 {isReady ? (
                   <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/55 to-transparent">
                     <div className="text-white text-xs font-semibold">Listo para subir</div>
+                  </div>
+                ) : null}
+
+                {isPublished ? (
+                  <div className="absolute inset-x-2 bottom-2 pointer-events-none">
+                    <div className="rounded-2xl bg-black/55 border border-white/20 backdrop-blur-md px-3 py-2 text-white">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-1.5">
+                          <IconHeart className="h-5 w-5" />
+                          <span className="text-[11px] font-semibold tabular-nums">{fmt(a?.likes)}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <IconComment className="h-5 w-5" />
+                          <span className="text-[11px] font-semibold tabular-nums">
+                            {fmt(a?.comments)}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <IconPlay className="h-5 w-5" />
+                          <span className="text-[11px] font-semibold tabular-nums">
+                            {fmt(a?.viewsOrReach)}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <IconShare className="h-5 w-5" />
+                          <span className="text-[11px] font-semibold tabular-nums">
+                            {fmt(a?.shares)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 ) : null}
               </button>

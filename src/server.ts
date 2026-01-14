@@ -32,6 +32,7 @@ import videoGenerateRoutes from './routes/video-generate';
 import videoPublishRoutes from './routes/video-publish';
 import videoDiscardRoutes from './routes/video-discard';
 import postsRoutes from './routes/posts';
+import postsAnalyticsRoutes from './routes/posts-analytics';
 import * as logger from './utils/logger';
 
 // Configuration
@@ -99,6 +100,7 @@ async function start(): Promise<void> {
     await fastify.register(videoPublishRoutes);
     await fastify.register(videoDiscardRoutes);
     await fastify.register(postsRoutes);
+    await fastify.register(postsAnalyticsRoutes);
     await fastify.register(chatRoute);
     await fastify.register(posttyArchitectRoute);
     await fastify.register(captionRoute);

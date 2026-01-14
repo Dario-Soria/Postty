@@ -157,4 +157,61 @@ export function IconRefresh(props: React.SVGProps<SVGSVGElement>) {
   );
 }
 
+export function IconHeart(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true" {...props}>
+      <path
+        d="M12 20s-7-4.4-9.3-8.5C.8 8.5 2.3 5.7 5.2 4.7c1.9-.7 4 .1 5.3 1.7 1.3-1.6 3.4-2.4 5.3-1.7 2.9 1 4.4 3.8 2.5 6.8C19 15.6 12 20 12 20Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+export function IconComment(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true" {...props}>
+      <path
+        d="M20 14a4 4 0 0 1-4 4H8l-4 3V6a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v8Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+export function IconShare(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true" {...props}>
+      <path
+        d="M21 3 9.6 14.4"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M21 3 14 21l-3.2-8.4L2 11l19-8Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+export function IconPlay(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true" {...props}>
+      <path
+        d="M10 8.5v7l6-3.5-6-3.5Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
 
