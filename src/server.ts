@@ -25,6 +25,13 @@ import testEnvRoute from './routes/test-env';
 import applyReferenceJsonRoute from './routes/applyReferenceJson';
 import applyDesignGuidelinesTextRoute from './routes/applyDesignGuidelinesText';
 import incrementReferenceRankingRoute from './routes/increment-reference-ranking';
+import publishInstagramVideoRoute from './routes/publish-instagram-video';
+import videoGenerateAndPublishRoutes from './routes/video-generate-and-publish';
+import videoJobRoutes from './routes/video-jobs';
+import videoGenerateRoutes from './routes/video-generate';
+import videoPublishRoutes from './routes/video-publish';
+import videoDiscardRoutes from './routes/video-discard';
+import postsRoutes from './routes/posts';
 import * as logger from './utils/logger';
 
 // Configuration
@@ -44,6 +51,31 @@ const fastify = Fastify({
  */
 async function start(): Promise<void> {
   try {
+    // Dev convenience: allow internal agent calls (used by Product Showcase agent -> /video/generate)
+    // without forcing local developers to configure a secret.
+    if (
+      (!process.env.POSTTY_INTERNAL_TOKEN || process.env.POSTTY_INTERNAL_TOKEN.trim().length === 0) &&
+      process.env.NODE_ENV !== 'production'
+    ) {
+      process.env.POSTTY_INTERNAL_TOKEN = 'postty-dev-internal-token';
+      logger.warn('[Config] POSTTY_INTERNAL_TOKEN not set; using development default token');
+    }
+
+    // Accept application/x-www-form-urlencoded requests (used by some clients/tools).
+    // We parse it ourselves to avoid adding extra dependencies.
+    fastify.addContentTypeParser(
+      'application/x-www-form-urlencoded',
+      { parseAs: 'string' },
+      (req, body, done) => {
+        try {
+          const parsed = Object.fromEntries(new URLSearchParams(body as string).entries());
+          done(null, parsed);
+        } catch (e) {
+          done(e as Error);
+        }
+      }
+    );
+
     // Register plugins
     await fastify.register(multipart, {
       limits: {
@@ -60,6 +92,13 @@ async function start(): Promise<void> {
     await fastify.register(generateOnlyRoute);
     await fastify.register(generateWithImageOnlyRoute);
     await fastify.register(publishInstagramFromUrlRoute);
+    await fastify.register(publishInstagramVideoRoute);
+    await fastify.register(videoGenerateAndPublishRoutes);
+    await fastify.register(videoJobRoutes);
+    await fastify.register(videoGenerateRoutes);
+    await fastify.register(videoPublishRoutes);
+    await fastify.register(videoDiscardRoutes);
+    await fastify.register(postsRoutes);
     await fastify.register(chatRoute);
     await fastify.register(posttyArchitectRoute);
     await fastify.register(captionRoute);
@@ -94,6 +133,13 @@ async function start(): Promise<void> {
     logger.info('  POST /generate - Generate AI image + caption + S3 upload (no publish)');
     logger.info('  POST /generate-with-image - Generate AI image from uploaded image + prompt (no publish)');
     logger.info('  POST /publish-instagram-from-url - Publish a public image URL to Instagram');
+    logger.info('  POST /publish-instagram-video - Publish a server-local mp4 video to Instagram (uploads to S3 first; uses REELS)');
+    logger.info('  POST /video/generate-and-publish - Generate a Veo video (optional product image), upload to S3, publish to IG (async job)');
+    logger.info('  GET  /video/jobs/:jobId - Check status for Veo video generation/publish job');
+    logger.info('  POST /video/generate - Generate Veo video and save as ready_to_upload (manual publish flow; Firestore-backed)');
+    logger.info('  POST /video/publish - Publish a ready video to Instagram (manual publish flow; Firestore-backed)');
+    logger.info('  POST /video/discard - Discard a ready video and delete from storage (manual flow; Firestore-backed)');
+    logger.info('  GET  /posts - List user posts/videos (Firestore-backed)');
     logger.info('  POST /chat - Conversational orchestrator (guardrails + slot-filling)');
     logger.info('  POST /postty-architect - Content Architect (V10 states + options + refining)');
     logger.info('  POST /caption - Caption-only regeneration');

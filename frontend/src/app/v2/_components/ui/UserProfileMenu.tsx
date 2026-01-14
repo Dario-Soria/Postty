@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { useAuth } from "@/contexts/AuthContext";
+import { useRouter } from "next/navigation";
 
 interface UserProfileMenuProps {
   onSignOut?: () => void;
@@ -11,6 +12,7 @@ export function UserProfileMenu({ onSignOut }: UserProfileMenuProps) {
   const { user, userProfile, signOut } = useAuth();
   const [isOpen, setIsOpen] = React.useState(false);
   const menuRef = React.useRef<HTMLDivElement>(null);
+  const router = useRouter();
 
   // Close menu when clicking outside
   React.useEffect(() => {
@@ -95,9 +97,9 @@ export function UserProfileMenu({ onSignOut }: UserProfileMenuProps) {
             <MenuButton
               onClick={() => {
                 setIsOpen(false);
-                // TODO: Navigate to references page
-                console.log("Navigate to My References");
+                // Disabled for now
               }}
+              disabled
               icon={
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -110,9 +112,9 @@ export function UserProfileMenu({ onSignOut }: UserProfileMenuProps) {
             <MenuButton
               onClick={() => {
                 setIsOpen(false);
-                // TODO: Navigate to brand page
-                console.log("Navigate to My Brand");
+                // Disabled for now
               }}
+              disabled
               icon={
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" />
@@ -125,8 +127,7 @@ export function UserProfileMenu({ onSignOut }: UserProfileMenuProps) {
             <MenuButton
               onClick={() => {
                 setIsOpen(false);
-                // TODO: Navigate to posts page
-                console.log("Navigate to My Posts");
+                router.push("/v2/posts");
               }}
               icon={
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -166,19 +167,24 @@ interface MenuButtonProps {
   icon: React.ReactNode;
   children: React.ReactNode;
   variant?: "default" | "danger";
+  disabled?: boolean;
 }
 
-function MenuButton({ onClick, icon, children, variant = "default" }: MenuButtonProps) {
+function MenuButton({ onClick, icon, children, variant = "default", disabled = false }: MenuButtonProps) {
   const colorClasses =
     variant === "danger"
       ? "text-rose-600 hover:bg-rose-50/80"
       : "text-slate-700 hover:bg-slate-100/80";
+  const disabledClasses = disabled
+    ? "opacity-45 cursor-not-allowed hover:bg-transparent"
+    : "";
 
   return (
     <button
       type="button"
-      onClick={onClick}
-      className={`w-full px-4 py-2.5 flex items-center gap-3 text-sm font-medium transition-colors ${colorClasses}`}
+      onClick={disabled ? undefined : onClick}
+      className={`w-full px-4 py-2.5 flex items-center gap-3 text-sm font-medium transition-colors ${colorClasses} ${disabledClasses}`}
+      disabled={disabled}
     >
       {icon}
       <span>{children}</span>

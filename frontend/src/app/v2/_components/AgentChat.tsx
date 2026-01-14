@@ -34,6 +34,7 @@ type Props = {
 export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
   const { user, loading } = useAuth();
   const [messages, setMessages] = React.useState<Message[]>([]);
+  const [historyCutoffIndex, setHistoryCutoffIndex] = React.useState(0);
   const [inputValue, setInputValue] = React.useState("");
   const [isTyping, setIsTyping] = React.useState(false);
   const [isSending, setIsSending] = React.useState(false);
@@ -52,11 +53,65 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
     return `${base}-${crypto.randomUUID()}`;
   }, [user?.uid]);
 
-  // Ensure we always have a session id (and regenerate when the user changes)
+  const storageKey = React.useMemo(() => {
+    const uid = user?.uid ? `uid-${user.uid}` : "anon";
+    return `postty:v2:agentchat:${uid}:${agentId}`;
+  }, [agentId, user?.uid]);
+
+  // Restore chat session/messages on mount so going to Mis posts and back doesn't reset the flow.
   React.useEffect(() => {
     if (loading) return;
-    setClientSessionId(makeFreshSessionId());
-  }, [loading, makeFreshSessionId]);
+    if (clientSessionId) return;
+    try {
+      const raw = typeof window !== "undefined" ? window.sessionStorage.getItem(storageKey) : null;
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const sid = typeof parsed?.sessionId === "string" ? parsed.sessionId : null;
+        const msgs = Array.isArray(parsed?.messages) ? (parsed.messages as Message[]) : null;
+        const cutoff =
+          typeof parsed?.historyCutoffIndex === "number" && Number.isFinite(parsed.historyCutoffIndex)
+            ? Math.max(0, Math.trunc(parsed.historyCutoffIndex))
+            : 0;
+        if (sid) setClientSessionId(sid);
+        if (msgs && msgs.length > 0) setMessages(msgs);
+        setHistoryCutoffIndex(cutoff);
+        if (sid) {
+          // Prevent the greeting effect from firing for a restored session
+          lastGreetedSessionRef.current = sid;
+        }
+        return;
+      }
+    } catch {
+      // ignore
+    }
+
+    // Fallback: new session
+    const sid = makeFreshSessionId();
+    setClientSessionId(sid);
+  }, [clientSessionId, loading, makeFreshSessionId, storageKey]);
+
+  // Persist session + messages (keeps chat state across navigation)
+  React.useEffect(() => {
+    if (!clientSessionId) return;
+    try {
+      if (typeof window === "undefined") return;
+      window.sessionStorage.setItem(
+        storageKey,
+        JSON.stringify({ sessionId: clientSessionId, messages, historyCutoffIndex })
+      );
+    } catch {
+      // ignore
+    }
+  }, [clientSessionId, historyCutoffIndex, messages, storageKey]);
+
+  const getBackendHistory = React.useCallback(() => {
+    // The backend currently doesn't strictly require conversationHistory, but we keep it correct and
+    // future-proof by only sending messages after the last soft reset.
+    const slice = messages.slice(Math.min(Math.max(historyCutoffIndex, 0), messages.length));
+    return slice
+      .filter((m) => m && (m.role === "user" || m.role === "assistant"))
+      .map((m) => ({ role: m.role, content: m.content }));
+  }, [historyCutoffIndex, messages]);
 
   // Scroll to bottom when messages change
   React.useEffect(() => {
@@ -87,6 +142,8 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
     if (loading) return;
     if (!clientSessionId) return;
     if (lastGreetedSessionRef.current === clientSessionId) return;
+    // If we already have messages (restored session), don't restart the conversation.
+    if (messages.length > 0) return;
     lastGreetedSessionRef.current = clientSessionId;
     
     const fetchInitialGreeting = async () => {
@@ -183,7 +240,13 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
     setPublishingImageUrl(null);
     setIsPublishing(false);
     setMessages([]);
+    setHistoryCutoffIndex(0);
     if (fileInputRef.current) fileInputRef.current.value = "";
+    try {
+      if (typeof window !== "undefined") window.sessionStorage.removeItem(storageKey);
+    } catch {
+      // ignore
+    }
 
     // Ask agent to hard-reset server-side state and return a fresh greeting
     setIsTyping(true);
@@ -228,7 +291,40 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
     } finally {
       setIsTyping(false);
     }
-  }, [agentId, makeFreshSessionId, user?.uid]);
+  }, [agentId, makeFreshSessionId, storageKey, user?.uid]);
+
+  const softReset = React.useCallback(async () => {
+    // Keep transcript, but reset backend session and clear current product flow state.
+    const nextSessionId = makeFreshSessionId();
+    setClientSessionId(nextSessionId);
+    // Prevent auto-greeting for this brand new session; we'll prompt the user ourselves.
+    lastGreetedSessionRef.current = nextSessionId;
+
+    // New backend context begins after the current transcript.
+    setHistoryCutoffIndex(messages.length);
+
+    // Clear only "current run" UI state (but keep transcript)
+    setIsTyping(false);
+    setIsSending(false);
+    setInputValue("");
+    setPreviewReference(null);
+    setShowCaptionModal(false);
+    setCaptionInput("");
+    setPublishingImageUrl(null);
+    setIsPublishing(false);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+
+    // Append a Step 0 style instruction per prompt.md
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content:
+          "Ok. Subí la foto del nuevo producto usando el botón (+) y arrancamos de nuevo.",
+      },
+    ]);
+  }, [makeFreshSessionId, messages.length]);
 
   const isStartOverIntent = React.useCallback((text: string) => {
     const msg = text.trim().toLowerCase();
@@ -268,7 +364,7 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
 
     // If the user is asking to start over, do a full reset (forget images + references + conversation)
     if (messageText && isStartOverIntent(messageText)) {
-      await hardReset();
+      await softReset();
       return;
     }
 
@@ -288,7 +384,7 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
       const formData = new FormData();
       formData.append("agentType", agentId);
       formData.append("message", messageText);
-      formData.append("conversationHistory", JSON.stringify(messages));
+      formData.append("conversationHistory", JSON.stringify(getBackendHistory()));
       if (clientSessionId) formData.append("sessionId", clientSessionId);
       
       if (uploadedFile) {
@@ -314,6 +410,56 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
       if (result.type === "text") {
         // Regular text response
         addAssistantMessage(result.text);
+
+        // If a reel generation was started, backend returns a postId. Poll /api/posts
+        // until it becomes ready_to_upload (or failed) and notify in chat.
+        if (result.postId && typeof result.postId === "string" && user) {
+          const postId: string = result.postId;
+          const startedAt = Date.now();
+          const timeoutMs = 3 * 60 * 1000; // 3 minutes
+          const intervalMs = 2500;
+
+          const poll = async (): Promise<void> => {
+            if (!user) return;
+            if (Date.now() - startedAt > timeoutMs) return;
+
+            try {
+              const token = await user.getIdToken();
+              const res = await fetch("/api/posts?limit=40", {
+                headers: { Authorization: `Bearer ${token}` },
+                cache: "no-store",
+              });
+              const data = await res.json();
+              if (!res.ok || data?.status !== "success") {
+                // transient; keep polling
+                setTimeout(poll, intervalMs);
+                return;
+              }
+
+              const posts = Array.isArray(data.posts) ? data.posts : [];
+              const found = posts.find((p: any) => p && p.id === postId);
+              const status = found?.status;
+
+              if (status === "ready_to_upload") {
+                addAssistantMessage("Tu reel ya está listo. Abrí **Mis posts** para subirlo.");
+                return;
+              }
+              if (status === "failed") {
+                const err = typeof found?.error === "string" && found.error.trim().length > 0 ? found.error : "Error desconocido";
+                addAssistantMessage(`Tu reel falló al generarse: ${err}`);
+                return;
+              }
+
+              // still generating/publishing/etc.
+              setTimeout(poll, intervalMs);
+            } catch {
+              // transient; keep polling
+              setTimeout(poll, intervalMs);
+            }
+          };
+
+          setTimeout(poll, 800);
+        }
       } else if (result.type === "reference_options") {
         // Agent is presenting reference image options
         setIsTyping(true);
@@ -416,7 +562,7 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
   };
 
   const handleCreateAnother = async () => {
-    await hardReset();
+    await softReset();
   };
 
   const handlePublishToInstagram = async () => {
@@ -428,6 +574,11 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
     setIsPublishing(true);
 
     try {
+      if (!user) {
+        throw new Error("Tenés que iniciar sesión para publicar.");
+      }
+      const token = await user.getIdToken();
+
       // Extract filename from URL (e.g., http://localhost:8080/generated-images/1234.png -> 1234.png)
       const url = new URL(publishingImageUrl);
       const pathParts = url.pathname.split('/');
@@ -436,7 +587,7 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
 
       const response = await fetch("/api/publish", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           image_path: imagePath,
           caption: captionInput.trim(),

@@ -90,12 +90,21 @@ def main():
             message = request.get('message', '')
             image_path = request.get('image_path')  # Optional product image path
             session_id = request.get('session_id', 'default')  # Session ID for multi-user support
+            user_id = request.get('user_id')  # Optional Firebase uid (used for post attribution)
             
             print(f"[DEBUG] Session: {session_id[:12]}..., Message: {message[:50] if message else 'None'}, Image: {image_path}", 
                   file=sys.stderr, flush=True)
             
             # Get or create agent for this specific session
             agent = get_or_create_agent(session_id, PROJECT_ID, config)
+            # Persist Firebase uid on the agent instance so tool handlers can attribute work to the real user.
+            try:
+                if isinstance(user_id, str) and user_id.strip():
+                    setattr(agent, "user_id", user_id.strip())
+                else:
+                    setattr(agent, "user_id", session_id)
+            except Exception:
+                pass
             
             # Allow empty message if image is provided
             if not message and not image_path:

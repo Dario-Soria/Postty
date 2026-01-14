@@ -72,6 +72,9 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
         clientSessionId || userId || `anon-${Date.now()}-${Math.random().toString(36).substring(7)}`;
       logger.info(`[Agent Chat] Session ID: ${sessionId.substring(0, 12)}...`);
 
+      const userUid =
+        typeof userId === 'string' && userId.trim().length > 0 ? userId.trim() : undefined;
+
       // Ensure the Python agent process is running
       logger.info(`[Agent Chat] Ensuring agent is running...`);
       await ensureAgentRunning();
@@ -81,7 +84,7 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
 
       // Send message to Python agent with image path and session ID
       logger.info(`[Agent Chat] Sending message: "${messageToSend}", image: ${imageFile?.path || 'none'}`);
-      const result = await sendMessageToAgent(messageToSend, imageFile?.path, sessionId);
+      const result = await sendMessageToAgent(messageToSend, imageFile?.path, sessionId, userUid);
       logger.info(`[Agent Chat] Received result type: ${result.type}`);
 
       // Handle different response types

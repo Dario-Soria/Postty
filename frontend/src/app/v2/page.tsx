@@ -36,6 +36,47 @@ export default function V2Page() {
 
   // Agent selection state
   const [selectedAgent, setSelectedAgent] = React.useState<string | null>(null);
+  const restoredViewRef = React.useRef(false);
+
+  const v2ViewKey = React.useMemo(() => {
+    const uid = user?.uid ? `uid-${user.uid}` : "anon";
+    return `postty:v2:viewstate:${uid}`;
+  }, [user?.uid]);
+
+  // Restore the last viewed agent chat on mount so back from /v2/posts returns to chat (not landing).
+  React.useEffect(() => {
+    if (authLoading) return;
+    if (!user) return;
+    if (restoredViewRef.current) return;
+    restoredViewRef.current = true;
+    try {
+      const raw = typeof window !== "undefined" ? window.sessionStorage.getItem(v2ViewKey) : null;
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      const savedStep = parsed?.step;
+      const savedAgent = parsed?.selectedAgent;
+      if (savedStep === 7 && typeof savedAgent === "string" && savedAgent.trim().length > 0) {
+        setSelectedAgent(savedAgent);
+        setStep(7);
+      }
+    } catch {
+      // ignore
+    }
+  }, [authLoading, user, v2ViewKey]);
+
+  // Persist view state while in agent chat so navigation away/back keeps the chat view.
+  React.useEffect(() => {
+    if (authLoading) return;
+    if (!user) return;
+    try {
+      if (typeof window === "undefined") return;
+      if (step === 7 && selectedAgent) {
+        window.sessionStorage.setItem(v2ViewKey, JSON.stringify({ step: 7, selectedAgent }));
+      }
+    } catch {
+      // ignore
+    }
+  }, [authLoading, selectedAgent, step, user, v2ViewKey]);
 
   // Flow state from Screen 4 -> Screen 5
   const [productImageFile, setProductImageFile] = React.useState<File | null>(null);
@@ -68,6 +109,50 @@ export default function V2Page() {
     const until = Date.now() + ms;
     setToast({ message, kind, until });
   }, []);
+
+  // Background notification: alert user when a generated reel becomes ready_to_upload
+  const notifiedReadyRef = React.useRef<Set<string>>(new Set());
+  React.useEffect(() => {
+    if (!user) return;
+    let stopped = false;
+
+    const tick = async () => {
+      try {
+        const token = await user.getIdToken();
+        const res = await fetch("/api/posts?limit=40", {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: "no-store",
+        });
+        const data = await res.json();
+        if (!res.ok || data?.status !== "success" || !Array.isArray(data.posts)) return;
+
+        for (const p of data.posts as any[]) {
+          if (!p || typeof p !== "object") continue;
+          if (p.kind !== "video") continue;
+          if (p.status !== "ready_to_upload") continue;
+          const id = typeof p.id === "string" ? p.id : null;
+          if (!id) continue;
+          if (notifiedReadyRef.current.has(id)) continue;
+          notifiedReadyRef.current.add(id);
+          showToast('Tu reel está listo para subir. Entrá a "Mis posts".', "info", 4500);
+        }
+      } catch {
+        // silent
+      }
+    };
+
+    // Initial + interval polling
+    tick();
+    const t = window.setInterval(() => {
+      if (stopped) return;
+      tick();
+    }, 12000);
+
+    return () => {
+      stopped = true;
+      window.clearInterval(t);
+    };
+  }, [showToast, user]);
 
   React.useEffect(() => {
     if (!toast) return;
@@ -120,13 +205,18 @@ export default function V2Page() {
   const handleSignOut = React.useCallback(async () => {
     try {
       await signOut();
+      try {
+        if (typeof window !== "undefined") window.sessionStorage.removeItem(v2ViewKey);
+      } catch {
+        // ignore
+      }
       setStep(1);
       showToast("Sesión cerrada", "info");
     } catch (error) {
       console.error("Error signing out:", error);
       showToast("Error al cerrar sesión", "error");
     }
-  }, [signOut, showToast]);
+  }, [signOut, showToast, v2ViewKey]);
 
   const content = React.useMemo(() => {
     // Show loading spinner while checking auth

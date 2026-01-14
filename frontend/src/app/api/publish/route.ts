@@ -5,13 +5,17 @@ const BACKEND_BASE_URL = process.env.POSTTY_API_BASE_URL || "http://localhost:80
 export async function POST(req: Request) {
   try {
     const body = await req.json();
+    const auth = req.headers.get("authorization") || "";
 
     const hasLocalPath = body && typeof body === "object" && typeof body.image_path === "string";
     const target = hasLocalPath ? "/publish-instagram" : "/publish-instagram-from-url";
 
     const res = await fetch(`${BACKEND_BASE_URL}${target}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(auth ? { Authorization: auth } : {}),
+      },
       body: JSON.stringify(body),
     });
 

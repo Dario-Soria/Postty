@@ -6,6 +6,7 @@ import { GlassCard } from "./ui/GlassCard";
 import { TopBar } from "./ui/TopBar";
 import { IconSend } from "./ui/Icons";
 import { openTextEditor, type BackendTextLayout } from "@/lib/features/text-editor";
+import { useAuth } from "@/contexts/AuthContext";
 
 type ChatMessage = {
   id: string;
@@ -95,6 +96,7 @@ export function V2Chat({
   initialImageFile: File | null;
   initialAnalysis: null | { use_cases: Array<{ use_case: string; question: string }> };
 }) {
+  const { user } = useAuth();
   // In V2 we do NOT show the initial greeting card; we start with an empty chat.
   const [messages, setMessages] = React.useState<ChatMessage[]>([]);
   const [text, setText] = React.useState("");
@@ -2109,9 +2111,13 @@ export function V2Chat({
 
     setPublishingIds((p) => ({ ...p, [publishKey]: true }));
     try {
+      const token = user ? await user.getIdToken() : null;
       const res = await fetch("/api/publish", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           caption,
           ...(params.image_path ? { image_path: params.image_path } : {}),

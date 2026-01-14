@@ -2,8 +2,10 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as fs from 'fs';
 import * as path from 'path';
 import { uploadLocalImage } from '../services/imageUploader';
-import { publishInstagramPost } from '../services/instagramPublisher';
+import { getInstagramPermalink, publishInstagramPost } from '../services/instagramPublisher';
 import * as logger from '../utils/logger';
+import { requireUser } from '../services/firebaseAuth';
+import { createPost } from '../services/postsStore';
 
 interface PublishRequestBody {
   image_path: string;
@@ -77,6 +79,37 @@ export default async function publishInstagramRoute(
           caption
         );
         logger.info(`Instagram post published: ${instagramResponse.id}`);
+
+        // Optional: If user is authenticated, store this publish in Firestore so it shows in Mis posts.
+        // This is additive and does not change the publish behavior for unauthenticated callers.
+        try {
+          const user = await requireUser(request as any);
+          let permalink: string | null = null;
+          try {
+            permalink = await getInstagramPermalink(instagramResponse.id);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : 'Unknown error';
+            logger.warn(`Failed to fetch Instagram permalink (${msg})`);
+          }
+
+          await createPost({
+            uid: user.uid,
+            kind: 'image',
+            status: 'published',
+            prompt: (caption || 'Instagram post').slice(0, 240),
+            caption: caption,
+            mediaUrl: uploadedImageUrl,
+            previewUrl: null,
+            localPath: null,
+            instagramMediaId: instagramResponse.id,
+            instagramPermalink: permalink,
+            error: null,
+          });
+        } catch (e) {
+          // Ignore auth failures; keep backward compatible behavior.
+          const msg = e instanceof Error ? e.message : 'Unknown error';
+          logger.warn(`Skipping Firestore createPost for published image (unauthenticated): ${msg}`);
+        }
 
         // Best-effort cleanup: remove the local file after publish so disk doesn't grow unbounded.
         try {

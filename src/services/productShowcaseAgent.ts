@@ -12,6 +12,7 @@ let messageQueue: Array<{
   message: string;
   imagePath?: string;
   sessionId: string;
+  userId?: string;
   resolve: (value: any) => void;
   reject: (error: Error) => void;
 }> = [];
@@ -49,6 +50,7 @@ async function startAgentProcess(): Promise<void> {
           ...process.env,
           PYTHONUNBUFFERED: '1',
           BACKEND_URL: process.env.BACKEND_URL || 'http://localhost:8080', // Ensure correct backend URL
+          POSTTY_INTERNAL_TOKEN: process.env.POSTTY_INTERNAL_TOKEN || '',
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -169,7 +171,8 @@ function processQueue(): void {
   const request = { 
     message: item.message,
     image_path: item.imagePath,
-    session_id: item.sessionId
+    session_id: item.sessionId,
+    user_id: item.userId,
   };
   const requestJson = JSON.stringify(request) + '\n';
   
@@ -208,7 +211,8 @@ export async function ensureAgentRunning(): Promise<void> {
 export async function sendMessageToAgent(
   message: string,
   imagePath?: string,
-  sessionId: string = 'default'
+  sessionId: string = 'default',
+  userId?: string
 ): Promise<{ type: 'text' | 'image' | 'reference_options'; text: string; file?: string; references?: any[]; textLayout?: any }> {
   if (!agentProcess || !isReady) {
     throw new Error('Agent process is not running');
@@ -220,6 +224,7 @@ export async function sendMessageToAgent(
       message,
       imagePath,
       sessionId,
+      userId,
       resolve,
       reject,
     });

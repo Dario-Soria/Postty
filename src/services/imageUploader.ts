@@ -50,6 +50,7 @@ export async function uploadLocalImage(filePath: string): Promise<string> {
     '.png': 'image/png',
     '.gif': 'image/gif',
     '.webp': 'image/webp',
+    '.mp4': 'video/mp4',
   };
   const contentType = contentTypeMap[ext] || 'application/octet-stream';
 

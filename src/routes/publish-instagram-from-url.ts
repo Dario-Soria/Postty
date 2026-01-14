@@ -1,6 +1,8 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { publishInstagramPost } from '../services/instagramPublisher';
+import { getInstagramPermalink, publishInstagramPost } from '../services/instagramPublisher';
 import * as logger from '../utils/logger';
+import { requireUser } from '../services/firebaseAuth';
+import { createPost } from '../services/postsStore';
 
 interface PublishFromUrlRequestBody {
   image_url: string;
@@ -50,6 +52,35 @@ export default async function publishInstagramFromUrlRoute(
 
         const instagramResponse = await publishInstagramPost(image_url, caption);
         logger.info(`✓ Instagram post published: ${instagramResponse.id}`);
+
+        // Optional: persist to Firestore for authenticated users (so it appears in Mis posts).
+        try {
+          const user = await requireUser(request as any);
+          let permalink: string | null = null;
+          try {
+            permalink = await getInstagramPermalink(instagramResponse.id);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : 'Unknown error';
+            logger.warn(`Failed to fetch Instagram permalink (${msg})`);
+          }
+
+          await createPost({
+            uid: user.uid,
+            kind: 'image',
+            status: 'published',
+            prompt: (caption || 'Instagram post').slice(0, 240),
+            caption: caption,
+            mediaUrl: image_url,
+            previewUrl: null,
+            localPath: null,
+            instagramMediaId: instagramResponse.id,
+            instagramPermalink: permalink,
+            error: null,
+          });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : 'Unknown error';
+          logger.warn(`Skipping Firestore createPost for published image (unauthenticated): ${msg}`);
+        }
 
         return reply.status(200).send({
           status: 'success',

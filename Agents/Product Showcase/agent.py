@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import contextlib
 import requests
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
@@ -525,6 +526,10 @@ Otherwise, respond naturally to continue the conversation.
         if "[TRIGGER_GENERATE_PIPELINE]" in response_text_stripped:
             return self._handle_generate_pipeline(response_text_stripped)
 
+        # Check for reel generation trigger (Veo -> ready_to_upload)
+        if "[TRIGGER_GENERATE_REEL]" in response_text_stripped:
+            return self._handle_generate_reel(response_text_stripped)
+
         # Check if the agent wants to generate an image (legacy Gemini direct)
         if "[TRIGGER_GENERATE_NANOBANANA]" in response_text_stripped or "CALL_TOOL: GENERATE_IMAGE" in response_text_stripped:
             # Extract the image prompt
@@ -619,6 +624,95 @@ Otherwise, respond naturally to continue the conversation.
             text_content['headline'] = user_message.strip()
         
         return text_content
+
+    def _handle_generate_reel(self, response_text: str) -> Dict[str, Any]:
+        """
+        Handle TOOL 3 trigger from prompt.md:
+        [TRIGGER_GENERATE_REEL]
+        PRODUCT_IMAGE: <optional path>
+        PROMPT: <video prompt>
+        CAPTION: <optional caption>
+
+        This starts an async Veo job on the backend that saves the reel as ready_to_upload (Firestore-backed).
+        """
+        try:
+            # Extract fields after the trigger
+            block = response_text.split("[TRIGGER_GENERATE_REEL]", 1)[1]
+            lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+
+            product_image = None
+            prompt = None
+            caption = None
+
+            for ln in lines:
+                if ln.startswith("PRODUCT_IMAGE:"):
+                    v = ln.split(":", 1)[1].strip()
+                    product_image = v if v else None
+                elif ln.startswith("PROMPT:"):
+                    prompt = ln.split(":", 1)[1].strip()
+                elif ln.startswith("CAPTION:"):
+                    caption = ln.split(":", 1)[1].strip()
+
+            if not prompt:
+                return {"type": "text", "text": "Faltó el PROMPT para generar el reel."}
+
+            backend_url = os.environ.get("BACKEND_URL", self.backend_url or "http://localhost:8080")
+            internal_token = os.environ.get("POSTTY_INTERNAL_TOKEN", "")
+            user_id = getattr(self, "user_id", None)
+
+            if not user_id:
+                # Fallback: use product image path as session marker (best-effort, should be uid in production)
+                user_id = "unknown"
+
+            files: Dict[str, Any] = {}
+            data = {
+                "prompt": prompt,
+                "caption": caption or "",
+                "userId": user_id,
+            }
+
+            headers = {}
+            if internal_token:
+                headers["X-Postty-Internal-Token"] = internal_token
+
+            print(f"[DEBUG] Calling backend /video/generate for user {str(user_id)[:8]}...", file=sys.stderr, flush=True)
+            # Always send multipart/form-data (Fastify expects multipart parsing on this endpoint).
+            # If we don't attach a file, `requests` would otherwise default to x-www-form-urlencoded.
+            with contextlib.ExitStack() as stack:
+                # Prefer explicit PRODUCT_IMAGE; fall back to stored uploaded image
+                image_path = product_image or self.product_image_path
+                if image_path and os.path.exists(os.path.expanduser(image_path)):
+                    expanded = os.path.expanduser(image_path)
+                    f = stack.enter_context(open(expanded, "rb"))
+                    files["productImage"] = (os.path.basename(expanded), f)
+                else:
+                    # Force multipart even when no product image is available
+                    files["_forceMultipart"] = ("force.txt", b"")
+
+                resp = requests.post(
+                    f"{backend_url}/video/generate",
+                    data=data,
+                    files=files,
+                    headers=headers,
+                    timeout=30,
+                )
+            try:
+                payload = resp.json()
+            except Exception:
+                payload = {"status": "error", "message": resp.text}
+
+            if resp.status_code >= 400 or payload.get("status") != "accepted":
+                msg = payload.get("message") or f"HTTP {resp.status_code}"
+                return {"type": "text", "text": f"Hubo un error al iniciar el reel: {msg}"}
+
+            post_id = payload.get("postId")
+            ready_msg = (
+                "Listo. Estoy generando tu reel ahora. "
+                "Te avisamos cuando esté listo para subir en **Mis posts**."
+            )
+            return {"type": "text", "text": ready_msg, "postId": post_id}
+        except Exception as e:
+            return {"type": "text", "text": f"Error iniciando el reel: {str(e)}"}
     
     def _analyze_product_for_text_context(self) -> Dict[str, Any]:
         """

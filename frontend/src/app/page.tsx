@@ -6,6 +6,7 @@ import {
   Spinner,
 } from "@nextui-org/react";
 import { openTextEditor, type BackendTextLayout } from "@/lib/features/text-editor";
+import { useAuth } from "@/contexts/AuthContext";
 
 type ChatMessage = {
   id: string;
@@ -86,6 +87,7 @@ type InspirationWizard =
     };
 
 export default function Home() {
+  const { user } = useAuth();
   const [messages, setMessages] = React.useState<ChatMessage[]>([
     {
       id: "m-welcome",
@@ -1692,9 +1694,13 @@ export default function Home() {
 
     setPublishingIds((p) => ({ ...p, [publishKey]: true }));
     try {
+      const token = user ? await user.getIdToken() : null;
       const res = await fetch("/api/publish", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           caption,
           ...(params.image_path ? { image_path: params.image_path } : {}),
