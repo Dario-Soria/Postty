@@ -163,7 +163,8 @@ export default function MisPostsPage() {
       if (!res.ok || data?.status !== "success") {
         throw new Error(data?.message || "Upload failed");
       }
-      await load();
+      await refreshAll();
+      setSelected(null);
     } finally {
       setBusyId(null);
     }
@@ -281,7 +282,7 @@ export default function MisPostsPage() {
                   }
                   setSelected(p);
                 }}
-                className="group relative rounded-[18px] overflow-hidden bg-white/35 border border-white/60 backdrop-blur-xl shadow-[0_14px_40px_rgba(0,0,0,0.10)] hover:shadow-[0_18px_55px_rgba(0,0,0,0.14)] transition"
+                className="group relative rounded-[18px] overflow-hidden bg-white/35 border border-white/60 backdrop-blur-xl shadow-[0_14px_40px_rgba(0,0,0,0.10)] transition-all duration-300 hover:shadow-[0_20px_50px_rgba(0,0,0,0.12)] hover:-translate-y-1"
               >
                 <div className="aspect-[9/16] w-full bg-slate-200/40">
                   {p.mediaUrl ? (
@@ -308,6 +309,9 @@ export default function MisPostsPage() {
                   )}
                 </div>
 
+                {/* Subtle page-palette tint on hover (same feel as agent cards) */}
+                <div className="absolute inset-0 bg-gradient-to-br from-[#FCE3C8] via-[#EAD5FF] to-[#BFE7FF] opacity-0 group-hover:opacity-[0.08] transition-opacity duration-300 pointer-events-none" />
+
                 <div className="absolute left-2 top-2 px-2 py-1 rounded-full bg-white/75 border border-white/80 text-[11px] font-bold text-slate-800">
                   {formatStatusLabel(p.status)}
                 </div>
@@ -328,28 +332,28 @@ export default function MisPostsPage() {
                 ) : null}
 
                 {isPublished ? (
-                  <div className="absolute inset-x-2 bottom-2 pointer-events-none">
-                    <div className="rounded-2xl bg-black/55 border border-white/20 backdrop-blur-md px-3 py-2 text-white">
-                      <div className="flex items-center justify-between gap-3">
+                  <div className="absolute inset-x-3 bottom-2 pointer-events-none">
+                    <div className="rounded-xl bg-black/55 border border-white/20 backdrop-blur-md px-2.5 py-1.5 text-white">
+                      <div className="flex items-center justify-between gap-2.5">
                         <div className="flex items-center gap-1.5">
-                          <IconHeart className="h-5 w-5" />
-                          <span className="text-[11px] font-semibold tabular-nums">{fmt(a?.likes)}</span>
+                          <IconHeart className="h-4 w-4" />
+                          <span className="text-[10px] font-semibold tabular-nums">{fmt(a?.likes)}</span>
                         </div>
                         <div className="flex items-center gap-1.5">
-                          <IconComment className="h-5 w-5" />
-                          <span className="text-[11px] font-semibold tabular-nums">
+                          <IconComment className="h-4 w-4" />
+                          <span className="text-[10px] font-semibold tabular-nums">
                             {fmt(a?.comments)}
                           </span>
                         </div>
                         <div className="flex items-center gap-1.5">
-                          <IconPlay className="h-5 w-5" />
-                          <span className="text-[11px] font-semibold tabular-nums">
+                          <IconPlay className="h-4 w-4" />
+                          <span className="text-[10px] font-semibold tabular-nums">
                             {fmt(a?.viewsOrReach)}
                           </span>
                         </div>
                         <div className="flex items-center gap-1.5">
-                          <IconShare className="h-5 w-5" />
-                          <span className="text-[11px] font-semibold tabular-nums">
+                          <IconShare className="h-4 w-4" />
+                          <span className="text-[10px] font-semibold tabular-nums">
                             {fmt(a?.shares)}
                           </span>
                         </div>

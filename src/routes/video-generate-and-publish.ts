@@ -30,7 +30,7 @@ async function runJob(params: {
       prompt,
       productImagePath: productImagePath ?? null,
       aspectRatio: '9:16',
-      durationSeconds: 8,
+      durationSeconds: 15,
     });
 
     updateVideoJob(jobId, { mp4Path: veoResult.mp4Path, state: 'uploading' });

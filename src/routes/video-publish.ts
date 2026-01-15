@@ -6,6 +6,7 @@ import { publishInstagramVideo, getInstagramPermalink } from '../services/instag
 
 interface Body {
   postId: string;
+  caption?: string | null;
 }
 
 export default async function videoPublishRoutes(fastify: FastifyInstance): Promise<void> {
@@ -14,7 +15,7 @@ export default async function videoPublishRoutes(fastify: FastifyInstance): Prom
     async (request: FastifyRequest<{ Body: Body }>, reply: FastifyReply) => {
       try {
         const user = await requireUser(request);
-        const { postId } = request.body || ({} as any);
+        const { postId, caption } = request.body || ({} as any);
         if (!postId || typeof postId !== 'string') {
           return reply.status(400).send({ status: 'error', message: 'Missing postId' });
         }
@@ -31,11 +32,21 @@ export default async function videoPublishRoutes(fastify: FastifyInstance): Prom
           return reply.status(200).send({ status: 'success', instagram_permalink: post.instagramPermalink });
         }
 
-        await updatePost({ uid: user.uid, postId, patch: { status: 'publishing' as any } });
+        const captionTrimmed = typeof caption === 'string' ? caption.trim() : '';
+        const captionToUse = captionTrimmed.length > 0 ? captionTrimmed : post.caption ?? undefined;
+
+        await updatePost({
+          uid: user.uid,
+          postId,
+          patch: {
+            status: 'publishing' as any,
+            ...(captionTrimmed.length > 0 ? { caption: captionTrimmed } : {}),
+          },
+        });
 
         const ig = await publishInstagramVideo({
           videoUrl: post.mediaUrl,
-          caption: post.caption ?? undefined,
+          caption: captionToUse,
           kind: 'REELS',
           shareToFeed: true,
           maxPollAttempts: 180,

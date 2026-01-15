@@ -7,6 +7,8 @@ type CaptionRequestBody = {
   base_prompt: string;
   instruction?: string | null;
   language?: SupportedLanguage;
+  product_image_url?: string | null;
+  product_image_base64?: string | null;
 };
 
 export default async function captionRoute(fastify: FastifyInstance): Promise<void> {
@@ -17,6 +19,12 @@ export default async function captionRoute(fastify: FastifyInstance): Promise<vo
         const body = request.body ?? ({} as any);
         const basePrompt = typeof body.base_prompt === 'string' ? body.base_prompt.trim() : '';
         const instruction = typeof body.instruction === 'string' ? body.instruction.trim() : '';
+        const productImageUrl =
+          typeof (body as any).product_image_url === 'string' ? String((body as any).product_image_url).trim() : '';
+        const productImageBase64 =
+          typeof (body as any).product_image_base64 === 'string'
+            ? String((body as any).product_image_base64).trim()
+            : '';
 
         if (!basePrompt) {
           return reply.status(400).send({ status: 'error', message: 'Missing or invalid "base_prompt" field' });
@@ -27,16 +35,49 @@ export default async function captionRoute(fastify: FastifyInstance): Promise<vo
             ? body.language
             : detectLanguageFromText(basePrompt);
 
-        // Build a caption prompt that keeps the image intent but obeys the user’s caption instruction.
+        // Build a caption prompt that keeps the image intent but obeys the user’s caption instruction,
+        // with strict engagement + relevance constraints.
         const captionPrompt =
-          instruction.length > 0
-            ? forcedLanguage === 'es'
-              ? `${basePrompt}\n\nInstrucción de caption: ${instruction}\n\nEscribe SOLO el caption final (1-2 frases) y 3-5 hashtags al final.`
-              : `${basePrompt}\n\nCaption instruction: ${instruction}\n\nWrite ONLY the final caption (1-2 sentences) and 3-5 hashtags at the end.`
-            : basePrompt;
+          forcedLanguage === 'es'
+            ? [
+                basePrompt,
+                instruction.length > 0 ? `\nInstrucción adicional: ${instruction}\n` : '',
+                'Escribe SOLO el caption final para Instagram.',
+                'Reglas (estrictas):',
+                '- 1–2 frases.',
+                '- Incluye 1 pregunta si encaja naturalmente (no la fuerces).',
+                '- Incluye 1 CTA claro (por ejemplo: comentar, guardar, DM, elegir).',
+                '- Incluye términos relevantes del producto/objetivo de forma natural (optimización de términos sin spam).',
+                '- Termina con 3–5 hashtags altamente relevantes.',
+                '- Hashtags: mezcla nicho + comunidad/industria; solo incluye branded/campaign si el nombre aparece explícitamente; no inventes marcas.',
+                '- No uses comillas.',
+              ]
+                .filter(Boolean)
+                .join('\n')
+            : [
+                basePrompt,
+                instruction.length > 0 ? `\nAdditional instruction: ${instruction}\n` : '',
+                'Write ONLY the final Instagram caption.',
+                'Rules (strict):',
+                '- 1–2 sentences.',
+                '- Include ONE question if it fits naturally (do not force it).',
+                '- Include ONE clear CTA (e.g., comment, save, DM, choose).',
+                '- Naturally include relevant product/goal terms (SEO-friendly without spam).',
+                '- End with 3–5 highly relevant hashtags.',
+                '- Hashtags: mix niche + community/industry; only include branded/campaign if the name is explicitly present; do not invent brand names.',
+                '- Do not wrap the caption in quotes.',
+              ]
+                .filter(Boolean)
+                .join('\n');
 
         logger.info(`Generating caption-only (lang=${forcedLanguage})`);
-        const text = await generateCaption(captionPrompt, { forcedLanguage, temperature: 0.5 });
+        const text = await generateCaption(captionPrompt, {
+          forcedLanguage,
+          temperature: 0.5,
+          mode: 'interactive',
+          productImageUrl: productImageUrl || null,
+          productImageBase64: productImageBase64 || null,
+        });
 
         return reply.status(200).send({
           status: 'success',

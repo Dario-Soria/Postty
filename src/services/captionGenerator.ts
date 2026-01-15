@@ -2,6 +2,8 @@ import OpenAI from 'openai';
 import * as logger from '../utils/logger';
 import { detectLanguageFromText, SupportedLanguage } from '../utils/language';
 
+export type CaptionMode = 'basic' | 'interactive';
+
 /**
  * Generates an Instagram caption from an image prompt using OpenAI GPT
  * @param imagePrompt - The prompt that was used to generate the image
@@ -9,7 +11,13 @@ import { detectLanguageFromText, SupportedLanguage } from '../utils/language';
  */
 export async function generateCaption(
   imagePrompt: string,
-  opts?: { forcedLanguage?: SupportedLanguage; temperature?: number }
+  opts?: {
+    forcedLanguage?: SupportedLanguage;
+    temperature?: number;
+    mode?: CaptionMode;
+    productImageUrl?: string | null;
+    productImageBase64?: string | null;
+  }
 ): Promise<string> {
   // Validate OpenAI API key
   const apiKey = process.env.OPENAI_API_KEY;
@@ -26,39 +34,63 @@ export async function generateCaption(
     logger.info(`Generating Instagram caption for prompt: "${imagePrompt}"`);
 
     const forced = opts?.forcedLanguage ?? detectLanguageFromText(imagePrompt);
+    const mode: CaptionMode = opts?.mode === 'interactive' ? 'interactive' : 'basic';
+    const productImageUrlRaw: string | null =
+      typeof opts?.productImageBase64 === 'string' && opts.productImageBase64.trim().length > 0
+        ? opts.productImageBase64.trim()
+        : typeof opts?.productImageUrl === 'string' && opts.productImageUrl.trim().length > 0
+          ? opts.productImageUrl.trim()
+          : null;
     const languageLine =
       forced === 'es'
         ? 'IMPORTANT: Write the caption and hashtags ONLY in Spanish.'
         : 'IMPORTANT: Write the caption and hashtags ONLY in English.';
 
-    const systemPrompt = [
+    const baseRules = [
       'You are an expert Instagram content creator.',
-      'Create engaging, concise captions for Instagram posts based on image descriptions.',
+      'Create engaging, concise captions for Instagram posts based on the provided context.',
       'Rules:',
       '- 1-2 sentences maximum.',
-      '- Include 3-5 relevant hashtags at the end.',
-      '- Match the tone and style of the image description.',
+      '- Include 3-5 highly relevant hashtags at the end.',
+      '- Match the tone and style of the provided context.',
       '- Be authentic and relatable.',
       languageLine,
       '- Do NOT wrap the caption in quotes.',
-    ].join('\n');
+    ];
 
-    const userPrompt = [
-      'Create an Instagram caption for an image that shows:',
-      imagePrompt,
-    ].join('\n');
+    const interactiveRules =
+      mode === 'interactive'
+        ? [
+            'Engagement and relevance rules (strict):',
+            '- Include ONE question when it fits naturally (do not force awkward questions).',
+            '- Include ONE clear CTA (e.g., comment, save, DM, choose).',
+            '- Naturally include relevant keywords/terms from the context (SEO-friendly, not spammy).',
+            '- Hashtag mix: niche + community/industry; only include branded/campaign tags if the brand/campaign name is explicitly present in the context. Do NOT invent brand names.',
+          ]
+        : [];
+
+    const systemPrompt = [...baseRules, ...interactiveRules].join('\n');
+
+    const userPromptText = ['Create an Instagram caption for content described by:', imagePrompt].join('\n');
 
     const model = (process.env.CAPTION_MODEL || 'gpt-4o-mini').trim();
     const temperature = typeof opts?.temperature === 'number' ? opts.temperature : 0.7;
 
     async function attempt(temp: number): Promise<string | null> {
+      const userContent: any = productImageUrlRaw
+        ? [
+            { type: 'text', text: userPromptText },
+            { type: 'image_url', image_url: { url: productImageUrlRaw } },
+          ]
+        : userPromptText;
+
       const response = await openai.chat.completions.create({
         model,
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        max_tokens: 160,
+          { role: 'user', content: userContent },
+        ] as any,
+        max_tokens: 180,
         temperature: temp,
       });
       const caption = response.choices[0]?.message?.content?.trim() || '';

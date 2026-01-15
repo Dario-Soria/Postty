@@ -6,6 +6,7 @@ import { TopBar } from "./ui/TopBar";
 import { useHoldToTalk } from "./hooks/useHoldToTalk";
 import { openTextEditor, type BackendTextLayout } from "@/lib/features/text-editor";
 import { useAuth } from "@/contexts/AuthContext";
+import { IconEraser } from "./ui/Icons";
 
 type ReferenceOption = {
   id: string;
@@ -44,9 +45,26 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
   const [captionInput, setCaptionInput] = React.useState("");
   const [publishingImageUrl, setPublishingImageUrl] = React.useState<string | null>(null);
   const [isPublishing, setIsPublishing] = React.useState(false);
+  const [isCaptionGenerating, setIsCaptionGenerating] = React.useState(false);
+  const [lastPromptForCaption, setLastPromptForCaption] = React.useState<string>("");
+  const [lastUploadedProductImage, setLastUploadedProductImage] = React.useState<File | null>(null);
+  const captionGenSeqRef = React.useRef(0);
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLTextAreaElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const fileToDataUrl = React.useCallback((file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error("Failed to read image file"));
+      reader.onload = () => {
+        const result = typeof reader.result === "string" ? reader.result : "";
+        if (!result) return reject(new Error("Failed to read image file"));
+        resolve(result);
+      };
+      reader.readAsDataURL(file);
+    });
+  }, []);
 
   const makeFreshSessionId = React.useCallback(() => {
     const base = user?.uid ? `uid-${user.uid}` : "anon";
@@ -378,6 +396,14 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
       addUserMessage(messageText);
     }
 
+    // Track last user intent + product image for caption autofill.
+    if (messageText && messageText.trim().length > 0) {
+      setLastPromptForCaption(messageText.trim());
+    }
+    if (uploadedFile) {
+      setLastUploadedProductImage(uploadedFile);
+    }
+
     setIsSending(true);
 
     try {
@@ -522,12 +548,44 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
     setPublishingImageUrl(imageUrl);
     setCaptionInput("");
     setShowCaptionModal(true);
+
+    // Auto-generate caption on open (non-blocking).
+    const seq = ++captionGenSeqRef.current;
+    setIsCaptionGenerating(true);
+    (async () => {
+      try {
+        const basePrompt = lastPromptForCaption.trim();
+        if (!basePrompt) return;
+
+        const body: any = { base_prompt: basePrompt };
+        if (lastUploadedProductImage) {
+          body.product_image_base64 = await fileToDataUrl(lastUploadedProductImage);
+        }
+
+        const res = await fetch("/api/caption", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        const nextCaption = typeof data?.caption?.text === "string" ? data.caption.text : "";
+
+        if (captionGenSeqRef.current !== seq) return;
+        if (!nextCaption.trim()) return;
+        setCaptionInput(nextCaption);
+      } catch {
+        // Silent failure: user can still type manually.
+      } finally {
+        if (captionGenSeqRef.current === seq) setIsCaptionGenerating(false);
+      }
+    })();
   };
 
   const handleClosePublishModal = () => {
     setShowCaptionModal(false);
     setPublishingImageUrl(null);
     setCaptionInput("");
+    setIsCaptionGenerating(false);
   };
 
   const handleEditText = async (imageUrl: string, textLayout: any) => {
@@ -768,33 +826,52 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
           {/* Input area */}
           <div className="border-t border-slate-200/50 pt-3 mt-auto">
             <div className="flex gap-2 items-end">
-              {/* Microphone button (LEFT) */}
-              <button
-                type="button"
-                aria-label="Mantener para hablar"
-                title={isRecording ? "Grabando..." : "Mantener para hablar"}
-                disabled={isBusy}
-                {...micBind}
-                className={[
-                  "h-[52px] w-[52px] shrink-0 flex items-center justify-center rounded-2xl border transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed",
-                  isRecording
-                    ? "bg-rose-500 border-rose-400 text-white shadow-[0_0_22px_rgba(244,63,94,0.65)]"
-                    : "bg-white/90 border-slate-200 text-slate-800 hover:bg-white shadow-sm",
-                ].join(" ")}
-              >
-                {isTranscribing ? (
-                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-current"></div>
-                ) : (
-                  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
-                    />
-                  </svg>
-                )}
-              </button>
+              {/* LEFT column: Clear (eraser) + Microphone */}
+              <div className="shrink-0 flex flex-col gap-2">
+                <button
+                  type="button"
+                  aria-label="Borrar chat"
+                  title="Borrar chat"
+                  disabled={isBusy}
+                  onClick={() => {
+                    const ok = window.confirm(
+                      "This will erase your chat history, do you want to continue?"
+                    );
+                    if (!ok) return;
+                    void hardReset();
+                  }}
+                  className="h-[52px] w-[52px] flex items-center justify-center rounded-2xl border bg-white/90 border-slate-200 text-slate-800 hover:bg-white shadow-sm transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <IconEraser className="w-6 h-6" />
+                </button>
+
+                <button
+                  type="button"
+                  aria-label="Mantener para hablar"
+                  title={isRecording ? "Grabando..." : "Mantener para hablar"}
+                  disabled={isBusy}
+                  {...micBind}
+                  className={[
+                    "h-[52px] w-[52px] flex items-center justify-center rounded-2xl border transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed",
+                    isRecording
+                      ? "bg-rose-500 border-rose-400 text-white shadow-[0_0_22px_rgba(244,63,94,0.65)]"
+                      : "bg-white/90 border-slate-200 text-slate-800 hover:bg-white shadow-sm",
+                  ].join(" ")}
+                >
+                  {isTranscribing ? (
+                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-current"></div>
+                  ) : (
+                    <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
+                      />
+                    </svg>
+                  )}
+                </button>
+              </div>
 
               {/* Text input - Multi-line textarea */}
               <textarea
@@ -922,9 +999,15 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
                 onChange={(e) => setCaptionInput(e.target.value)}
                 placeholder="Ingresá el texto de tu publicación..."
                 rows={4}
-                disabled={isPublishing}
+                disabled={isPublishing || isCaptionGenerating}
                 className="w-full px-4 py-3 rounded-xl bg-white border border-slate-200 focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-300 disabled:opacity-50 disabled:cursor-not-allowed text-[15px] resize-none"
               />
+              {isCaptionGenerating ? (
+                <div className="mt-2 text-xs text-slate-500 font-medium flex items-center gap-2">
+                  <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-slate-400" />
+                  Generando caption…
+                </div>
+              ) : null}
             </div>
 
             <div className="flex gap-3">
