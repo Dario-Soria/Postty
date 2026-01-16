@@ -58,6 +58,8 @@ export default function MisPostsPage() {
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [selected, setSelected] = React.useState<UserPost | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const [captionByPostId, setCaptionByPostId] = React.useState<Record<string, string>>({});
+  const [captionLoadingByPostId, setCaptionLoadingByPostId] = React.useState<Record<string, boolean>>({});
   const [analyticsByMediaId, setAnalyticsByMediaId] = React.useState<Record<string, PostAnalytics>>(
     {}
   );
@@ -146,6 +148,48 @@ export default function MisPostsPage() {
     refreshAll().catch((e) => setError(e instanceof Error ? e.message : "Error"));
   }, [refreshAll, user]);
 
+  // Auto-fill caption for reels that are ready to upload (prompt + original product image previewUrl).
+  React.useEffect(() => {
+    if (!user) return;
+    if (!selected) return;
+    if (!(selected.kind === "video" && selected.status === "ready_to_upload")) return;
+
+    const postId = selected.id;
+    const already = typeof captionByPostId[postId] === "string" && captionByPostId[postId].trim().length > 0;
+    if (already) return;
+
+    const basePrompt = (selected.prompt || "").trim();
+    if (!basePrompt) return;
+
+    const productImageUrl = (selected.previewUrl || "").trim();
+    setCaptionLoadingByPostId((p) => ({ ...p, [postId]: true }));
+
+    (async () => {
+      try {
+        const token = await user.getIdToken();
+        const res = await fetch("/api/caption", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            base_prompt: basePrompt,
+            ...(productImageUrl ? { product_image_url: productImageUrl } : {}),
+          }),
+        });
+        const data = await res.json();
+        const nextCaption = typeof data?.caption?.text === "string" ? data.caption.text : "";
+        if (nextCaption.trim().length === 0) return;
+        setCaptionByPostId((p) => ({ ...p, [postId]: nextCaption }));
+      } catch {
+        // ignore; user can still type
+      } finally {
+        setCaptionLoadingByPostId((p) => ({ ...p, [postId]: false }));
+      }
+    })();
+  }, [captionByPostId, selected, user]);
+
   const handleUpload = async (postId: string) => {
     if (!user) return;
     setBusyId(postId);
@@ -157,7 +201,7 @@ export default function MisPostsPage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ postId }),
+        body: JSON.stringify({ postId, caption: captionByPostId[postId] }),
       });
       const data = await res.json();
       if (!res.ok || data?.status !== "success") {
@@ -416,23 +460,45 @@ export default function MisPostsPage() {
                   </div>
 
                   {selected.kind === "video" && selected.status === "ready_to_upload" ? (
-                    <div className="flex gap-3">
-                      <button
-                        type="button"
-                        disabled={busyId === selected.id}
-                        onClick={() => handleUpload(selected.id)}
-                        className="flex-1 h-11 rounded-2xl bg-slate-900 text-white font-bold hover:bg-slate-800 disabled:opacity-60"
-                      >
-                        {busyId === selected.id ? "Subiendo..." : "Upload"}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={busyId === selected.id}
-                        onClick={() => handleDiscard(selected.id)}
-                        className="flex-1 h-11 rounded-2xl bg-white/80 border border-slate-200 font-bold text-slate-900 hover:bg-white disabled:opacity-60"
-                      >
-                        Discard
-                      </button>
+                    <div className="space-y-3">
+                      <div className="rounded-2xl bg-white/60 border border-white/70 p-4">
+                        <p className="text-sm font-bold text-slate-900">Caption</p>
+                        <textarea
+                          value={captionByPostId[selected.id] ?? ""}
+                          onChange={(e) =>
+                            setCaptionByPostId((p) => ({ ...p, [selected.id]: e.target.value }))
+                          }
+                          placeholder="Escribí el caption para tu reel…"
+                          rows={5}
+                          disabled={busyId === selected.id || !!captionLoadingByPostId[selected.id]}
+                          className="mt-2 w-full px-3 py-2 rounded-xl bg-white border border-slate-200 focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-300 disabled:opacity-50 disabled:cursor-not-allowed text-sm resize-none"
+                        />
+                        {captionLoadingByPostId[selected.id] ? (
+                          <div className="mt-2 text-xs text-slate-500 font-medium flex items-center gap-2">
+                            <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-slate-400" />
+                            Generando caption…
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div className="flex gap-3">
+                        <button
+                          type="button"
+                          disabled={busyId === selected.id}
+                          onClick={() => handleUpload(selected.id)}
+                          className="flex-1 h-11 rounded-2xl bg-slate-900 text-white font-bold hover:bg-slate-800 disabled:opacity-60"
+                        >
+                          {busyId === selected.id ? "Subiendo..." : "Upload"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busyId === selected.id}
+                          onClick={() => handleDiscard(selected.id)}
+                          className="flex-1 h-11 rounded-2xl bg-white/80 border border-slate-200 font-bold text-slate-900 hover:bg-white disabled:opacity-60"
+                        >
+                          Discard
+                        </button>
+                      </div>
                     </div>
                   ) : null}
 

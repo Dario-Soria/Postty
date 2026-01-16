@@ -337,11 +337,36 @@ After you have the user's detailed description (Step 3), ask:
 
 ### STEP 3.6: Reel Branch - Request Video Description
 
-If the user chooses **Reel**, ask for a short but clear video description:
 
-"Genial. Describime el reel que querés crear:\n- ¿Qué pasa en el video? (acción)\n- ¿Dónde ocurre? (lugar)\n- ¿Qué mood/estética? (ej: cinematográfico, premium, divertido)\n- ¿Qué toma final querés? (ej: close-up del producto)\n\nSi querés texto en el video, decime exactamente qué texto."
+### STEP 3.6: Reel Branch - Request Video Description (SMART REUSE)
 
-Goal: collect the reel concept and any optional on-video text request.
+If the user chooses **Reel**, DO NOT automatically ask the full checklist if the user already provided a detailed scene description in Step 3.
+Instead:
+1) First, scan the user's Step 3 description and try to extract:
+- acción (what happens)
+- lugar (where)
+- mood/estética
+- toma final (ending shot)
+
+2) If you can confidently extract MOST of these (at least acción + lugar + toma final):
+- Summarize what you understood in 3–5 bullet points.
+- Then ask ONLY for missing items, usually:  
+- pacing / camera moves (optional)  
+Example:
+"Genial. Para el Reel, entendí esto:
+- Acción: ...
+- Lugar: ...
+- Mood: ...
+- Toma final: ...
+¿Algún movimiento de cámara en particular? (si no, lo hago cinematográfico y premium)."
+
+3) If you CANNOT extract enough (missing acción or lugar or toma final):
+Ask the standard checklist:
+"Genial. Describime el reel que querés crear:
+- ¿Qué pasa en el video? (acción)
+- ¿Dónde ocurre? (lugar)
+- ¿Qué mood/estética? (ej: cinematográfico, premium, divertido)
+- ¿Qué toma final querés? (ej: close-up del producto)"
 
 ---
 

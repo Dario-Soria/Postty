@@ -3,6 +3,8 @@
 import * as React from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useRouter } from "next/navigation";
+import { IconInstagram } from "./Icons";
+import { InstagramAccountsModal } from "../InstagramAccountsModal";
 
 interface UserProfileMenuProps {
   onSignOut?: () => void;
@@ -13,6 +15,10 @@ export function UserProfileMenu({ onSignOut }: UserProfileMenuProps) {
   const [isOpen, setIsOpen] = React.useState(false);
   const menuRef = React.useRef<HTMLDivElement>(null);
   const router = useRouter();
+  const [igModalOpen, setIgModalOpen] = React.useState(false);
+  const [igConnected, setIgConnected] = React.useState<boolean>(false);
+  const [igLoading, setIgLoading] = React.useState(false);
+  const [toast, setToast] = React.useState<{ msg: string; kind?: "error" | "info" } | null>(null);
 
   // Close menu when clicking outside
   React.useEffect(() => {
@@ -37,6 +43,60 @@ export function UserProfileMenu({ onSignOut }: UserProfileMenuProps) {
       console.error("Error signing out:", error);
     }
   };
+
+  const showToast = React.useCallback((msg: string, kind?: "error" | "info") => {
+    setToast({ msg, kind });
+    window.setTimeout(() => setToast(null), 2600);
+  }, []);
+
+  const refreshIgStatus = React.useCallback(async () => {
+    if (!user) return;
+    setIgLoading(true);
+    try {
+      const token = await user.getIdToken();
+      const res = await fetch("/api/instagram/accounts", {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+      const data = await res.json();
+      if (!res.ok || data?.status !== "success") return;
+      setIgConnected(Boolean(data.connected));
+    } catch {
+      // silent
+    } finally {
+      setIgLoading(false);
+    }
+  }, [user]);
+
+  React.useEffect(() => {
+    if (!isOpen) return;
+    refreshIgStatus();
+  }, [isOpen, refreshIgStatus]);
+
+  const handleIgDisconnect = React.useCallback(async () => {
+    if (!user) return;
+    setIgLoading(true);
+    try {
+      const token = await user.getIdToken();
+      const res = await fetch("/api/instagram/disconnect", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok || data?.status !== "success") throw new Error(data?.message || "Failed to disconnect");
+      showToast("Instagram desconectado", "info");
+      setIgConnected(false);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Unknown error";
+      showToast(msg, "error");
+    } finally {
+      setIgLoading(false);
+    }
+  }, [showToast, user]);
 
   const displayName = user?.displayName || userProfile?.displayName || "Usuario";
   const photoURL = user?.photoURL || userProfile?.photoURL;
@@ -142,6 +202,50 @@ export function UserProfileMenu({ onSignOut }: UserProfileMenuProps) {
           {/* Divider */}
           <div className="h-px bg-slate-200/50 my-1" />
 
+          {/* Instagram */}
+          <div className="py-2">
+            <button
+              type="button"
+              onClick={() => {
+                if (!user) return;
+                setIgModalOpen(true);
+                setIsOpen(false);
+              }}
+              className="w-full px-4 py-2.5 flex items-center justify-between gap-3 text-sm font-medium transition-colors text-slate-700 hover:bg-slate-100/80"
+              disabled={!user}
+            >
+              <span className="flex items-center gap-3 min-w-0">
+                <IconInstagram className="w-5 h-5" />
+                <span className="truncate">Instagram</span>
+              </span>
+              <span className="flex items-center gap-2">
+                <span className={`text-xs font-semibold ${igConnected ? "text-emerald-600" : "text-slate-500"}`}>
+                  {igLoading ? "..." : igConnected ? "Conectado" : "No conectado"}
+                </span>
+                {igConnected ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleIgDisconnect();
+                    }}
+                    disabled={igLoading}
+                    className="px-2.5 py-1.5 rounded-full text-xs font-semibold border border-white/70 bg-white/60 hover:bg-white/80 text-slate-900 disabled:opacity-50"
+                  >
+                    Desconectar
+                  </button>
+                ) : (
+                  <span className="px-2.5 py-1.5 rounded-full text-xs font-semibold border border-white/70 bg-white/60 text-slate-900">
+                    Conectar
+                  </span>
+                )}
+              </span>
+            </button>
+          </div>
+
+          {/* Divider */}
+          <div className="h-px bg-slate-200/50 my-1" />
+
           {/* Sign Out */}
           <div className="py-2">
             <MenuButton
@@ -158,6 +262,27 @@ export function UserProfileMenu({ onSignOut }: UserProfileMenuProps) {
           </div>
         </div>
       )}
+
+      <InstagramAccountsModal
+        isOpen={igModalOpen}
+        onClose={() => {
+          setIgModalOpen(false);
+          refreshIgStatus();
+        }}
+        showToast={showToast}
+      />
+
+      {toast ? (
+        <div className="absolute right-0 top-[calc(100%+0.5rem)] z-[60]">
+          <div
+            className={`px-3 py-2 rounded-2xl text-sm font-semibold shadow-[0_18px_55px_rgba(0,0,0,0.18)] border border-white/70 backdrop-blur-2xl ${
+              toast.kind === "error" ? "bg-rose-50/90 text-rose-800" : "bg-white/90 text-slate-900"
+            }`}
+          >
+            {toast.msg}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

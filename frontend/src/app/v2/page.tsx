@@ -197,10 +197,31 @@ export default function V2Page() {
       const isVerified = user.emailVerified || isGoogleUser;
       
       if (isVerified) {
+        // If we have a persisted viewstate indicating the agent chat was active,
+        // do NOT override it by forcing step 2 (agent selection). This prevents a
+        // mount-time race where step 1->2 runs before the restore-to-chat effect.
+        try {
+          if (typeof window !== "undefined") {
+            const raw = window.sessionStorage.getItem(v2ViewKey);
+            if (raw) {
+              const parsed = JSON.parse(raw);
+              const savedStep = parsed?.step;
+              const savedAgent = parsed?.selectedAgent;
+              if (savedStep === 7 && typeof savedAgent === "string" && savedAgent.trim().length > 0) {
+                setSelectedAgent(savedAgent);
+                setStep(7);
+                return;
+              }
+            }
+          }
+        } catch {
+          // ignore
+        }
+
         setStep(2);
       }
     }
-  }, [authLoading, user, step]);
+  }, [authLoading, user, step, v2ViewKey]);
 
   const handleSignOut = React.useCallback(async () => {
     try {

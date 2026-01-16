@@ -25,6 +25,14 @@ type Message = {
   textLayout?: BackendTextLayout;
 };
 
+type PersistedAgentChatState = {
+  sessionId: string;
+  messages: Message[];
+  historyCutoffIndex?: number;
+  pending?: boolean;
+  pendingRequestId?: string | null;
+};
+
 type Props = {
   agentId: string;
   agentName: string;
@@ -41,6 +49,7 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
   const [isSending, setIsSending] = React.useState(false);
   const [clientSessionId, setClientSessionId] = React.useState<string | null>(null);
   const [previewReference, setPreviewReference] = React.useState<{ ref: ReferenceOption; index: number } | null>(null);
+  const [selectedReferenceFilename, setSelectedReferenceFilename] = React.useState<string | null>(null);
   const [showCaptionModal, setShowCaptionModal] = React.useState(false);
   const [captionInput, setCaptionInput] = React.useState("");
   const [publishingImageUrl, setPublishingImageUrl] = React.useState<string | null>(null);
@@ -49,6 +58,7 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
   const [lastPromptForCaption, setLastPromptForCaption] = React.useState<string>("");
   const [lastUploadedProductImage, setLastUploadedProductImage] = React.useState<File | null>(null);
   const captionGenSeqRef = React.useRef(0);
+  const mountedRef = React.useRef(false);
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLTextAreaElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -66,6 +76,62 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
     });
   }, []);
 
+  function tryExtractPipelineTrigger(raw: string): null | {
+    prompt: string;
+    skipText?: boolean;
+    textContent?: { headline?: string; subheadline?: string; cta?: string };
+    referenceImage?: string;
+  } {
+    // Expect a fenced json block containing { "TRIGGER_GENERATE_PIPELINE": { ... } }
+    const m = raw.match(/```json\s*([\s\S]*?)```/i);
+    if (!m) return null;
+    try {
+      const parsed = JSON.parse(m[1] || "");
+      // Support both formats:
+      // 1) { "TRIGGER_GENERATE_PIPELINE": { ... } }
+      // 2) { "tool_code": { "tool_name": "TRIGGER_GENERATE_PIPELINE", "parameters": { ... } } }
+      let params: any = null;
+      if (parsed?.TRIGGER_GENERATE_PIPELINE && typeof parsed.TRIGGER_GENERATE_PIPELINE === "object") {
+        params = parsed.TRIGGER_GENERATE_PIPELINE;
+      } else if (
+        parsed?.tool_code &&
+        typeof parsed.tool_code === "object" &&
+        String(parsed.tool_code.tool_name || "").toUpperCase() === "TRIGGER_GENERATE_PIPELINE" &&
+        parsed.tool_code.parameters &&
+        typeof parsed.tool_code.parameters === "object"
+      ) {
+        params = parsed.tool_code.parameters;
+      }
+
+      if (!params) return null;
+
+      const prompt = typeof params.PROMPT === "string" ? params.PROMPT : "";
+      if (!prompt.trim()) return null;
+      const textArr = Array.isArray(params.TEXT_CONTENT) ? params.TEXT_CONTENT : null;
+      const textContent =
+        textArr && (typeof textArr[0] === "string" || typeof textArr[1] === "string" || typeof textArr[2] === "string")
+          ? {
+              headline: typeof textArr[0] === "string" ? textArr[0] : undefined,
+              subheadline: typeof textArr[1] === "string" ? textArr[1] : undefined,
+              cta: typeof textArr[2] === "string" ? textArr[2] : undefined,
+            }
+          : undefined;
+
+      const referenceImage =
+        typeof params.REFERENCE_IMAGE === "string" && params.REFERENCE_IMAGE.trim().length > 0
+          ? params.REFERENCE_IMAGE.trim()
+          : undefined;
+      return {
+        prompt: prompt.trim(),
+        skipText: typeof params.SKIP_TEXT === "boolean" ? params.SKIP_TEXT : undefined,
+        textContent,
+        referenceImage,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   const makeFreshSessionId = React.useCallback(() => {
     const base = user?.uid ? `uid-${user.uid}` : "anon";
     return `${base}-${crypto.randomUUID()}`;
@@ -75,6 +141,99 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
     const uid = user?.uid ? `uid-${user.uid}` : "anon";
     return `postty:v2:agentchat:${uid}:${agentId}`;
   }, [agentId, user?.uid]);
+
+  React.useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const readPersisted = React.useCallback((): PersistedAgentChatState | null => {
+    try {
+      if (typeof window === "undefined") return null;
+      const raw = window.sessionStorage.getItem(storageKey);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      const sid = typeof parsed?.sessionId === "string" ? parsed.sessionId : null;
+      const msgs = Array.isArray(parsed?.messages) ? (parsed.messages as Message[]) : null;
+      if (!sid) return null;
+      return {
+        sessionId: sid,
+        messages: msgs ?? [],
+        historyCutoffIndex:
+          typeof parsed?.historyCutoffIndex === "number" && Number.isFinite(parsed.historyCutoffIndex)
+            ? Math.max(0, Math.trunc(parsed.historyCutoffIndex))
+            : 0,
+        pending: !!parsed?.pending,
+        pendingRequestId: typeof parsed?.pendingRequestId === "string" ? parsed.pendingRequestId : null,
+      };
+    } catch {
+      return null;
+    }
+  }, [storageKey]);
+
+  const writePersisted = React.useCallback(
+    (next: PersistedAgentChatState) => {
+      try {
+        if (typeof window === "undefined") return;
+        window.sessionStorage.setItem(storageKey, JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+    },
+    [storageKey]
+  );
+
+  const setPendingInStorage = React.useCallback(
+    (pendingRequestId: string) => {
+      const current = readPersisted();
+      const sid = current?.sessionId || clientSessionId;
+      if (!sid) return;
+      writePersisted({
+        sessionId: sid,
+        messages: current?.messages ?? messages,
+        historyCutoffIndex: current?.historyCutoffIndex ?? historyCutoffIndex,
+        pending: true,
+        pendingRequestId,
+      });
+    },
+    [clientSessionId, historyCutoffIndex, messages, readPersisted, writePersisted]
+  );
+
+  const clearPendingInStorage = React.useCallback(
+    (pendingRequestId: string) => {
+      const current = readPersisted();
+      if (!current?.sessionId) return;
+      if (current.pendingRequestId && current.pendingRequestId !== pendingRequestId) return;
+      writePersisted({
+        ...current,
+        pending: false,
+        pendingRequestId: null,
+      });
+    },
+    [readPersisted, writePersisted]
+  );
+
+  const appendMessageToStorage = React.useCallback(
+    (pendingRequestId: string, msg: Message) => {
+      const current = readPersisted();
+      const sid = current?.sessionId || clientSessionId;
+      if (!sid) return;
+      // Only append if this response corresponds to the latest pending request (avoids duplicates).
+      if (current?.pendingRequestId && current.pendingRequestId !== pendingRequestId) return;
+      const baseMessages = Array.isArray(current?.messages) ? current!.messages : messages;
+      const nextMessages = Array.isArray(baseMessages) ? [...baseMessages, msg] : [msg];
+      writePersisted({
+        sessionId: sid,
+        messages: nextMessages,
+        historyCutoffIndex: current?.historyCutoffIndex ?? historyCutoffIndex,
+        pending: false,
+        pendingRequestId: null,
+      });
+    },
+    [clientSessionId, historyCutoffIndex, messages, readPersisted, writePersisted]
+  );
 
   // Restore chat session/messages on mount so going to Mis posts and back doesn't reset the flow.
   React.useEffect(() => {
@@ -93,9 +252,13 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
         if (sid) setClientSessionId(sid);
         if (msgs && msgs.length > 0) setMessages(msgs);
         setHistoryCutoffIndex(cutoff);
-        if (sid) {
-          // Prevent the greeting effect from firing for a restored session
+        if (sid && msgs && msgs.length > 0) {
+          // Prevent the greeting effect from firing for a restored session that already has messages.
           lastGreetedSessionRef.current = sid;
+        }
+        // If there is an in-flight request, restore the busy indicator so the user sees we're waiting.
+        if (parsed?.pending === true) {
+          setIsSending(true);
         }
         return;
       }
@@ -111,16 +274,58 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
   // Persist session + messages (keeps chat state across navigation)
   React.useEffect(() => {
     if (!clientSessionId) return;
-    try {
-      if (typeof window === "undefined") return;
-      window.sessionStorage.setItem(
-        storageKey,
-        JSON.stringify({ sessionId: clientSessionId, messages, historyCutoffIndex })
-      );
-    } catch {
-      // ignore
-    }
-  }, [clientSessionId, historyCutoffIndex, messages, storageKey]);
+    const current = readPersisted();
+    // Preserve any in-flight marker written by handleSendMessage so it survives navigation.
+    writePersisted({
+      sessionId: clientSessionId,
+      messages,
+      historyCutoffIndex,
+      pending: current?.pending ?? false,
+      pendingRequestId: current?.pendingRequestId ?? null,
+    });
+  }, [clientSessionId, historyCutoffIndex, messages, readPersisted, writePersisted]);
+
+  // If the user navigates away while a request is pending, the response can be appended to sessionStorage
+  // by an older (unmounted) AgentChat instance. While we're "sending", poll sessionStorage so the new
+  // instance picks up the finished result immediately (no UI change; just state resilience).
+  React.useEffect(() => {
+    if (!clientSessionId) return;
+    if (!isSending) return;
+    if (typeof window === "undefined") return;
+
+    let stopped = false;
+    const tick = () => {
+      const current = readPersisted();
+      if (!current) return;
+      if (current.sessionId !== clientSessionId) return;
+
+      if (Array.isArray(current.messages) && current.messages.length !== messages.length) {
+        setMessages(current.messages);
+      }
+      const nextCutoff =
+        typeof current.historyCutoffIndex === "number" && Number.isFinite(current.historyCutoffIndex)
+          ? Math.max(0, Math.trunc(current.historyCutoffIndex))
+          : 0;
+      if (nextCutoff !== historyCutoffIndex) setHistoryCutoffIndex(nextCutoff);
+
+      if (current.pending !== true) {
+        setIsSending(false);
+      }
+    };
+
+    tick();
+    const t = window.setInterval(() => {
+      if (stopped) return;
+      tick();
+    }, 500);
+
+    return () => {
+      stopped = true;
+      window.clearInterval(t);
+    };
+    // We intentionally only depend on message count (not full messages) to keep this lightweight.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientSessionId, historyCutoffIndex, isSending, messages.length, readPersisted]);
 
   const getBackendHistory = React.useCallback(() => {
     // The backend currently doesn't strictly require conversationHistory, but we keep it correct and
@@ -156,8 +361,6 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
   const lastGreetedSessionRef = React.useRef<string | null>(null);
   
   React.useEffect(() => {
-    // Wait for auth to load before making initial request
-    if (loading) return;
     if (!clientSessionId) return;
     if (lastGreetedSessionRef.current === clientSessionId) return;
     // If we already have messages (restored session), don't restart the conversation.
@@ -212,21 +415,31 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId, loading, clientSessionId, user?.uid]);
 
-  const addAssistantMessage = (content: string, imageUrl?: string, textLayout?: any) => {
-    setIsTyping(true);
+  const addAssistantMessage = (
+    content: string,
+    imageUrl?: string,
+    textLayout?: any,
+    opts?: { references?: ReferenceOption[]; pendingRequestId?: string }
+  ) => {
+    if (mountedRef.current) setIsTyping(true);
+    const delay = 800 + Math.random() * 400;
     setTimeout(() => {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content,
-          imageUrl,
-          textLayout,
-        },
-      ]);
-      setIsTyping(false);
-    }, 800 + Math.random() * 400);
+      const msg: Message = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content,
+        imageUrl,
+        textLayout,
+        ...(opts?.references ? { references: opts.references } : {}),
+      };
+
+      if (opts?.pendingRequestId) appendMessageToStorage(opts.pendingRequestId, msg);
+
+      if (mountedRef.current) {
+        setMessages((prev) => [...prev, msg]);
+        setIsTyping(false);
+      }
+    }, delay);
   };
 
   const addUserMessage = (content: string, imageUrl?: string) => {
@@ -386,30 +599,43 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
       return;
     }
 
-    setInputValue("");
+    if (mountedRef.current) setInputValue("");
     
     // Add user message to chat
+    // UI vs backend message:
+    // - UI message should remain user-friendly ("📸 Imagen subida")
+    // - Backend should receive a deterministic marker so the agent follows Step 1/2 without re-sending Step 0 greeting.
+    const uiMessage =
+      uploadedFile && (!messageText || messageText.trim().length === 0) ? "📸 Imagen subida" : messageText;
+    const backendMessage =
+      uploadedFile &&
+      (!messageText || messageText.trim().length === 0 || messageText.trim() === "📸 Imagen subida")
+        ? "[User uploaded product image]"
+        : messageText;
     if (uploadedFile) {
       const imageUrl = URL.createObjectURL(uploadedFile);
-      addUserMessage(messageText || "📸 Imagen subida", imageUrl);
+      addUserMessage(uiMessage, imageUrl);
     } else {
-      addUserMessage(messageText);
+      addUserMessage(uiMessage);
     }
 
     // Track last user intent + product image for caption autofill.
-    if (messageText && messageText.trim().length > 0) {
+    // Avoid using internal backend markers for caption generation.
+    if (messageText && messageText.trim().length > 0 && messageText.trim() !== "[User uploaded product image]") {
       setLastPromptForCaption(messageText.trim());
     }
     if (uploadedFile) {
       setLastUploadedProductImage(uploadedFile);
     }
 
-    setIsSending(true);
+    const pendingRequestId = crypto.randomUUID();
+    setPendingInStorage(pendingRequestId);
+    if (mountedRef.current) setIsSending(true);
 
     try {
       const formData = new FormData();
       formData.append("agentType", agentId);
-      formData.append("message", messageText);
+      formData.append("message", backendMessage);
       formData.append("conversationHistory", JSON.stringify(getBackendHistory()));
       if (clientSessionId) formData.append("sessionId", clientSessionId);
       
@@ -434,8 +660,55 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
       const result = await response.json();
 
       if (result.type === "text") {
-        // Regular text response
-        addAssistantMessage(result.text);
+        // If agent returned a pipeline trigger JSON, execute it and show the resulting image
+        const rawText = typeof result.text === "string" ? result.text : "";
+        const trigger = rawText ? tryExtractPipelineTrigger(rawText) : null;
+        if (trigger) {
+          if (!lastUploadedProductImage) {
+            addAssistantMessage(
+              "Necesito que subas la foto del producto (botón +) antes de generar la imagen.",
+              undefined,
+              undefined,
+              { pendingRequestId }
+            );
+          } else {
+            // Show a friendly progress message instead of the JSON payload
+            addAssistantMessage("Generando tu post... esto tomará unos segundos.", undefined, undefined, {
+              pendingRequestId,
+            });
+            try {
+              const productImageBase64 = await fileToDataUrl(lastUploadedProductImage);
+              const pipelineRes = await fetch("/api/pipeline", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  productImageBase64,
+                  textPrompt: trigger.prompt,
+                  referenceImage: trigger.referenceImage || selectedReferenceFilename || undefined,
+                  skipText: trigger.skipText ?? false,
+                  style: "Elegante",
+                  useCase: "Promoción",
+                  textContent: trigger.textContent,
+                  aspectRatio: "1:1",
+                  language: "es",
+                }),
+              });
+              const pipelineData = await pipelineRes.json();
+              if (!pipelineRes.ok || pipelineData?.success !== true || typeof pipelineData?.finalImage !== "string") {
+                throw new Error(pipelineData?.error || "Pipeline failed");
+              }
+              addAssistantMessage("¡Listo! Acá está tu imagen.", pipelineData.finalImage, pipelineData.textLayout, {
+                pendingRequestId,
+              });
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : "Unknown error";
+              addAssistantMessage(`No pude generar la imagen: ${msg}`, undefined, undefined, { pendingRequestId });
+            }
+          }
+        } else {
+          // Regular text response
+          addAssistantMessage(rawText, undefined, undefined, { pendingRequestId });
+        }
 
         // If a reel generation was started, backend returns a postId. Poll /api/posts
         // until it becomes ready_to_upload (or failed) and notify in chat.
@@ -488,33 +761,28 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
         }
       } else if (result.type === "reference_options") {
         // Agent is presenting reference image options
-        setIsTyping(true);
-        setTimeout(() => {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              role: "assistant",
-              content: result.text,
-              references: result.references,
-            },
-          ]);
-          setIsTyping(false);
-        }, 800);
+        addAssistantMessage(result.text, undefined, undefined, { references: result.references, pendingRequestId });
       } else if (result.type === "request_image") {
         // Agent is requesting an image upload (user can use + button)
-        addAssistantMessage(result.text || "Por favor, subí una imagen usando el botón +");
+        addAssistantMessage(result.text || "Por favor, subí una imagen usando el botón +", undefined, undefined, {
+          pendingRequestId,
+        });
       } else if (result.type === "image") {
         // Agent generated an image
         const text = result.text || "¡Listo! Acá está tu imagen 🎉";
-        addAssistantMessage(text, result.imageUrl, result.textLayout);
+        addAssistantMessage(text, result.imageUrl, result.textLayout, { pendingRequestId });
+        if (mountedRef.current) setIsSending(false);
+        return;
       }
     } catch (error) {
       console.error("Error sending message:", error);
       showToast("Error al comunicarse con el agente", "error");
-      addAssistantMessage("Perdón, tuve un problema. ¿Podés intentar de nuevo?");
+      addAssistantMessage("Perdón, tuve un problema. ¿Podés intentar de nuevo?", undefined, undefined, {
+        pendingRequestId,
+      });
     } finally {
-      setIsSending(false);
+      clearPendingInStorage(pendingRequestId);
+      if (mountedRef.current) setIsSending(false);
     }
   };
 
@@ -534,7 +802,7 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
       return;
     }
 
-    handleSendMessage("", file);
+    handleSendMessage("📸 Imagen subida", file);
   };
 
   const handleDownloadImage = (imageUrl: string) => {
@@ -670,6 +938,7 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
   };
 
   const handleSelectReference = (number: number, ref: ReferenceOption) => {
+    setSelectedReferenceFilename(ref.filename);
     // Send selection number as message to agent
     setPreviewReference(null); // Close modal
     handleSendMessage(String(number));

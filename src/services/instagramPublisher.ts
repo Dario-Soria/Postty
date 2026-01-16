@@ -5,6 +5,11 @@ const GRAPH_API_VERSION = process.env.GRAPH_API_VERSION || 'v19.0';
 const INSTAGRAM_USER_ID = process.env.INSTAGRAM_USER_ID;
 const INSTAGRAM_ACCESS_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN;
 
+export type InstagramPublishAuth = {
+  igUserId: string;
+  pageAccessToken: string;
+};
+
 // Polling configuration
 const POLL_INTERVAL_MS = 2000; // 2 seconds
 const MAX_POLL_ATTEMPTS = 60; // 2 minutes max (60 * 2s)
@@ -34,29 +39,27 @@ export type InstagramVideoKind = 'VIDEO' | 'STORIES' | 'REELS';
  */
 export async function publishInstagramPost(
   imageUrl: string,
-  caption: string
+  caption: string,
+  auth?: InstagramPublishAuth
 ): Promise<{ id: string }> {
-  if (!INSTAGRAM_USER_ID) {
-    throw new Error('INSTAGRAM_USER_ID environment variable is not set');
-  }
-
-  if (!INSTAGRAM_ACCESS_TOKEN) {
-    throw new Error('INSTAGRAM_ACCESS_TOKEN environment variable is not set');
-  }
+  const igUserId = auth?.igUserId || INSTAGRAM_USER_ID;
+  const accessToken = auth?.pageAccessToken || INSTAGRAM_ACCESS_TOKEN;
+  if (!igUserId) throw new Error('Instagram user is not connected (missing igUserId)');
+  if (!accessToken) throw new Error('Instagram user is not connected (missing access token)');
 
   // Step 1: Create media container
   logger.info('Creating Instagram media container...');
-  const containerId = await createMediaContainer(imageUrl, caption);
+  const containerId = await createMediaContainer(imageUrl, caption, { igUserId, accessToken });
   logger.info(`Media container created: ${containerId}`);
 
   // Step 2: Poll container status until ready
   logger.info('Polling container status...');
-  await pollContainerStatus(containerId);
+  await pollContainerStatus(containerId, { accessToken });
   logger.info('Container is ready for publishing');
 
   // Step 3: Publish the container
   logger.info('Publishing Instagram post...');
-  const publishedPost = await publishContainerWithRetry(containerId);
+  const publishedPost = await publishContainerWithRetry(containerId, { igUserId, accessToken });
   logger.info(`Successfully published Instagram post: ${publishedPost.id}`);
 
   return publishedPost;
@@ -75,14 +78,12 @@ export async function publishInstagramVideo(params: {
   kind: InstagramVideoKind;
   shareToFeed?: boolean;
   maxPollAttempts?: number;
+  auth?: InstagramPublishAuth;
 }): Promise<{ id: string }> {
-  if (!INSTAGRAM_USER_ID) {
-    throw new Error('INSTAGRAM_USER_ID environment variable is not set');
-  }
-
-  if (!INSTAGRAM_ACCESS_TOKEN) {
-    throw new Error('INSTAGRAM_ACCESS_TOKEN environment variable is not set');
-  }
+  const igUserId = params.auth?.igUserId || INSTAGRAM_USER_ID;
+  const accessToken = params.auth?.pageAccessToken || INSTAGRAM_ACCESS_TOKEN;
+  if (!igUserId) throw new Error('Instagram user is not connected (missing igUserId)');
+  if (!accessToken) throw new Error('Instagram user is not connected (missing access token)');
 
   if (!params.videoUrl || typeof params.videoUrl !== 'string') {
     throw new Error('videoUrl is required');
@@ -99,30 +100,31 @@ export async function publishInstagramVideo(params: {
     caption: params.caption,
     kind: params.kind,
     shareToFeed: params.shareToFeed,
+    igUserId,
+    accessToken,
   });
   logger.info(`Media container created: ${containerId}`);
 
   logger.info('Polling container status...');
-  await pollContainerStatus(containerId, { maxPollAttempts: params.maxPollAttempts });
+  await pollContainerStatus(containerId, { maxPollAttempts: params.maxPollAttempts, accessToken });
   logger.info('Container is ready for publishing');
 
   logger.info('Publishing Instagram media...');
-  const publishedPost = await publishContainerWithRetry(containerId);
+  const publishedPost = await publishContainerWithRetry(containerId, { igUserId, accessToken });
   logger.info(`Successfully published Instagram media: ${publishedPost.id}`);
 
   return publishedPost;
 }
 
-export async function getInstagramPermalink(mediaId: string): Promise<string> {
-  if (!INSTAGRAM_ACCESS_TOKEN) {
-    throw new Error('INSTAGRAM_ACCESS_TOKEN environment variable is not set');
-  }
+export async function getInstagramPermalink(mediaId: string, auth?: InstagramPublishAuth): Promise<string> {
+  const accessToken = auth?.pageAccessToken || INSTAGRAM_ACCESS_TOKEN;
+  if (!accessToken) throw new Error('Instagram user is not connected (missing access token)');
   const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${mediaId}`;
   try {
     const response = await axios.get(url, {
       params: {
         fields: 'permalink',
-        access_token: INSTAGRAM_ACCESS_TOKEN,
+        access_token: accessToken,
       },
     });
     const permalink = response?.data?.permalink;
@@ -147,16 +149,17 @@ export async function getInstagramPermalink(mediaId: string): Promise<string> {
  */
 async function createMediaContainer(
   imageUrl: string,
-  caption: string
+  caption: string,
+  auth: { igUserId: string; accessToken: string }
 ): Promise<string> {
-  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${INSTAGRAM_USER_ID}/media`;
+  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${auth.igUserId}/media`;
 
   try {
     const response = await axios.post<MediaContainerResponse>(url, null, {
       params: {
         image_url: imageUrl,
         caption: caption,
-        access_token: INSTAGRAM_ACCESS_TOKEN,
+        access_token: auth.accessToken,
       },
     });
 
@@ -182,13 +185,15 @@ async function createVideoMediaContainer(params: {
   caption?: string;
   kind: InstagramVideoKind;
   shareToFeed?: boolean;
+  igUserId: string;
+  accessToken: string;
 }): Promise<string> {
-  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${INSTAGRAM_USER_ID}/media`;
+  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${params.igUserId}/media`;
 
   const requestParams: Record<string, any> = {
     video_url: params.videoUrl,
     media_type: params.kind,
-    access_token: INSTAGRAM_ACCESS_TOKEN,
+    access_token: params.accessToken,
   };
 
   if (params.caption && params.caption.trim().length > 0) {
@@ -222,17 +227,19 @@ async function createVideoMediaContainer(params: {
  */
 async function pollContainerStatus(
   containerId: string,
-  opts?: { maxPollAttempts?: number }
+  opts?: { maxPollAttempts?: number; accessToken: string }
 ): Promise<void> {
   const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${containerId}`;
   const maxAttempts = opts?.maxPollAttempts ?? MAX_POLL_ATTEMPTS;
+  const accessToken = opts?.accessToken;
+  if (!accessToken) throw new Error('Instagram access token is required for polling');
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const response = await axios.get<ContainerStatusResponse>(url, {
         params: {
           fields: 'status_code',
-          access_token: INSTAGRAM_ACCESS_TOKEN,
+          access_token: accessToken,
         },
       });
 
@@ -289,10 +296,13 @@ function isTransientPublishNotReadyError(error: unknown): boolean {
   );
 }
 
-async function publishContainerWithRetry(containerId: string): Promise<{ id: string }> {
+async function publishContainerWithRetry(
+  containerId: string,
+  auth: { igUserId: string; accessToken: string }
+): Promise<{ id: string }> {
   for (let attempt = 1; attempt <= MAX_PUBLISH_ATTEMPTS; attempt++) {
     try {
-      return await publishContainer(containerId);
+      return await publishContainer(containerId, auth);
     } catch (e) {
       if (!isTransientPublishNotReadyError(e) || attempt >= MAX_PUBLISH_ATTEMPTS) {
         throw e;
@@ -306,7 +316,7 @@ async function publishContainerWithRetry(containerId: string): Promise<{ id: str
       await sleep(PUBLISH_RETRY_DELAY_MS);
       // Best-effort: re-check status once (does not change behavior; just avoids hammering publish).
       try {
-        await pollContainerStatus(containerId, { maxPollAttempts: 1 });
+        await pollContainerStatus(containerId, { maxPollAttempts: 1, accessToken: auth.accessToken });
       } catch {
         // ignore
       }
@@ -320,14 +330,17 @@ async function publishContainerWithRetry(containerId: string): Promise<{ id: str
 /**
  * Publishes a ready media container to Instagram
  */
-async function publishContainer(containerId: string): Promise<{ id: string }> {
-  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${INSTAGRAM_USER_ID}/media_publish`;
+async function publishContainer(
+  containerId: string,
+  auth: { igUserId: string; accessToken: string }
+): Promise<{ id: string }> {
+  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${auth.igUserId}/media_publish`;
 
   try {
     const response = await axios.post<PublishResponse>(url, null, {
       params: {
         creation_id: containerId,
-        access_token: INSTAGRAM_ACCESS_TOKEN,
+        access_token: auth.accessToken,
       },
     });
 

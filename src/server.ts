@@ -1,4 +1,11 @@
-import 'dotenv/config';
+import path from 'path';
+import dotenv from 'dotenv';
+// Load environment variables in a robust way for dev/prod.
+// 1) Default dotenv behavior (uses process.cwd()).
+dotenv.config();
+// 2) Explicitly attempt to load the project-root .env even when launched from dist/ or elsewhere.
+dotenv.config({ path: path.resolve(process.cwd(), '.env') });
+dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
 import Fastify from 'fastify';
 import multipart from '@fastify/multipart';
 import publishInstagramRoute from './routes/publish-instagram';
@@ -33,6 +40,7 @@ import videoPublishRoutes from './routes/video-publish';
 import videoDiscardRoutes from './routes/video-discard';
 import postsRoutes from './routes/posts';
 import postsAnalyticsRoutes from './routes/posts-analytics';
+import instagramAuthRoutes from './routes/instagram-auth';
 import * as logger from './utils/logger';
 
 // Configuration
@@ -61,6 +69,14 @@ async function start(): Promise<void> {
       process.env.POSTTY_INTERNAL_TOKEN = 'postty-dev-internal-token';
       logger.warn('[Config] POSTTY_INTERNAL_TOKEN not set; using development default token');
     }
+
+    // Debug signal (safe): shows whether Meta OAuth vars are visible to the running process.
+    // This helps diagnose “I set it in .env but server can’t see it”.
+    const metaAppId = process.env.META_APP_ID || process.env.FACEBOOK_APP_ID;
+    const metaAppSecret = process.env.META_APP_SECRET || process.env.FACEBOOK_APP_SECRET;
+    logger.info(
+      `[Config] Meta OAuth env present: META_APP_ID=${!!metaAppId}, META_APP_SECRET=${!!metaAppSecret}, META_REDIRECT_URI=${!!process.env.META_REDIRECT_URI}, POSTTY_IG_OAUTH_STATE_SECRET=${!!process.env.POSTTY_IG_OAUTH_STATE_SECRET}`
+    );
 
     // Accept application/x-www-form-urlencoded requests (used by some clients/tools).
     // We parse it ourselves to avoid adding extra dependencies.
@@ -101,6 +117,7 @@ async function start(): Promise<void> {
     await fastify.register(videoDiscardRoutes);
     await fastify.register(postsRoutes);
     await fastify.register(postsAnalyticsRoutes);
+    await fastify.register(instagramAuthRoutes);
     await fastify.register(chatRoute);
     await fastify.register(posttyArchitectRoute);
     await fastify.register(captionRoute);
