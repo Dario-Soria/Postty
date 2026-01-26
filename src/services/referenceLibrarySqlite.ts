@@ -2,137 +2,168 @@ import * as fs from 'fs';
 import * as path from 'path';
 import crypto from 'crypto';
 import sharp from 'sharp';
+import * as AWS from 'aws-sdk';
+import { Pool } from 'pg';
 import * as logger from '../utils/logger';
 import { extractDesignGuidelinesWithGemini } from './geminiMultimodal';
+import { getS3ForBucket, getSignedGetObjectUrl } from './s3Client';
 
-type SqliteDb = any;
+type ReferenceScope = 'global' | 'user';
 
-function getLibraryRoot(): string {
-  return path.join(process.cwd(), 'reference-library');
+let _pool: Pool | null = null;
+
+function normalizeDatabaseUrl(raw: string): string {
+  let s = (raw || '').trim();
+  if (!s) return '';
+
+  // Neon Console often provides a convenience command like:
+  //   psql 'postgresql://user:pass@host/db?sslmode=require'
+  // Users sometimes paste that whole thing into .env.
+  if (s.toLowerCase().startsWith('psql ')) {
+    s = s.slice('psql '.length).trim();
+  }
+
+  // Strip wrapping quotes (single or double)
+  if (
+    (s.startsWith("'") && s.endsWith("'") && s.length > 2) ||
+    (s.startsWith('"') && s.endsWith('"') && s.length > 2)
+  ) {
+    s = s.slice(1, -1).trim();
+  }
+
+  return s;
 }
 
-function ensureDirs(): { root: string; imagesDir: string } {
-  const root = getLibraryRoot();
-  const imagesDir = path.join(root, 'images');
-  if (!fs.existsSync(root)) fs.mkdirSync(root, { recursive: true });
-  if (!fs.existsSync(imagesDir)) fs.mkdirSync(imagesDir, { recursive: true });
-  return { root, imagesDir };
+function getPool(): Pool {
+  if (_pool) return _pool;
+  const connectionString = normalizeDatabaseUrl(
+    process.env.DATABASE_URL || process.env.NEON_DATABASE_URL || process.env.POSTGRES_URL || ''
+  );
+  if (!connectionString) {
+    throw new Error('Missing DATABASE_URL (Neon Postgres connection string)');
+  }
+  _pool = new Pool({ connectionString, max: 10 });
+  return _pool;
+}
+
+let _schemaReady = false;
+async function ensureSchema(): Promise<void> {
+  if (_schemaReady) return;
+  const pool = getPool();
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS reference_images (
+      id uuid PRIMARY KEY,
+      scope text NOT NULL CHECK (scope IN ('global','user')),
+      owner_uid text NULL,
+      sha256 text NOT NULL,
+      original_filename text NOT NULL,
+      s3_bucket text NOT NULL,
+      s3_key text NOT NULL,
+      mime text NOT NULL,
+      bytes integer NOT NULL,
+      width integer NULL,
+      height integer NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      tags text[] NOT NULL DEFAULT ARRAY[]::text[],
+      industry text NOT NULL DEFAULT '',
+      aesthetic text NOT NULL DEFAULT '',
+      mood text NOT NULL DEFAULT '',
+      design_guidelines jsonb NOT NULL DEFAULT '{}'::jsonb,
+      ranking integer NOT NULL DEFAULT 1
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_reference_images_scope_owner_rank ON reference_images(scope, owner_uid, ranking DESC, created_at DESC);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_reference_images_sha_scope_owner ON reference_images(sha256, scope, owner_uid);`);
+  _schemaReady = true;
 }
 
 function computeSha256(buf: Buffer): string {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
-function slugify(s: string): string {
-  return (s || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 64);
+function ensureTempDir(): string {
+  const dir = path.join(process.cwd(), 'temp-uploads', 'ref-lib');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
-function tryRequireBetterSqlite3(): any | null {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    return require('better-sqlite3');
-  } catch (e) {
-    logger.warn('better-sqlite3 is not installed; reference library indexing is disabled.');
-    return null;
-  }
+function getBucket(): string {
+  const bucket = process.env.AWS_BUCKET_NAME;
+  if (!bucket) throw new Error('AWS_BUCKET_NAME environment variable is not set');
+  return bucket;
 }
 
-let db: SqliteDb | null = null;
+function safeFilename(raw: string): string {
+  const base = (raw || 'upload').split('/').pop() || 'upload';
+  return base.replace(/[^\w\-.]+/g, '_').slice(0, 140);
+}
 
-function ensureDb(): SqliteDb | null {
-  if (db) return db;
-  const BetterSqlite3 = tryRequireBetterSqlite3();
-  if (!BetterSqlite3) return null;
+function s3KeyFor(params: { scope: ReferenceScope; ownerUid?: string | null; id: string; originalFilename: string }): string {
+  const file = safeFilename(params.originalFilename);
+  if (params.scope === 'global') return `references/global/${params.id}/${file}`;
+  const uid = (params.ownerUid || '').trim();
+  return `references/users/${uid}/${params.id}/${file}`;
+}
 
-  const { root } = ensureDirs();
-  const dbPath = path.join(root, 'index.sqlite');
-  db = new BetterSqlite3(dbPath);
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS reference_images (
-      id TEXT PRIMARY KEY,
-      sha256 TEXT UNIQUE,
-      original_filename TEXT,
-      stored_path TEXT,
-      mime TEXT,
-      bytes INTEGER,
-      width INTEGER,
-      height INTEGER,
-      created_at TEXT,
-      tags TEXT,
-      industry TEXT,
-      aesthetic TEXT,
-      mood TEXT,
-      design_guidelines TEXT,
-      ranking INTEGER DEFAULT 1
-    );
-  `);
-
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_reference_images_created_at ON reference_images(created_at);`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_reference_images_industry ON reference_images(industry);`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_reference_images_aesthetic ON reference_images(aesthetic);`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_reference_images_tags ON reference_images(tags);`);
-  
-  // Migration: Add ranking column if it doesn't exist
-  try {
-    // Try to select ranking - if it fails, the column doesn't exist
-    db.prepare('SELECT ranking FROM reference_images LIMIT 1').get();
-  } catch (error) {
-    // Column doesn't exist, add it
-    logger.info('Adding ranking column to reference_images table...');
-    db.exec(`ALTER TABLE reference_images ADD COLUMN ranking INTEGER DEFAULT 1;`);
-    db.exec(`UPDATE reference_images SET ranking = 1 WHERE ranking IS NULL;`);
-    logger.info('Ranking column added successfully');
-  }
-  
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_reference_images_ranking ON reference_images(ranking DESC);`);
-  
-  return db;
+async function signedGetUrl(params: { bucket: string; key: string; expiresSeconds: number }): Promise<string> {
+  return await getSignedGetObjectUrl(params);
 }
 
 export type SavedReferenceImage = {
   id: string;
-  stored_path: string;
+  s3_bucket: string;
+  s3_key: string;
   sha256: string;
+  scope: ReferenceScope;
+  owner_uid: string | null;
 };
 
 /**
- * Save a reference image for future retrieval, and index it asynchronously with Gemini keywords.
- * This function never blocks the caller on keyword extraction.
+ * Save a reference image to S3, persist metadata in Neon Postgres, and index it asynchronously with Gemini.
+ *
+ * Defaults:
+ * - If no ownerUid is provided, saves to the GLOBAL library.
  */
 export async function saveReferenceImageAsync(params: {
   buffer: Buffer;
   originalFilename: string;
   mime: string;
+  ownerUid?: string | null;
 }): Promise<SavedReferenceImage | null> {
-  const dbi = ensureDb();
-  if (!dbi) return null;
+  await ensureSchema();
+  const pool = getPool();
 
-  const { imagesDir } = ensureDirs();
+  const ownerUid = typeof params.ownerUid === 'string' && params.ownerUid.trim().length > 0 ? params.ownerUid.trim() : null;
+  const scope: ReferenceScope = ownerUid ? 'user' : 'global';
   const sha256 = computeSha256(params.buffer);
 
-  // Dedupe (but if the existing row hasn't been indexed yet, re-run indexing async)
-  const existing = dbi
-    .prepare('SELECT id, stored_path, sha256, tags, industry, aesthetic, mood, design_guidelines, ranking FROM reference_images WHERE sha256 = ?')
-    .get(sha256);
-  if (existing?.id && existing?.stored_path) {
-    const designGuidelines = typeof existing.design_guidelines === 'string' ? existing.design_guidelines : '';
-    const needsIndex = designGuidelines.trim().length === 0;
-
-    if (needsIndex && fs.existsSync(existing.stored_path)) {
+  // Dedupe within scope+owner
+  const existing = await pool.query(
+    `SELECT id, s3_bucket, s3_key, sha256, scope, owner_uid, design_guidelines
+     FROM reference_images
+     WHERE sha256 = $1 AND scope = $2 AND (owner_uid IS NOT DISTINCT FROM $3)
+     LIMIT 1`,
+    [sha256, scope, ownerUid]
+  );
+  if (existing.rows.length > 0) {
+    const row = existing.rows[0];
+    const needsIndex = !row.design_guidelines || JSON.stringify(row.design_guidelines) === '{}' ;
+    if (needsIndex) {
       setImmediate(() => {
         void (async () => {
           try {
-            const { tags, industry, aesthetic, mood, design_guidelines } = await extractDesignGuidelinesWithGemini({
-              imagePath: existing.stored_path,
-            });
-            dbi
-              .prepare('UPDATE reference_images SET tags = ?, industry = ?, aesthetic = ?, mood = ?, design_guidelines = ? WHERE id = ?')
-              .run(tags.join(', '), industry, aesthetic, mood, JSON.stringify(design_guidelines), existing.id);
+            const tempDir = ensureTempDir();
+            const ext = params.mime.includes('png') ? 'png' : params.mime.includes('webp') ? 'webp' : 'jpg';
+            const tempPath = path.join(tempDir, `${Date.now()}_${row.id}.${ext}`);
+            fs.writeFileSync(tempPath, params.buffer);
+            const { tags, industry, aesthetic, mood, design_guidelines } = await extractDesignGuidelinesWithGemini({ imagePath: tempPath });
+            await pool.query(
+              `UPDATE reference_images
+               SET tags = $1, industry = $2, aesthetic = $3, mood = $4, design_guidelines = $5
+               WHERE id = $6`,
+              [tags, industry || '', aesthetic || '', mood || '', JSON.stringify(design_guidelines || {}), row.id]
+            );
+            try { fs.unlinkSync(tempPath); } catch {}
           } catch (e) {
             const msg = e instanceof Error ? e.message : 'Unknown error';
             logger.warn(`Reference design guidelines re-indexing failed: ${msg}`);
@@ -140,58 +171,82 @@ export async function saveReferenceImageAsync(params: {
         })();
       });
     }
-
-    return { id: existing.id, stored_path: existing.stored_path, sha256: existing.sha256 };
+    return {
+      id: String(row.id),
+      s3_bucket: String(row.s3_bucket),
+      s3_key: String(row.s3_key),
+      sha256: String(row.sha256),
+      scope: row.scope as ReferenceScope,
+      owner_uid: row.owner_uid ? String(row.owner_uid) : null,
+    };
   }
 
   const id = crypto.randomUUID();
-  const ext = params.mime.includes('png') ? 'png' : params.mime.includes('webp') ? 'webp' : 'jpg';
-  const tempName = `${Date.now()}_${id}.${ext}`;
-  const storedPath = path.join(imagesDir, tempName);
-  fs.writeFileSync(storedPath, params.buffer);
+  const bucket = getBucket();
+  const key = s3KeyFor({ scope, ownerUid, id, originalFilename: params.originalFilename });
+  const s3 = await getS3ForBucket(bucket);
 
+  // Basic metadata
   const meta = await sharp(params.buffer).metadata().catch(() => null);
   const width = meta?.width ?? null;
   const height = meta?.height ?? null;
   const bytes = params.buffer.byteLength;
-  const createdAt = new Date().toISOString();
 
-  dbi
-    .prepare(
-      `INSERT INTO reference_images
-        (id, sha256, original_filename, stored_path, mime, bytes, width, height, created_at, tags, industry, aesthetic, mood, design_guidelines, ranking)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(id, sha256, params.originalFilename, storedPath, params.mime, bytes, width, height, createdAt, '', '', '', '', '', 1);
+  // Upload to S3
+  await s3
+    .upload({
+      Bucket: bucket,
+      Key: key,
+      Body: params.buffer,
+      ContentType: params.mime || 'application/octet-stream',
+    })
+    .promise();
+
+  // Insert row
+  await pool.query(
+    `INSERT INTO reference_images
+      (id, scope, owner_uid, sha256, original_filename, s3_bucket, s3_key, mime, bytes, width, height, tags, industry, aesthetic, mood, design_guidelines, ranking)
+     VALUES
+      ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, ARRAY[]::text[], '', '', '', '{}'::jsonb, 1)`,
+    [id, scope, ownerUid, sha256, params.originalFilename, bucket, key, params.mime, bytes, width, height]
+  );
 
   // Background indexing (non-blocking)
-  // NOTE: We DO NOT rename files because they may have paired JSON metadata files
-  // with the same filename. Design guidelines are stored in the database instead.
   setImmediate(() => {
     void (async () => {
+      let tempPath: string | null = null;
       try {
-        const { tags, industry, aesthetic, mood, design_guidelines } = await extractDesignGuidelinesWithGemini({ imagePath: storedPath });
-        
-        // Update database with design guidelines (keep original path)
-        dbi
-          .prepare('UPDATE reference_images SET tags = ?, industry = ?, aesthetic = ?, mood = ?, design_guidelines = ? WHERE id = ?')
-          .run(tags.join(', '), industry, aesthetic, mood, JSON.stringify(design_guidelines), id);
-        
-        logger.info(`Reference image indexed: ${path.basename(storedPath)} (${tags.length} tags)`);
+        const tempDir = ensureTempDir();
+        const ext = params.mime.includes('png') ? 'png' : params.mime.includes('webp') ? 'webp' : 'jpg';
+        tempPath = path.join(tempDir, `${Date.now()}_${id}.${ext}`);
+        fs.writeFileSync(tempPath, params.buffer);
+        const { tags, industry, aesthetic, mood, design_guidelines } = await extractDesignGuidelinesWithGemini({ imagePath: tempPath });
+        await pool.query(
+          `UPDATE reference_images
+           SET tags = $1, industry = $2, aesthetic = $3, mood = $4, design_guidelines = $5
+           WHERE id = $6`,
+          [tags, industry || '', aesthetic || '', mood || '', JSON.stringify(design_guidelines || {}), id]
+        );
+        logger.info(`Reference image indexed (Neon): id=${id} tags=${Array.isArray(tags) ? tags.length : 0} scope=${scope}`);
       } catch (e) {
         const msg = e instanceof Error ? e.message : 'Unknown error';
         logger.warn(`Reference design guidelines indexing failed: ${msg}`);
+      } finally {
+        if (tempPath) {
+          try {
+            fs.unlinkSync(tempPath);
+          } catch {}
+        }
       }
     })();
   });
 
-  return { id, stored_path: storedPath, sha256 };
+  return { id, s3_bucket: bucket, s3_key: key, sha256, scope, owner_uid: ownerUid };
 }
 
 export type ReferenceImageSearchResult = {
   id: string;
-  stored_path: string;
-  filename: string;
+  url: string;
   tags: string[];
   industry: string;
   aesthetic: string;
@@ -199,196 +254,161 @@ export type ReferenceImageSearchResult = {
   design_guidelines: object;
   relevance_score: number;
   ranking?: number;
+  scope: ReferenceScope;
 };
 
-function parseTags(tagsString: string): string[] {
-  if (!tagsString || typeof tagsString !== 'string') return [];
-  return tagsString.split(',').map(t => t.trim()).filter(t => t.length > 0);
+function normalizeTerms(query: string): string[] {
+  const q = (query || '').toLowerCase();
+  return q
+    .split(/\s+/)
+    .map((t) => t.replace(/[^a-z0-9]/g, '').trim())
+    .filter((t) => t.length > 2);
 }
 
-function tryParseDesignGuidelines(designGuidelinesJson: string): object {
-  try {
-    const parsed = JSON.parse(designGuidelinesJson || '{}');
-    return typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
+function scoreRow(row: any, terms: string[]): number {
+  const tags: string[] = Array.isArray(row.tags) ? row.tags : [];
+  const industry = String(row.industry || '').toLowerCase();
+  const aesthetic = String(row.aesthetic || '').toLowerCase();
+  const mood = String(row.mood || '').toLowerCase();
+  const filename = String(row.original_filename || '').toLowerCase();
+  let score = 0;
+  for (const term of terms) {
+    const tagMatch = tags.filter((t) => String(t).toLowerCase().includes(term) || term.includes(String(t).toLowerCase())).length;
+    score += tagMatch * 10;
+    if (industry === term || industry.includes(term)) score += 8;
+    if (aesthetic === term || aesthetic.includes(term)) score += 6;
+    if (mood === term || mood.includes(term)) score += 5;
+    if (filename.includes(term)) score += 2;
   }
+  return score;
 }
 
 /**
- * Search reference images by tags, industry, aesthetic, mood
- * Returns top N most relevant images based on design guideline matching
+ * Search reference images across:
+ * - GLOBAL library
+ * - USER library for the given uid
  */
 export async function searchReferenceImages(params: {
+  uid: string;
   query: string;
   limit?: number;
+  signedUrlExpiresSeconds?: number;
 }): Promise<ReferenceImageSearchResult[]> {
-  const dbi = ensureDb();
-  if (!dbi) return [];
-
+  await ensureSchema();
+  const pool = getPool();
   const limit = params.limit || 3;
-  const queryLower = params.query.toLowerCase();
-  
-  // Extract search terms from query
-  const searchTerms = queryLower
-    .split(/\s+/)
-    .filter(term => term.length > 2) // Ignore very short words
-    .map(term => term.replace(/[^a-z0-9]/g, '')); // Clean terms
+  const terms = normalizeTerms(params.query);
 
-  if (searchTerms.length === 0) {
-    // No valid search terms, return by ranking first, then most recent
-    const rows = dbi
-      .prepare(`
-        SELECT id, stored_path, original_filename, tags, industry, aesthetic, mood, design_guidelines, ranking
-        FROM reference_images 
-        WHERE design_guidelines != ''
-        ORDER BY ranking DESC, created_at DESC 
-        LIMIT ?
-      `)
-      .all(limit);
-    
-    return rows.map((row: any) => ({
-      id: row.id,
-      stored_path: row.stored_path,
-      filename: path.basename(row.stored_path),
-      tags: parseTags(row.tags),
-      industry: row.industry || '',
-      aesthetic: row.aesthetic || '',
-      mood: row.mood || '',
-      design_guidelines: tryParseDesignGuidelines(row.design_guidelines),
-      relevance_score: 0,
-      ranking: row.ranking || 1,
-    }));
+  // Pull a bounded candidate set then score in JS (simple + avoids dynamic SQL scoring).
+  // We bias towards higher-ranked & recently created.
+  const candidates = await pool.query(
+    `
+    SELECT id, scope, owner_uid, original_filename, s3_bucket, s3_key, tags, industry, aesthetic, mood, design_guidelines, ranking, created_at
+    FROM reference_images
+    WHERE scope = 'global' OR (scope = 'user' AND owner_uid = $1)
+    ORDER BY ranking DESC, created_at DESC
+    LIMIT 250
+    `,
+    [params.uid]
+  );
+
+  const expires = params.signedUrlExpiresSeconds ?? 10 * 60; // 10m
+
+  if (terms.length === 0) {
+    const slice = candidates.rows.slice(0, limit);
+    return await Promise.all(
+      slice.map(async (row: any) => ({
+        id: String(row.id),
+        scope: row.scope as ReferenceScope,
+        url: await signedGetUrl({ bucket: String(row.s3_bucket), key: String(row.s3_key), expiresSeconds: expires }),
+        tags: Array.isArray(row.tags) ? row.tags : [],
+        industry: String(row.industry || ''),
+        aesthetic: String(row.aesthetic || ''),
+        mood: String(row.mood || ''),
+        design_guidelines: row.design_guidelines && typeof row.design_guidelines === 'object' ? row.design_guidelines : {},
+        relevance_score: 0,
+        ranking: typeof row.ranking === 'number' ? row.ranking : 1,
+      }))
+    );
   }
 
-  // Get all indexed images with ranking
-  const allImages = dbi
-    .prepare(`
-      SELECT id, stored_path, original_filename, tags, industry, aesthetic, mood, design_guidelines, ranking
-      FROM reference_images 
-      WHERE design_guidelines != ''
-    `)
-    .all();
-
-  // Score each image by relevance
-  const scored = allImages
-    .map((row: any) => {
-      const tags = parseTags(row.tags);
-      const industry = (row.industry || '').toLowerCase();
-      const aesthetic = (row.aesthetic || '').toLowerCase();
-      const mood = (row.mood || '').toLowerCase();
-      const filename = (row.original_filename || '').toLowerCase();
-      
-      let score = 0;
-      
-      // Check each search term against tags, industry, aesthetic, mood, filename
-      for (const term of searchTerms) {
-        // Tags match (highest weight)
-        const tagMatch = tags.filter(tag => 
-          tag.toLowerCase().includes(term) || term.includes(tag.toLowerCase())
-        ).length;
-        score += tagMatch * 10;
-        
-        // Industry exact match (high weight)
-        if (industry === term || industry.includes(term)) {
-          score += 8;
-        }
-        
-        // Aesthetic exact match (medium-high weight)
-        if (aesthetic === term || aesthetic.includes(term)) {
-          score += 6;
-        }
-        
-        // Mood match (medium weight)
-        if (mood === term || mood.includes(term)) {
-          score += 5;
-        }
-        
-        // Filename match (low weight)
-        if (filename.includes(term)) {
-          score += 2;
-        }
-      }
-      
-      return {
-        id: row.id,
-        stored_path: row.stored_path,
-        filename: path.basename(row.stored_path),
-        tags,
-        industry: row.industry || '',
-        aesthetic: row.aesthetic || '',
-        mood: row.mood || '',
-        design_guidelines: tryParseDesignGuidelines(row.design_guidelines),
-        relevance_score: score,
-        ranking: row.ranking || 1,
-      };
+  const scored = candidates.rows
+    .map((row: any) => ({ row, score: scoreRow(row, terms) }))
+    .filter((x: any) => x.score > 0)
+    .sort((a: any, b: any) => {
+      if (b.score !== a.score) return b.score - a.score;
+      const br = typeof b.row.ranking === 'number' ? b.row.ranking : 1;
+      const ar = typeof a.row.ranking === 'number' ? a.row.ranking : 1;
+      return br - ar;
     })
-    .filter((img: ReferenceImageSearchResult) => img.relevance_score > 0) // Only return matches
-    .sort((a: ReferenceImageSearchResult, b: ReferenceImageSearchResult) => {
-      // Sort by relevance first, then by ranking as tiebreaker
-      if (b.relevance_score !== a.relevance_score) {
-        return b.relevance_score - a.relevance_score;
-      }
-      return (b.ranking || 1) - (a.ranking || 1);
-    })
-    .slice(0, limit); // Take top N
+    .slice(0, limit)
+    .map((x: any) => x);
 
-  // If no matches found, return by ranking then most recent
-  if (scored.length === 0) {
-    const rows = dbi
-      .prepare(`
-        SELECT id, stored_path, original_filename, tags, industry, aesthetic, mood, design_guidelines, ranking
-        FROM reference_images 
-        WHERE design_guidelines != ''
-        ORDER BY ranking DESC, created_at DESC 
-        LIMIT ?
-      `)
-      .all(limit);
-    
-    return rows.map((row: any) => ({
-      id: row.id,
-      stored_path: row.stored_path,
-      filename: path.basename(row.stored_path),
-      tags: parseTags(row.tags),
-      industry: row.industry || '',
-      aesthetic: row.aesthetic || '',
-      mood: row.mood || '',
-      design_guidelines: tryParseDesignGuidelines(row.design_guidelines),
-      relevance_score: 0,
-      ranking: row.ranking || 1,
-    }));
+  if (scored.length > 0) {
+    return await Promise.all(
+      scored.map(async (x: any) => {
+        const row = x.row;
+        return {
+          id: String(row.id),
+          scope: row.scope as ReferenceScope,
+          url: await signedGetUrl({ bucket: String(row.s3_bucket), key: String(row.s3_key), expiresSeconds: expires }),
+          tags: Array.isArray(row.tags) ? row.tags : [],
+          industry: String(row.industry || ''),
+          aesthetic: String(row.aesthetic || ''),
+          mood: String(row.mood || ''),
+          design_guidelines: row.design_guidelines && typeof row.design_guidelines === 'object' ? row.design_guidelines : {},
+          relevance_score: x.score,
+          ranking: typeof row.ranking === 'number' ? row.ranking : 1,
+        } as ReferenceImageSearchResult;
+      })
+    );
   }
 
-  return scored;
+  // Fallback if no matches: return top ranked.
+  const fallback = candidates.rows.slice(0, limit);
+  return await Promise.all(
+    fallback.map(async (row: any) => ({
+      id: String(row.id),
+      scope: row.scope as ReferenceScope,
+      url: await signedGetUrl({ bucket: String(row.s3_bucket), key: String(row.s3_key), expiresSeconds: expires }),
+      tags: Array.isArray(row.tags) ? row.tags : [],
+      industry: String(row.industry || ''),
+      aesthetic: String(row.aesthetic || ''),
+      mood: String(row.mood || ''),
+      design_guidelines: row.design_guidelines && typeof row.design_guidelines === 'object' ? row.design_guidelines : {},
+      relevance_score: 0,
+      ranking: typeof row.ranking === 'number' ? row.ranking : 1,
+    }))
+  );
 }
 
 /**
- * Increment ranking for a reference image after successful generation
- * Called when a user successfully generates an image using this reference
+ * Increment ranking for a reference image after successful usage.
+ * Accepts a referenceId (preferred).
  */
-export function incrementReferenceRanking(referenceFilename: string): void {
-  const dbi = ensureDb();
-  if (!dbi) return;
+export async function incrementReferenceRanking(params: { uid: string; referenceId: string }): Promise<void> {
+  await ensureSchema();
+  const pool = getPool();
 
-  try {
-    // Find by stored_path containing the filename
-    const stmt = dbi.prepare(`
-      UPDATE reference_images 
-      SET ranking = ranking + 1 
-      WHERE stored_path LIKE ?
-    `);
-    
-    const result = stmt.run(`%${referenceFilename}`);
-    
-    if (result.changes > 0) {
-      logger.info(`Incremented ranking for reference: ${referenceFilename}`);
-    } else {
-      logger.warn(`No reference found to increment ranking: ${referenceFilename}`);
-    }
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : 'Unknown error';
-    logger.error(`Failed to increment ranking: ${msg}`);
+  const referenceId = (params.referenceId || '').trim();
+  if (!referenceId) return;
+
+  // Enforce ownership rules:
+  // - Global images can be incremented by anyone.
+  // - User images can only be incremented by the owner.
+  const res = await pool.query(
+    `
+    UPDATE reference_images
+    SET ranking = ranking + 1
+    WHERE id = $1
+      AND (scope = 'global' OR (scope = 'user' AND owner_uid = $2))
+    `,
+    [referenceId, params.uid]
+  );
+
+  if (res.rowCount && res.rowCount > 0) {
+    logger.info(`Incremented ranking for reference: id=${referenceId} by uid=${params.uid}`);
+  } else {
+    logger.warn(`No reference found (or not authorized) to increment ranking: id=${referenceId} uid=${params.uid}`);
   }
 }
-
-

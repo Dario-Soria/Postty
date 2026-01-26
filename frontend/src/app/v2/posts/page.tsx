@@ -272,8 +272,8 @@ export default function MisPostsPage() {
   }
 
   return (
-    <div className="min-h-[100dvh] w-full bg-[radial-gradient(1200px_circle_at_20%_-10%,#FCE3C8,transparent_60%),radial-gradient(1000px_circle_at_90%_0%,#EAD5FF,transparent_55%),radial-gradient(900px_circle_at_35%_95%,#BFE7FF,transparent_55%),linear-gradient(180deg,#FCE3C8_0%,#EAD5FF_45%,#BFE7FF_100%)] text-slate-900">
-      <div className="mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-5 sm:py-10">
+    <div className="h-[100dvh] w-full overflow-hidden bg-[radial-gradient(1200px_circle_at_20%_-10%,#FCE3C8,transparent_60%),radial-gradient(1000px_circle_at_90%_0%,#EAD5FF,transparent_55%),radial-gradient(900px_circle_at_35%_95%,#BFE7FF,transparent_55%),linear-gradient(180deg,#FCE3C8_0%,#EAD5FF_45%,#BFE7FF_100%)] text-slate-900">
+      <div className="mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-5 sm:py-10 h-full flex flex-col min-h-0">
         <TopBar
           onBack={() => {
             if (typeof window !== "undefined" && window.history.length > 1) {
@@ -304,110 +304,108 @@ export default function MisPostsPage() {
           </div>
         ) : null}
 
-        <div className="mt-6 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
-          {items.map((p) => {
-            const isReady = p.kind === "video" && p.status === "ready_to_upload";
-            const isPublished = p.status === "published" && !!p.instagramPermalink;
-            const a = p.instagramMediaId ? analyticsByMediaId[p.instagramMediaId] : undefined;
+        <div className="mt-6 flex-1 min-h-0 overflow-y-auto">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4 pb-8">
+            {items.map((p) => {
+              const isReady = p.kind === "video" && p.status === "ready_to_upload";
+              const isPublished = p.status === "published" && !!p.instagramPermalink;
+              const a = p.instagramMediaId ? analyticsByMediaId[p.instagramMediaId] : undefined;
 
-            const fmt = (n?: number) =>
-              typeof n === "number"
-                ? new Intl.NumberFormat("es-ES", { maximumFractionDigits: 0 }).format(n)
-                : "—";
+              const fmt = (n?: number) =>
+                typeof n === "number"
+                  ? new Intl.NumberFormat("es-ES", { maximumFractionDigits: 0 }).format(n)
+                  : "—";
 
-            return (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => {
-                  if (isPublished) {
-                    window.open(p.instagramPermalink!, "_blank");
-                    return;
-                  }
-                  setSelected(p);
-                }}
-                className="group relative rounded-[18px] overflow-hidden bg-white/35 border border-white/60 backdrop-blur-xl shadow-[0_14px_40px_rgba(0,0,0,0.10)] transition-all duration-300 hover:shadow-[0_20px_50px_rgba(0,0,0,0.12)] hover:-translate-y-1"
-              >
-                <div className="aspect-[9/16] w-full bg-slate-200/40">
-                  {p.mediaUrl ? (
-                    p.kind === "video" ? (
-                      // eslint-disable-next-line jsx-a11y/media-has-caption
-                      <video
-                        src={p.mediaUrl}
-                        className="h-full w-full object-cover"
-                        muted
-                        playsInline
-                        preload="metadata"
-                      />
-                    ) : (
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => {
+                    if (isPublished) {
+                      window.open(p.instagramPermalink!, "_blank");
+                      return;
+                    }
+                    setSelected(p);
+                  }}
+                  className="group relative rounded-[18px] overflow-hidden bg-white/35 border border-white/60 backdrop-blur-xl shadow-[0_14px_40px_rgba(0,0,0,0.10)] transition-all duration-300 hover:shadow-[0_20px_50px_rgba(0,0,0,0.12)] hover:-translate-y-1"
+                >
+                  <div className="aspect-[9/16] w-full bg-slate-200/40">
+                    {p.mediaUrl ? (
+                      p.kind === "video" ? (
+                        // eslint-disable-next-line jsx-a11y/media-has-caption
+                        <video
+                          src={p.mediaUrl}
+                          className="h-full w-full object-cover"
+                          muted
+                          playsInline
+                          preload="metadata"
+                        />
+                      ) : (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={p.mediaUrl} alt={p.prompt} className="h-full w-full object-cover" />
+                      )
+                    ) : p.kind === "video" && p.status === "generating" && p.previewUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={p.mediaUrl} alt={p.prompt} className="h-full w-full object-cover" />
-                    )
-                  ) : p.kind === "video" && p.status === "generating" && p.previewUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={p.previewUrl} alt={p.prompt} className="h-full w-full object-cover" />
-                  ) : (
-                    <div className="h-full w-full flex items-center justify-center text-slate-600 text-sm font-semibold">
-                      {formatStatusLabel(p.status)}
-                    </div>
-                  )}
-                </div>
-
-                {/* Subtle page-palette tint on hover (same feel as agent cards) */}
-                <div className="absolute inset-0 bg-gradient-to-br from-[#FCE3C8] via-[#EAD5FF] to-[#BFE7FF] opacity-0 group-hover:opacity-[0.08] transition-opacity duration-300 pointer-events-none" />
-
-                <div className="absolute left-2 top-2 px-2 py-1 rounded-full bg-white/75 border border-white/80 text-[11px] font-bold text-slate-800">
-                  {formatStatusLabel(p.status)}
-                </div>
-
-                {p.kind === "video" && p.status === "generating" ? (
-                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                    <div className="flex items-center gap-2 px-3 py-2 rounded-full bg-black/40 text-white border border-white/20 backdrop-blur-md">
-                      <IconRefresh className="animate-spin" />
-                      <span className="text-xs font-semibold">Generando</span>
-                    </div>
+                      <img src={p.previewUrl} alt={p.prompt} className="h-full w-full object-cover" />
+                    ) : (
+                      <div className="h-full w-full flex items-center justify-center text-slate-600 text-sm font-semibold">
+                        {formatStatusLabel(p.status)}
+                      </div>
+                    )}
                   </div>
-                ) : null}
 
-                {isReady ? (
-                  <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/55 to-transparent">
-                    <div className="text-white text-xs font-semibold">Listo para subir</div>
+                  {/* Subtle page-palette tint on hover (same feel as agent cards) */}
+                  <div className="absolute inset-0 bg-gradient-to-br from-[#FCE3C8] via-[#EAD5FF] to-[#BFE7FF] opacity-0 group-hover:opacity-[0.08] transition-opacity duration-300 pointer-events-none" />
+
+                  <div className="absolute left-2 top-2 px-2 py-1 rounded-full bg-white/75 border border-white/80 text-[11px] font-bold text-slate-800">
+                    {formatStatusLabel(p.status)}
                   </div>
-                ) : null}
 
-                {isPublished ? (
-                  <div className="absolute inset-x-3 bottom-2 pointer-events-none">
-                    <div className="rounded-xl bg-black/55 border border-white/20 backdrop-blur-md px-2.5 py-1.5 text-white">
-                      <div className="flex items-center justify-between gap-2.5">
-                        <div className="flex items-center gap-1.5">
-                          <IconHeart className="h-4 w-4" />
-                          <span className="text-[10px] font-semibold tabular-nums">{fmt(a?.likes)}</span>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <IconComment className="h-4 w-4" />
-                          <span className="text-[10px] font-semibold tabular-nums">
-                            {fmt(a?.comments)}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <IconPlay className="h-4 w-4" />
-                          <span className="text-[10px] font-semibold tabular-nums">
-                            {fmt(a?.viewsOrReach)}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <IconShare className="h-4 w-4" />
-                          <span className="text-[10px] font-semibold tabular-nums">
-                            {fmt(a?.shares)}
-                          </span>
+                  {p.kind === "video" && p.status === "generating" ? (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <div className="flex items-center gap-2 px-3 py-2 rounded-full bg-black/40 text-white border border-white/20 backdrop-blur-md">
+                        <IconRefresh className="animate-spin" />
+                        <span className="text-xs font-semibold">Generando</span>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {isReady ? (
+                    <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/55 to-transparent">
+                      <div className="text-white text-xs font-semibold">Listo para subir</div>
+                    </div>
+                  ) : null}
+
+                  {isPublished ? (
+                    <div className="absolute inset-x-3 bottom-2 pointer-events-none">
+                      <div className="rounded-xl bg-black/55 border border-white/20 backdrop-blur-md px-2.5 py-1.5 text-white">
+                        <div className="flex items-center justify-between gap-2.5">
+                          <div className="flex items-center gap-1.5">
+                            <IconHeart className="h-4 w-4" />
+                            <span className="text-[10px] font-semibold tabular-nums">{fmt(a?.likes)}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <IconComment className="h-4 w-4" />
+                            <span className="text-[10px] font-semibold tabular-nums">{fmt(a?.comments)}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <IconPlay className="h-4 w-4" />
+                            <span className="text-[10px] font-semibold tabular-nums">
+                              {fmt(a?.viewsOrReach)}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <IconShare className="h-4 w-4" />
+                            <span className="text-[10px] font-semibold tabular-nums">{fmt(a?.shares)}</span>
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                ) : null}
-              </button>
-            );
-          })}
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {selected ? (

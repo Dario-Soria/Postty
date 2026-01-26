@@ -2657,7 +2657,13 @@ export function V2Chat({
                                         handlePublish(
                                           m.id,
                                           k,
-                                          { image_path: c.generated_image_path, caption: m.meta?.caption },
+                                          {
+                                            image_url:
+                                              typeof c.preview_data_url === "string" && c.preview_data_url.startsWith("http")
+                                                ? c.preview_data_url
+                                                : m.meta?.uploaded_image_url,
+                                            caption: m.meta?.caption,
+                                          },
                                           { candidateId: c.candidate_id, collapseCandidates: true }
                                         )
                                       }

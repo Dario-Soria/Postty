@@ -25,8 +25,6 @@ import pipelineRoute from './routes/pipeline';
 import suggestTextRoute from './routes/suggestText';
 import geminiChatRoute from './routes/geminiChat';
 import agentChatRoute from './routes/agent-chat';
-import serveGeneratedImageRoute from './routes/serve-generated-image';
-import serveReferenceImageRoute from './routes/serve-reference-image';
 import searchReferencesRoute from './routes/search-references';
 import testEnvRoute from './routes/test-env';
 import applyReferenceJsonRoute from './routes/applyReferenceJson';
@@ -129,8 +127,6 @@ async function start(): Promise<void> {
     await fastify.register(suggestTextRoute);
     await fastify.register(geminiChatRoute);
     await fastify.register(agentChatRoute);
-    await fastify.register(serveGeneratedImageRoute);
-    await fastify.register(serveReferenceImageRoute);
     await fastify.register(searchReferencesRoute);
     await fastify.register(applyReferenceJsonRoute);
     await fastify.register(applyDesignGuidelinesTextRoute);
@@ -175,7 +171,7 @@ async function start(): Promise<void> {
     logger.info('  POST /search-references - Search indexed reference images by query');
     logger.info('  POST /apply-reference-json - Apply reference JSON text to base image');
     logger.info('  POST /apply-design-guidelines-text - Apply text using SQLite design guidelines');
-    logger.info('  GET  /reference-library/images/* - Serve reference library images');
+    // Note: In production (ECS/multi-instance), we avoid serving local disk assets.
     logger.info('  GET  /health - Health check');
   } catch (err) {
     logger.error('Error starting server:', err);

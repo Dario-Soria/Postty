@@ -1,11 +1,12 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as logger from '../utils/logger';
-import * as path from 'path';
 import { searchReferenceImages } from '../services/referenceLibrarySqlite';
+import { requireUser } from '../services/firebaseAuth';
 
 interface SearchReferencesBody {
   query: string;
   limit?: number;
+  userId?: string; // internal-token auth fallback
 }
 
 export default async function searchReferencesRoute(fastify: FastifyInstance): Promise<void> {
@@ -20,44 +21,66 @@ export default async function searchReferencesRoute(fastify: FastifyInstance): P
         });
       }
 
+      // Auth modes:
+      // - Preferred: Firebase ID token in Authorization header (requireUser)
+      // - Internal: X-Postty-Internal-Token + userId field (used by internal agents/tools)
+      let uid: string | null = null;
+      try {
+        const user = await requireUser(request as any);
+        uid = user.uid;
+      } catch (e) {
+        const tokenHeader = request.headers['x-postty-internal-token'];
+        const raw =
+          typeof tokenHeader === 'string'
+            ? tokenHeader
+            : Array.isArray(tokenHeader)
+              ? tokenHeader[0]
+              : '';
+        const expected = process.env.POSTTY_INTERNAL_TOKEN || '';
+        const allowed = expected && raw && raw === expected;
+        const bodyUidRaw = (request.body as any)?.userId;
+        const bodyUid = typeof bodyUidRaw === 'string' ? bodyUidRaw.trim() : '';
+        if (allowed && bodyUid.length > 0) {
+          uid = bodyUid;
+        } else {
+          throw e;
+        }
+      }
+
       logger.info(`🔍 Searching reference images for: "${query}"`);
 
       const results = await searchReferenceImages({
+        uid: uid!,
         query,
         limit: limit || 3,
       });
 
-      // Convert absolute paths to relative web paths
-      const webResults = results.map(result => ({
-        id: result.id,
-        filename: result.filename,
-        url: `/reference-library/images/${result.filename}`,
-        tags: result.tags,
-        industry: result.industry,
-        aesthetic: result.aesthetic,
-        mood: result.mood,
-        design_guidelines: result.design_guidelines,
-        relevance_score: result.relevance_score,
-      }));
-
-      logger.info(`✅ Found ${webResults.length} reference images`);
+      logger.info(`✅ Found ${results.length} reference images`);
 
       return reply.send({
         status: 'success',
         query,
-        count: webResults.length,
-        results: webResults,
+        count: results.length,
+        results: results.map((r) => ({
+          id: r.id,
+          scope: r.scope,
+          url: r.url, // signed S3 URL
+          tags: r.tags,
+          industry: r.industry,
+          aesthetic: r.aesthetic,
+          mood: r.mood,
+          design_guidelines: r.design_guidelines,
+          relevance_score: r.relevance_score,
+          ranking: r.ranking ?? 1,
+        })),
       });
 
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       logger.error('Reference search error:', errorMsg);
-      
-      return reply.status(500).send({
-        status: 'error',
-        message: 'Error searching reference images',
-        details: errorMsg,
-      });
+
+      const status = errorMsg.toLowerCase().includes('authorization') ? 401 : 500;
+      return reply.status(status).send({ status: 'error', message: errorMsg });
     }
   });
 

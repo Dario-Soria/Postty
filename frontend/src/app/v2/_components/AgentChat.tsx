@@ -12,8 +12,11 @@ type ReferenceOption = {
   id: string;
   url: string;
   description: string;
-  keywords: string[];
-  filename: string;
+  // Older agent payloads may provide these, but DB-backed references typically won't.
+  keywords?: string[];
+  filename?: string;
+  tags?: string[];
+  design_guidelines?: any;
 };
 
 type Message = {
@@ -49,7 +52,7 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
   const [isSending, setIsSending] = React.useState(false);
   const [clientSessionId, setClientSessionId] = React.useState<string | null>(null);
   const [previewReference, setPreviewReference] = React.useState<{ ref: ReferenceOption; index: number } | null>(null);
-  const [selectedReferenceFilename, setSelectedReferenceFilename] = React.useState<string | null>(null);
+  const [selectedReference, setSelectedReference] = React.useState<ReferenceOption | null>(null);
   const [showCaptionModal, setShowCaptionModal] = React.useState(false);
   const [captionInput, setCaptionInput] = React.useState("");
   const [publishingImageUrl, setPublishingImageUrl] = React.useState<string | null>(null);
@@ -678,17 +681,35 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
             });
             try {
               const productImageBase64 = await fileToDataUrl(lastUploadedProductImage);
+              const userText: string[] | undefined = trigger.textContent
+                ? [
+                    typeof trigger.textContent.headline === "string" ? trigger.textContent.headline : undefined,
+                    typeof trigger.textContent.subheadline === "string" ? trigger.textContent.subheadline : undefined,
+                    typeof trigger.textContent.cta === "string" ? trigger.textContent.cta : undefined,
+                  ].filter((x): x is string => !!x && x.trim().length > 0)
+                : undefined;
+
+              const typographyStyle =
+                selectedReference && selectedReference.design_guidelines
+                  ? selectedReference.design_guidelines.typography
+                  : undefined;
+
               const pipelineRes = await fetch("/api/pipeline", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                   productImageBase64,
                   textPrompt: trigger.prompt,
-                  referenceImage: trigger.referenceImage || selectedReferenceFilename || undefined,
+                  // DB-backed references return a full signed S3 URL; backend will download to temp.
+                  referenceImageUrl: selectedReference?.url,
+                  // Back-compat: if a local filename was provided, keep sending it.
+                  referenceImage: trigger.referenceImage || selectedReference?.filename || undefined,
                   skipText: trigger.skipText ?? false,
                   style: "Elegante",
                   useCase: "Promoción",
-                  textContent: trigger.textContent,
+                  // IMPORTANT: no JSON overlay/compositor path; Gemini should bake text.
+                  userText,
+                  typographyStyle,
                   aspectRatio: "1:1",
                   language: "es",
                 }),
@@ -905,17 +926,11 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
       }
       const token = await user.getIdToken();
 
-      // Extract filename from URL (e.g., http://localhost:8080/generated-images/1234.png -> 1234.png)
-      const url = new URL(publishingImageUrl);
-      const pathParts = url.pathname.split('/');
-      const filename = pathParts[pathParts.length - 1];
-      const imagePath = `generated-images/${filename}`;
-
       const response = await fetch("/api/publish", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({
-          image_path: imagePath,
+          image_url: publishingImageUrl,
           caption: captionInput.trim(),
         }),
       });
@@ -938,7 +953,7 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
   };
 
   const handleSelectReference = (number: number, ref: ReferenceOption) => {
-    setSelectedReferenceFilename(ref.filename);
+    setSelectedReference(ref);
     // Send selection number as message to agent
     setPreviewReference(null); // Close modal
     handleSendMessage(String(number));
@@ -1058,7 +1073,9 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
                         >
                           <div className="w-full h-48 flex items-center justify-center p-2">
                             <img
-                              src={`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8080'}${ref.url}`}
+                              // `ref.url` is a full (signed) S3 URL returned by the backend.
+                              // Do NOT prefix with backend URL or it will break image loading.
+                              src={ref.url}
                               alt={ref.description}
                               className="max-w-full max-h-full object-contain transition-transform group-hover:scale-105"
                               onError={(e) => {
@@ -1214,7 +1231,8 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
             {/* Main Image */}
             <div className="relative bg-white rounded-2xl shadow-2xl overflow-hidden max-w-full max-h-full flex items-center justify-center p-4">
               <img
-                src={`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8080'}${previewReference.ref.url}`}
+                // `ref.url` is a full (signed) S3 URL returned by the backend.
+                src={previewReference.ref.url}
                 alt={previewReference.ref.description}
                 className="max-w-full max-h-[80vh] object-contain"
               />

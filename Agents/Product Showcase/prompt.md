@@ -795,6 +795,13 @@ USER REQUEST: {{USER_INTENT}}
 TEXT OVERLAY REQUIREMENTS:
 🚨 CRITICAL: You MUST include text overlays in the generated image. Text is not optional.
 
+FRAMING & SAFE AREA (MANDATORY):
+🚨 CRITICAL: The final output must be a perfect square canvas. Target size: 1080×1080 pixels (1:1).
+🚨 CRITICAL: ALL text must be fully inside the image frame. Keep a SAFE MARGIN of at least 10% from every edge.
+- No letters/glyphs may touch or cross the frame boundary.
+- Nothing may be cut off at the edges. Verify every character is fully visible.
+- If the reference places text near an edge, adapt it inward to respect the safe margin while preserving the overall look.
+
 Generate the following text directly rendered into the image:
 
 {{TEXT_ELEMENTS}}

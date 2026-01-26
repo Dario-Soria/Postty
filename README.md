@@ -27,7 +27,7 @@ Postty is a **Fastify (Node.js + TypeScript) backend** plus a **Next.js frontend
   - `src/services/instagramPublisher.ts` (Instagram Graph API publish flow)
   - `src/services/geminiStyleProfile.ts` (style-profile extraction from references)
   - `src/services/geminiImageAnalyzer.ts` (`/image-analyzer` use-case classifier)
-  - `src/services/referenceLibrarySqlite.ts` + `reference-library/index.sqlite` (async reference indexing)
+  - `src/services/referenceLibrarySqlite.ts` (reference library: S3 objects + Neon Postgres metadata/ranking + async Gemini indexing)
 - **Prompts**:
   - `src/prompts/posttyMegaPromptV10.ts` (Content Architect system prompt)
 - **Frontend**:
@@ -38,6 +38,7 @@ Postty is a **Fastify (Node.js + TypeScript) backend** plus a **Next.js frontend
   - `temp-uploads/` (uploads + intermediate files)
 - **Scripts / Tools**:
   - `scripts/index-reference-images.ts` (batch index images in `reference-library/images/` - see `scripts/README.md`)
+  - `scripts/import-reference-images.ts` (import curated references into S3 + Neon - see “Import reference images” below)
   - `scripts/rembg_cutout.py` (background removal)
 
 ## Run locally
@@ -117,6 +118,43 @@ These publish immediately (no UI approval step). They are registered in the back
 - `POST /generate-with-image-and-publish` (multipart)
 
 ## How-to guides (current workflows)
+
+### Import reference images (Global library: S3 + Neon Postgres)
+
+Use this when you (admin) want to add **new curated reference images** to the global library.
+
+**Prereqs**
+- **Neon**: `DATABASE_URL` (or `NEON_DATABASE_URL`)
+- **S3**: `AWS_BUCKET_NAME`, `AWS_REGION`
+- **Gemini indexing**: `GEMINI_API_KEY`
+- **AWS auth (local)**: use `AWS_PROFILE=...` (recommended) or env credentials. The backend/scripts use the default AWS credential provider chain.
+
+**Run**
+
+```bash
+# Import all images in a folder to S3 + Neon (indexing runs async in-process)
+AWS_PROFILE=your-profile \
+DATABASE_URL="postgresql://..." \
+AWS_BUCKET_NAME="your-bucket" \
+AWS_REGION="us-east-1" \
+GEMINI_API_KEY="..." \
+npm run import-references -- --dir=/ABS/PATH/TO/IMAGES
+```
+
+**Optional: wait until each image is indexed**
+
+```bash
+AWS_PROFILE=your-profile \
+DATABASE_URL="postgresql://..." \
+AWS_BUCKET_NAME="your-bucket" \
+AWS_REGION="us-east-1" \
+GEMINI_API_KEY="..." \
+npm run import-references -- --dir=/ABS/PATH/TO/IMAGES --wait
+```
+
+Notes:
+- Imported images are stored under `references/global/{uuid}/{original_filename}` in S3.
+- Metadata + ranking live in Neon table `reference_images` (created automatically on first run).
 
 ### Generate → approve → publish (recommended)
 

@@ -1,4 +1,5 @@
 import * as logger from '../utils/logger';
+import { getFirebaseAdmin, getFirestore } from './firebaseAdmin';
 
 export type VideoJobState =
   | 'queued'
@@ -10,12 +11,14 @@ export type VideoJobState =
 
 export type VideoJob = {
   id: string;
+  uid: string;
   state: VideoJobState;
   createdAt: number;
   updatedAt: number;
   prompt: string;
   caption?: string | null;
   productImagePath?: string | null;
+  productPreviewUrl?: string | null;
 
   // Outputs
   mp4Path?: string | null;
@@ -24,94 +27,82 @@ export type VideoJob = {
 
   // Error
   error?: string | null;
+
+  // TTL (for Firestore TTL policies)
+  expiresAt?: any;
 };
 
 const JOB_TTL_MS = parseInt(process.env.POSTTY_VIDEO_JOB_TTL_MS || '21600000', 10); // 6h
-const CLEANUP_INTERVAL_MS = parseInt(
-  process.env.POSTTY_VIDEO_JOB_CLEANUP_INTERVAL_MS || '600000',
-  10
-); // 10m
-
-const jobs = new Map<string, VideoJob>();
-
 function now(): number {
   return Date.now();
 }
 
-export function createVideoJob(params: {
+function col(uid: string) {
+  const db = getFirestore();
+  return db.collection('privateUsers').doc(uid).collection('videoJobs');
+}
+
+function toExpiryTimestamp(msFromNow: number): any {
+  const admin = getFirebaseAdmin();
+  const at = Date.now() + msFromNow;
+  return admin.firestore.Timestamp.fromMillis(at);
+}
+
+export async function createVideoJob(params: {
+  uid: string;
   prompt: string;
   caption?: string | null;
   productImagePath?: string | null;
-}): VideoJob {
+  productPreviewUrl?: string | null;
+}): Promise<VideoJob> {
   const id = `video_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
   const t = now();
   const job: VideoJob = {
     id,
+    uid: params.uid,
     state: 'queued',
     createdAt: t,
     updatedAt: t,
     prompt: params.prompt,
     caption: params.caption ?? null,
     productImagePath: params.productImagePath ?? null,
+    productPreviewUrl: params.productPreviewUrl ?? null,
     mp4Path: null,
     uploadedVideoUrl: null,
     instagramMediaId: null,
     error: null,
+    expiresAt: toExpiryTimestamp(JOB_TTL_MS),
   };
-  jobs.set(id, job);
+
+  await col(params.uid).doc(id).set(job as any);
   return job;
 }
 
-export function getVideoJob(jobId: string): VideoJob | null {
-  return jobs.get(jobId) ?? null;
+export async function getVideoJob(params: { uid: string; jobId: string }): Promise<VideoJob | null> {
+  const snap = await col(params.uid).doc(params.jobId).get();
+  if (!snap.exists) return null;
+  const data = snap.data() as any;
+  return { id: snap.id, ...data } as VideoJob;
 }
 
-export function updateVideoJob(jobId: string, patch: Partial<VideoJob>): VideoJob {
-  const existing = jobs.get(jobId);
-  if (!existing) {
-    throw new Error(`Video job not found: ${jobId}`);
-  }
-  const updated: VideoJob = {
-    ...existing,
-    ...patch,
-    id: existing.id,
-    createdAt: existing.createdAt,
+export async function updateVideoJob(params: {
+  uid: string;
+  jobId: string;
+  patch: Partial<Omit<VideoJob, 'id' | 'uid' | 'createdAt'>>;
+}): Promise<void> {
+  await col(params.uid).doc(params.jobId).set(
+    {
+      ...params.patch,
     updatedAt: now(),
-  };
-  jobs.set(jobId, updated);
-  return updated;
+      expiresAt: toExpiryTimestamp(JOB_TTL_MS),
+    },
+    { merge: true }
+  );
 }
 
-export function failVideoJob(jobId: string, error: unknown): VideoJob {
-  const msg = error instanceof Error ? error.message : String(error);
-  return updateVideoJob(jobId, { state: 'failed', error: msg });
+export async function failVideoJob(params: { uid: string; jobId: string; error: unknown }): Promise<void> {
+  const msg = params.error instanceof Error ? params.error.message : String(params.error);
+  await updateVideoJob({ uid: params.uid, jobId: params.jobId, patch: { state: 'failed', error: msg } });
 }
-
-export function listVideoJobsCount(): number {
-  return jobs.size;
-}
-
-function cleanupExpiredJobs(): void {
-  const t = now();
-  let removed = 0;
-  for (const [id, job] of jobs.entries()) {
-    if (t - job.updatedAt > JOB_TTL_MS) {
-      jobs.delete(id);
-      removed++;
-    }
-  }
-  if (removed > 0) {
-    logger.info(`[VideoJobs] Cleaned up ${removed} expired job(s). Remaining=${jobs.size}`);
-  }
-}
-
-// Start cleanup loop once on module import.
-setInterval(() => {
-  try {
-    cleanupExpiredJobs();
-  } catch (e) {
-    logger.warn('[VideoJobs] Cleanup failed', e);
-  }
-}, CLEANUP_INTERVAL_MS).unref?.();
 
 

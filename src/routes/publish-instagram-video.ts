@@ -4,6 +4,8 @@ import * as path from 'path';
 import * as logger from '../utils/logger';
 import { uploadLocalImage } from '../services/imageUploader';
 import { publishInstagramVideo } from '../services/instagramPublisher';
+import { requireUser } from '../services/firebaseAuth';
+import { getActiveInstagramAuth } from '../services/instagramConnectionStore';
 
 interface PublishVideoRequestBody {
   video_path: string;
@@ -25,6 +27,7 @@ export default async function publishInstagramVideoRoute(
       reply: FastifyReply
     ) => {
       try {
+        const user = await requireUser(request as any);
         const { video_path, caption } = request.body;
 
         if (!video_path || typeof video_path !== 'string') {
@@ -77,6 +80,11 @@ export default async function publishInstagramVideoRoute(
         // Step 2: Publish to Instagram (hardcoded reels)
         // Meta deprecated media_type=VIDEO; use REELS to publish video to feed.
         logger.info('Publishing video to Instagram (media_type=REELS)...');
+        const igAuth = await getActiveInstagramAuth(user.uid);
+        if (!igAuth) {
+          return reply.status(400).send({ status: 'error', message: 'Instagram user is not connected' });
+        }
+
         const instagramResponse = await publishInstagramVideo({
           videoUrl: uploadedVideoUrl,
           caption: typeof caption === 'string' ? caption : undefined,
@@ -84,6 +92,7 @@ export default async function publishInstagramVideoRoute(
           shareToFeed: true,
           // Video processing can take longer than images; allow more polling.
           maxPollAttempts: 180, // 180 * 2s = 6 minutes max
+          auth: igAuth,
         });
 
         logger.info(`✓ Instagram video published: ${instagramResponse.id}`);
@@ -98,10 +107,8 @@ export default async function publishInstagramVideoRoute(
           error instanceof Error ? error.message : 'Unknown error occurred';
         logger.error('Error publishing Instagram video:', errorMessage);
 
-        return reply.status(500).send({
-          status: 'error',
-          message: errorMessage,
-        });
+        const status = errorMessage.toLowerCase().includes('authorization') ? 401 : 500;
+        return reply.status(status).send({ status: 'error', message: errorMessage });
       }
     }
   );

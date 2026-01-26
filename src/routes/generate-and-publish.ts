@@ -6,6 +6,8 @@ import { uploadLocalImage } from '../services/imageUploader';
 import { publishInstagramPost } from '../services/instagramPublisher';
 import * as logger from '../utils/logger';
 import { detectLanguageFromText } from '../utils/language';
+import { requireUser } from '../services/firebaseAuth';
+import { getActiveInstagramAuth } from '../services/instagramConnectionStore';
 
 interface GenerateAndPublishRequestBody {
   prompt: string;
@@ -26,6 +28,7 @@ export default async function generateAndPublishRoute(
       reply: FastifyReply
     ) => {
       try {
+        const user = await requireUser(request as any);
         // Validate request body
         const { prompt } = request.body;
 
@@ -68,10 +71,12 @@ export default async function generateAndPublishRoute(
 
         // Step 5: Publish to Instagram
         logger.info('Step 5/5: Publishing to Instagram...');
-        const instagramResponse = await publishInstagramPost(
-          uploadedImageUrl,
-          caption
-        );
+        const igAuth = await getActiveInstagramAuth(user.uid);
+        if (!igAuth) {
+          return reply.status(400).send({ status: 'error', message: 'Instagram user is not connected' });
+        }
+
+        const instagramResponse = await publishInstagramPost(uploadedImageUrl, caption, igAuth);
         logger.info(`✓ Instagram post published: ${instagramResponse.id}`);
 
         // Return success response
@@ -89,11 +94,8 @@ export default async function generateAndPublishRoute(
           error instanceof Error ? error.message : 'Unknown error occurred';
         logger.error('Error processing AI image generation and publish:', errorMessage);
 
-        // Return error response
-        return reply.status(500).send({
-          status: 'error',
-          message: errorMessage,
-        });
+        const status = errorMessage.toLowerCase().includes('authorization') ? 401 : 500;
+        return reply.status(status).send({ status: 'error', message: errorMessage });
       }
     }
   );

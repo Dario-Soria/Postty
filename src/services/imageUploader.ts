@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as AWS from 'aws-sdk';
 import * as logger from '../utils/logger';
+import { getS3ForBucket } from './s3Client';
 
 /**
  * Uploads a local image file to S3 and returns the public URL
@@ -25,17 +26,11 @@ export async function uploadLocalImage(filePath: string): Promise<string> {
     throw new Error(errorMsg);
   }
 
-  // Initialize S3 client
-  const s3 = new AWS.S3({
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-    region: process.env.AWS_REGION || 'us-east-1',
-  });
-
   const bucketName = process.env.AWS_BUCKET_NAME;
   if (!bucketName) {
     throw new Error('AWS_BUCKET_NAME environment variable is not set');
   }
+  const s3 = await getS3ForBucket(bucketName);
 
   // Read file
   const fileContent = fs.readFileSync(filePath);
@@ -66,8 +61,10 @@ export async function uploadLocalImage(filePath: string): Promise<string> {
   try {
     logger.info(`Uploading image to S3: ${s3Key}`);
     const result = await s3.upload(uploadParams).promise();
-    logger.info(`Successfully uploaded image to: ${result.Location}`);
-    return result.Location;
+    const base = (process.env.POSTTY_MEDIA_BASE_URL || '').trim(); // e.g. CloudFront or S3 website base
+    const url = base ? `${base.replace(/\/+$/, '')}/${s3Key}` : result.Location;
+    logger.info(`Successfully uploaded image to: ${url}`);
+    return url;
   } catch (err) {
     const errorMsg = `Failed to upload image to S3: ${err}`;
     logger.error(errorMsg, err);

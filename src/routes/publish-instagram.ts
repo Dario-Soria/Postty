@@ -6,6 +6,7 @@ import { getInstagramPermalink, publishInstagramPost } from '../services/instagr
 import * as logger from '../utils/logger';
 import { requireUser } from '../services/firebaseAuth';
 import { createPost } from '../services/postsStore';
+import { getActiveInstagramAuth } from '../services/instagramConnectionStore';
 
 interface PublishRequestBody {
   image_path: string;
@@ -25,6 +26,7 @@ export default async function publishInstagramRoute(
       reply: FastifyReply
     ) => {
       try {
+        const user = await requireUser(request as any);
         // Validate request body
         const { image_path, caption } = request.body;
 
@@ -74,42 +76,35 @@ export default async function publishInstagramRoute(
         logger.info(`Image uploaded successfully: ${uploadedImageUrl}`);
 
         // Step 2: Publish to Instagram
-        const instagramResponse = await publishInstagramPost(
-          uploadedImageUrl,
-          caption
-        );
+        const igAuth = await getActiveInstagramAuth(user.uid);
+        if (!igAuth) {
+          return reply.status(400).send({ status: 'error', message: 'Instagram user is not connected' });
+        }
+
+        const instagramResponse = await publishInstagramPost(uploadedImageUrl, caption, igAuth);
         logger.info(`Instagram post published: ${instagramResponse.id}`);
 
-        // Optional: If user is authenticated, store this publish in Firestore so it shows in Mis posts.
-        // This is additive and does not change the publish behavior for unauthenticated callers.
+        let permalink: string | null = null;
         try {
-          const user = await requireUser(request as any);
-          let permalink: string | null = null;
-          try {
-            permalink = await getInstagramPermalink(instagramResponse.id);
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : 'Unknown error';
-            logger.warn(`Failed to fetch Instagram permalink (${msg})`);
-          }
-
-          await createPost({
-            uid: user.uid,
-            kind: 'image',
-            status: 'published',
-            prompt: (caption || 'Instagram post').slice(0, 240),
-            caption: caption,
-            mediaUrl: uploadedImageUrl,
-            previewUrl: null,
-            localPath: null,
-            instagramMediaId: instagramResponse.id,
-            instagramPermalink: permalink,
-            error: null,
-          });
+          permalink = await getInstagramPermalink(instagramResponse.id, igAuth);
         } catch (e) {
-          // Ignore auth failures; keep backward compatible behavior.
           const msg = e instanceof Error ? e.message : 'Unknown error';
-          logger.warn(`Skipping Firestore createPost for published image (unauthenticated): ${msg}`);
+          logger.warn(`Failed to fetch Instagram permalink (${msg})`);
         }
+
+        await createPost({
+          uid: user.uid,
+          kind: 'image',
+          status: 'published',
+          prompt: (caption || 'Instagram post').slice(0, 240),
+          caption: caption,
+          mediaUrl: uploadedImageUrl,
+          previewUrl: null,
+          localPath: null,
+          instagramMediaId: instagramResponse.id,
+          instagramPermalink: permalink,
+          error: null,
+        });
 
         // Best-effort cleanup: remove the local file after publish so disk doesn't grow unbounded.
         try {
@@ -132,11 +127,8 @@ export default async function publishInstagramRoute(
           error instanceof Error ? error.message : 'Unknown error occurred';
         logger.error('Error processing Instagram post:', errorMessage);
 
-        // Return error response
-        return reply.status(500).send({
-          status: 'error',
-          message: errorMessage,
-        });
+        const status = errorMessage.toLowerCase().includes('authorization') ? 401 : 500;
+        return reply.status(status).send({ status: 'error', message: errorMessage });
       }
     }
   );

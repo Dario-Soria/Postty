@@ -10,6 +10,8 @@ import { uploadLocalImage } from '../services/imageUploader';
 import { publishInstagramPost } from '../services/instagramPublisher';
 import * as logger from '../utils/logger';
 import { detectLanguageFromText } from '../utils/language';
+import { requireUser } from '../services/firebaseAuth';
+import { getActiveInstagramAuth } from '../services/instagramConnectionStore';
 
 /**
  * Registers the /generate-with-image-and-publish route with the Fastify instance
@@ -25,6 +27,7 @@ export default async function generateWithImageAndPublishRoute(
       let tempImagePath: string | null = null;
 
       try {
+        const user = await requireUser(request as any);
         // Parse multipart form data
         const parts = request.parts();
         let imageBuffer: Buffer | null = null;
@@ -132,10 +135,12 @@ export default async function generateWithImageAndPublishRoute(
 
         // Step 6: Publish to Instagram
         logger.info('Step 6/6: Publishing to Instagram...');
-        const instagramResponse = await publishInstagramPost(
-          uploadedImageUrl,
-          caption
-        );
+        const igAuth = await getActiveInstagramAuth(user.uid);
+        if (!igAuth) {
+          return reply.status(400).send({ status: 'error', message: 'Instagram user is not connected' });
+        }
+
+        const instagramResponse = await publishInstagramPost(uploadedImageUrl, caption, igAuth);
         logger.info(`✓ Instagram post published: ${instagramResponse.id}`);
 
         // Clean up: delete temporary uploaded file
@@ -175,11 +180,8 @@ export default async function generateWithImageAndPublishRoute(
           error instanceof Error ? error.message : 'Unknown error occurred';
         logger.error('Error processing image + prompt generation and publish:', errorMessage);
 
-        // Return error response
-        return reply.status(500).send({
-          status: 'error',
-          message: errorMessage,
-        });
+        const status = errorMessage.toLowerCase().includes('authorization') ? 401 : 500;
+        return reply.status(status).send({ status: 'error', message: errorMessage });
       }
     }
   );

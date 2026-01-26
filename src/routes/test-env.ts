@@ -5,6 +5,23 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
  */
 export default async function testEnvRoute(fastify: FastifyInstance): Promise<void> {
   fastify.get('/test-env', async (request: FastifyRequest, reply: FastifyReply) => {
+    // Never expose env surface publicly in production.
+    if (process.env.NODE_ENV === 'production') {
+      // Allow internal debugging when explicitly authorized.
+      const tokenHeader = request.headers['x-postty-internal-token'];
+      const raw =
+        typeof tokenHeader === 'string'
+          ? tokenHeader
+          : Array.isArray(tokenHeader)
+            ? tokenHeader[0]
+            : '';
+      const expected = process.env.POSTTY_INTERNAL_TOKEN || '';
+      const allowed = expected && raw && raw === expected;
+      if (!allowed) {
+        return reply.status(404).send({ status: 'error', message: 'Not found' });
+      }
+    }
+
     const envVars = {
       GEMINI_API_KEY: process.env.GEMINI_API_KEY ? 'SET' : 'NOT SET',
       OPENAI_API_KEY: process.env.OPENAI_API_KEY ? 'SET' : 'NOT SET',

@@ -1,4 +1,5 @@
 import * as AWS from 'aws-sdk';
+import { getS3ForBucket } from './s3Client';
 
 function parseS3Url(url: string): { bucket: string; key: string } | null {
   try {
@@ -34,11 +35,9 @@ export async function deleteFromS3ByUrl(url: string): Promise<void> {
     throw new Error('Could not parse S3 URL');
   }
 
-  const s3 = new AWS.S3({
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-    region: process.env.AWS_REGION || 'us-east-1',
-  });
+  // Prefer IAM Task Roles on ECS (default credential provider chain).
+  // Resolve bucket region to avoid presign/delete failures when AWS_REGION is misconfigured.
+  const s3 = await getS3ForBucket(parsed.bucket);
 
   await s3
     .deleteObject({

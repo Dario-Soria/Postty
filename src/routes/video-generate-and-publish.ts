@@ -2,6 +2,8 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as logger from '../utils/logger';
+import { requireUser } from '../services/firebaseAuth';
+import { getActiveInstagramAuth } from '../services/instagramConnectionStore';
 import { createVideoJob, updateVideoJob, failVideoJob } from '../services/videoJobStore';
 import { generateVeoVideo } from '../services/geminiVeoVideoGenerator';
 import { uploadLocalImage } from '../services/imageUploader';
@@ -16,15 +18,16 @@ function getTempUploadDir(): string {
 }
 
 async function runJob(params: {
+  uid: string;
   jobId: string;
   prompt: string;
   caption?: string | null;
   productImagePath?: string | null;
 }): Promise<void> {
-  const { jobId, prompt, caption, productImagePath } = params;
+  const { uid, jobId, prompt, caption, productImagePath } = params;
 
   try {
-    updateVideoJob(jobId, { state: 'generating' });
+    await updateVideoJob({ uid, jobId, patch: { state: 'generating' } });
 
     const veoResult = await generateVeoVideo({
       prompt,
@@ -33,10 +36,15 @@ async function runJob(params: {
       durationSeconds: 15,
     });
 
-    updateVideoJob(jobId, { mp4Path: veoResult.mp4Path, state: 'uploading' });
+    await updateVideoJob({ uid, jobId, patch: { mp4Path: veoResult.mp4Path, state: 'uploading' } });
 
     const uploadedVideoUrl = await uploadLocalImage(veoResult.mp4Path);
-    updateVideoJob(jobId, { uploadedVideoUrl, state: 'publishing' });
+    await updateVideoJob({ uid, jobId, patch: { uploadedVideoUrl, state: 'publishing' } });
+
+    const igAuth = await getActiveInstagramAuth(uid);
+    if (!igAuth) {
+      throw new Error('Instagram user is not connected (no active Instagram auth for this user)');
+    }
 
     const ig = await publishInstagramVideo({
       videoUrl: uploadedVideoUrl,
@@ -44,13 +52,14 @@ async function runJob(params: {
       kind: 'REELS',
       shareToFeed: true,
       maxPollAttempts: 180,
+      auth: igAuth,
     });
 
-    updateVideoJob(jobId, { instagramMediaId: ig.id, state: 'succeeded' });
+    await updateVideoJob({ uid, jobId, patch: { instagramMediaId: ig.id, state: 'succeeded' } });
   } catch (e) {
     const msg = e instanceof Error ? `${e.message}${e.stack ? `\n${e.stack}` : ''}` : String(e);
     logger.error(`[VideoJob ${jobId}] Failed: ${msg}`);
-    failVideoJob(jobId, e);
+    await failVideoJob({ uid, jobId, error: e });
   } finally {
     // Best-effort cleanup of temp uploaded product image (keep generated mp4 for debugging).
     if (productImagePath) {
@@ -78,9 +87,15 @@ export default async function videoGenerateAndPublishRoutes(
           });
         }
 
+        // Auth modes:
+        // - Preferred: Firebase ID token in Authorization header (requireUser)
+        // - Internal: X-Postty-Internal-Token + userId form field (used by internal agents/tools)
+        let uid: string | null = null;
+
         let prompt: string | null = null;
         let caption: string | null = null;
         let productImagePath: string | null = null;
+        let userIdField: string | null = null;
 
         for await (const part of parts) {
           if (part.type === 'file' && part.fieldname === 'productImage') {
@@ -100,6 +115,28 @@ export default async function videoGenerateAndPublishRoutes(
           } else if (part.type === 'field') {
             if (part.fieldname === 'prompt') prompt = String(part.value || '');
             if (part.fieldname === 'caption') caption = String(part.value || '');
+            if (part.fieldname === 'userId') userIdField = String(part.value || '');
+          }
+        }
+
+        // Resolve uid (auth)
+        try {
+          const user = await requireUser(request as any);
+          uid = user.uid;
+        } catch (e) {
+          const tokenHeader = request.headers['x-postty-internal-token'];
+          const raw =
+            typeof tokenHeader === 'string'
+              ? tokenHeader
+              : Array.isArray(tokenHeader)
+                ? tokenHeader[0]
+                : '';
+          const expected = process.env.POSTTY_INTERNAL_TOKEN || '';
+          const allowed = expected && raw && raw === expected;
+          if (allowed && userIdField && userIdField.trim().length > 0) {
+            uid = userIdField.trim();
+          } else {
+            throw e;
           }
         }
 
@@ -118,15 +155,18 @@ export default async function videoGenerateAndPublishRoutes(
           });
         }
 
-        const job = createVideoJob({
+        const job = await createVideoJob({
+          uid: uid!,
           prompt: prompt.trim(),
           caption: caption?.trim() ? caption.trim() : null,
           productImagePath,
+          productPreviewUrl: null,
         });
 
         // Fire and forget; job status is polled via GET /video/jobs/:jobId
         setImmediate(() => {
           runJob({
+            uid: uid!,
             jobId: job.id,
             prompt: job.prompt,
             caption: job.caption ?? null,
@@ -134,7 +174,7 @@ export default async function videoGenerateAndPublishRoutes(
           }).catch((e) => {
             // If anything escapes, mark failed.
             try {
-              failVideoJob(job.id, e);
+              void failVideoJob({ uid: uid!, jobId: job.id, error: e });
             } catch {
               // ignore
             }
@@ -148,7 +188,8 @@ export default async function videoGenerateAndPublishRoutes(
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : 'Unknown error';
         logger.error('Video generate-and-publish request failed:', errorMsg);
-        return reply.status(500).send({ status: 'error', message: errorMsg });
+        const status = errorMsg.toLowerCase().includes('authorization') ? 401 : 500;
+        return reply.status(status).send({ status: 'error', message: errorMsg });
       }
     }
   );

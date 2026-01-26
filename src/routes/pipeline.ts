@@ -11,6 +11,8 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as logger from '../utils/logger';
+import * as http from 'http';
+import * as https from 'https';
 import {
   executePipeline,
   isPipelineReady,
@@ -26,6 +28,74 @@ function getTempUploadDir(): string {
     fs.mkdirSync(dir, { recursive: true });
   }
   return dir;
+}
+
+function safeUnlink(p: string): void {
+  try {
+    if (p && fs.existsSync(p)) fs.unlinkSync(p);
+  } catch {
+    // ignore
+  }
+}
+
+async function downloadToFile(params: { url: string; destPath: string; timeoutMs?: number }): Promise<void> {
+  const timeoutMs = typeof params.timeoutMs === 'number' ? params.timeoutMs : 15000;
+
+  await new Promise<void>((resolve, reject) => {
+    let u: URL;
+    try {
+      u = new URL(params.url);
+    } catch (e) {
+      reject(new Error('Invalid referenceImageUrl'));
+      return;
+    }
+
+    const mod = u.protocol === 'http:' ? http : https;
+
+    const req = mod.get(
+      params.url,
+      {
+        headers: {
+          // Some CDNs/S3 setups are picky; keep this browser-like but minimal.
+          'User-Agent': 'postty-backend/1.0',
+          Accept: 'image/*,*/*;q=0.8',
+        },
+      },
+      (res) => {
+        // Follow redirects (S3 signed URLs can redirect depending on host style)
+        const status = res.statusCode || 0;
+        const loc = res.headers.location;
+        if (status >= 300 && status < 400 && loc) {
+          res.resume();
+          void downloadToFile({ url: loc, destPath: params.destPath, timeoutMs }).then(resolve).catch(reject);
+          return;
+        }
+
+        if (status < 200 || status >= 300) {
+          const chunks: Buffer[] = [];
+          res.on('data', (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(String(c))));
+          res.on('end', () => {
+            reject(new Error(`Failed to download referenceImageUrl (status ${status})`));
+          });
+          return;
+        }
+
+        const out = fs.createWriteStream(params.destPath);
+        out.on('error', (err) => reject(err));
+        res.on('error', (err) => reject(err));
+        res.pipe(out);
+        out.on('finish', () => {
+          out.close();
+          resolve();
+        });
+      }
+    );
+
+    req.on('error', (err) => reject(err));
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error('Timed out downloading referenceImageUrl'));
+    });
+  });
 }
 
 /**
@@ -107,6 +177,7 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
     }
 
     let productImagePath: string | null = null;
+    let downloadedReferencePath: string | null = null;
 
     try {
       // Parse multipart form data
@@ -154,7 +225,25 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
 
       // Resolve reference image path
       let referenceImagePath: string | undefined;
-      if (formData.referenceImage) {
+
+      // Prefer referenceImageUrl (DB/S3-backed references)
+      if (typeof formData.referenceImageUrl === 'string' && formData.referenceImageUrl.trim().length > 0) {
+        const url = formData.referenceImageUrl.trim();
+        const tempDir = getTempUploadDir();
+        const ts = Date.now();
+        downloadedReferencePath = path.join(tempDir, `${ts}_reference_from_url.jpg`);
+        const host = (() => {
+          try {
+            return new URL(url).host;
+          } catch {
+            return '(invalid-url)';
+          }
+        })();
+        logger.info(`🌐 Downloading reference image from URL host: ${host}`);
+        await downloadToFile({ url, destPath: downloadedReferencePath, timeoutMs: 15000 });
+        referenceImagePath = downloadedReferencePath;
+        logger.info(`✅ Reference image downloaded: ${downloadedReferencePath}`);
+      } else if (formData.referenceImage) {
         // Try reference-library first (indexed references)
         const refLibPath = path.join(process.cwd(), 'reference-library', 'images', formData.referenceImage);
         if (fs.existsSync(refLibPath)) {
@@ -246,9 +335,13 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
       const result: PipelineOutput = await executePipeline(pipelineInput);
 
       // Clean up temp file
-      if (productImagePath && fs.existsSync(productImagePath)) {
-        fs.unlinkSync(productImagePath);
+      if (productImagePath) {
+        safeUnlink(productImagePath);
         logger.info(`🧹 Cleaned up temp file: ${productImagePath}`);
+      }
+      if (downloadedReferencePath) {
+        safeUnlink(downloadedReferencePath);
+        logger.info(`🧹 Cleaned up temp file: ${downloadedReferencePath}`);
       }
 
       // Return result
@@ -264,9 +357,8 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
       });
     } catch (error) {
       // Clean up temp file on error
-      if (productImagePath && fs.existsSync(productImagePath)) {
-        fs.unlinkSync(productImagePath);
-      }
+      if (productImagePath) safeUnlink(productImagePath);
+      if (downloadedReferencePath) safeUnlink(downloadedReferencePath);
 
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       logger.error('Pipeline execution failed:', errorMsg);
@@ -310,12 +402,14 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
     }
 
     let productImagePath: string | null = null;
+    let downloadedReferencePath: string | null = null;
 
     try {
       const body = request.body as {
         productImageBase64?: string;
         textPrompt?: string;
         referenceImage?: string;
+        referenceImageUrl?: string; // signed S3 URL for DB-backed references
         productName?: string;
         language?: 'es' | 'en';
         aspectRatio?: '1:1' | '9:16' | '16:9' | '4:3' | '3:4';
@@ -330,6 +424,9 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
           cta?: string;
         };
         textFormat?: string; // User's description of how they want text: "50% OFF grande, ENVIO GRATIS chico"
+        userText?: string[]; // Gemini-baked text: ["headline","subheadline","cta"]
+        typographyStyle?: any; // DB design_guidelines.typography
+        productAnalysis?: any; // optional
       };
 
       // Validate required fields
@@ -365,7 +462,23 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
 
       // Resolve reference image path
       let referenceImagePath: string | undefined;
-      if (body.referenceImage) {
+      if (typeof body.referenceImageUrl === 'string' && body.referenceImageUrl.trim().length > 0) {
+        const url = body.referenceImageUrl.trim();
+        const tempDir = getTempUploadDir();
+        const ts = Date.now();
+        downloadedReferencePath = path.join(tempDir, `${ts}_reference_from_url.jpg`);
+        const host = (() => {
+          try {
+            return new URL(url).host;
+          } catch {
+            return '(invalid-url)';
+          }
+        })();
+        logger.info(`🌐 Downloading reference image from URL host: ${host}`);
+        await downloadToFile({ url, destPath: downloadedReferencePath, timeoutMs: 15000 });
+        referenceImagePath = downloadedReferencePath;
+        logger.info(`✅ Reference image downloaded: ${downloadedReferencePath}`);
+      } else if (body.referenceImage) {
         // Try reference-library first (indexed references)
         const refLibPath = path.join(process.cwd(), 'reference-library', 'images', body.referenceImage);
         if (fs.existsSync(refLibPath)) {
@@ -394,6 +507,10 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
         useCase: body.useCase || 'Promoción',
         textContent: body.textContent,
         textFormat: body.textFormat,
+        // Pass-through for Gemini-baked text flow (NanoBanana)
+        userText: Array.isArray(body.userText) ? body.userText : undefined,
+        typographyStyle: body.typographyStyle,
+        productAnalysis: body.productAnalysis,
       };
       
       logger.info(`📐 Aspect ratio: ${pipelineInput.aspectRatio}`);
@@ -404,9 +521,8 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
       const result: PipelineOutput = await executePipeline(pipelineInput);
 
       // Clean up temp file
-      if (productImagePath && fs.existsSync(productImagePath)) {
-        fs.unlinkSync(productImagePath);
-      }
+      if (productImagePath) safeUnlink(productImagePath);
+      if (downloadedReferencePath) safeUnlink(downloadedReferencePath);
 
       return reply.send({
         success: true,
@@ -420,9 +536,8 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
       });
     } catch (error) {
       // Clean up temp file on error
-      if (productImagePath && fs.existsSync(productImagePath)) {
-        fs.unlinkSync(productImagePath);
-      }
+      if (productImagePath) safeUnlink(productImagePath);
+      if (downloadedReferencePath) safeUnlink(downloadedReferencePath);
 
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       logger.error('Pipeline execution failed:', errorMsg);

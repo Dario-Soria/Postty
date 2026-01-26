@@ -9,6 +9,7 @@ import { extractSubjectMaskWithGemini } from '../services/geminiMultimodal';
 import { mergeProductOnBackground } from '../services/productMergeV2';
 import { saveReferenceImageAsync } from '../services/referenceLibrarySqlite';
 import { orchestrateV2Prompt } from '../services/v2GeminiOrchestrator';
+import { requireUser } from '../services/firebaseAuth';
 
 function ensureTempDir(): string {
   const dir = path.join(process.cwd(), 'temp-uploads', 'v2');
@@ -191,6 +192,15 @@ export default async function v2GenerateRoutes(fastify: FastifyInstance): Promis
     const previewOnly = parseBooleanInput(fields.preview_only);
     const numCandidates = fields.num_candidates ? Math.min(Math.max(parseInt(fields.num_candidates, 10) || 3, 1), 12) : 3;
 
+    // Best-effort user context. If missing, references will be saved to GLOBAL library.
+    let uid: string | null = null;
+    try {
+      const user = await requireUser(req as any);
+      uid = user.uid;
+    } catch {
+      uid = null;
+    }
+
     const product = files.find((f) => f.fieldname === 'image') || files[0];
     const references = files.filter((f) => f.fieldname === 'references' || f.fieldname === 'reference');
 
@@ -204,7 +214,7 @@ export default async function v2GenerateRoutes(fastify: FastifyInstance): Promis
 
     // Save references asynchronously (never blocks generation).
     for (const ref of references) {
-      void saveReferenceImageAsync({ buffer: ref.buffer, originalFilename: ref.filename, mime: ref.mimetype });
+      void saveReferenceImageAsync({ buffer: ref.buffer, originalFilename: ref.filename, mime: ref.mimetype, ownerUid: uid });
     }
 
     // Subject mask once.

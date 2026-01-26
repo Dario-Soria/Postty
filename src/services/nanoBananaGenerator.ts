@@ -456,21 +456,27 @@ export async function generateBaseImage(input: NanoBananaInput): Promise<NanoBan
     logger.info(`📐 Current image: ${metadata.width}x${metadata.height} (ratio: ${currentRatio.toFixed(2)})`);
     logger.info(`📐 Target: ${target.width}x${target.height} (ratio: ${targetRatio.toFixed(2)})`);
     
-    // If ratio is significantly different, resize to target
+    // If ratio is significantly different, resize to target.
+    // IMPORTANT: When text is requested for 1:1, avoid cropping (cover) because it can cut off edge text.
+    // Use contain+padding instead so all rendered text stays inside frame.
     if (Math.abs(currentRatio - targetRatio) > 0.1) {
-      logger.info(`🔄 Resizing image to match ${aspectRatio} aspect ratio...`);
-      
-      // For 9:16 (story), we need to make it taller
-      // Strategy: resize to fit width, then extend height with content-aware fill or crop
-      // Resize to target dimensions using cover fit
-      const resizedBuffer = await sharp(imageBuffer)
-        .resize(target.width, target.height, {
-          fit: 'cover',
-          position: 'center',
-        })
-        .png()
-        .toBuffer();
-      
+      const hasTextRequested = Array.isArray(input.textContent) && input.textContent.length > 0;
+      const useContainPadding = hasTextRequested && aspectRatio === '1:1';
+
+      logger.info(
+        useContainPadding
+          ? `🔄 Resizing image to match ${aspectRatio} using contain+padding (avoid cropping text)...`
+          : `🔄 Resizing image to match ${aspectRatio} aspect ratio...`
+      );
+
+      const resized = sharp(imageBuffer).resize(target.width, target.height, {
+        fit: useContainPadding ? 'contain' : 'cover',
+        position: 'center',
+        background: useContainPadding ? { r: 255, g: 255, b: 255, alpha: 1 } : undefined,
+      });
+
+      const resizedBuffer = await resized.png().toBuffer();
+
       imageBuffer = Buffer.from(resizedBuffer);
       metadata = await sharp(imageBuffer).metadata();
       logger.info(`✅ Resized to: ${metadata.width}x${metadata.height}`);

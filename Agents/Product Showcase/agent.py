@@ -233,6 +233,9 @@ class NanoBananaAgent:
         self.awaiting_text_input = False  # Flag to track if we're waiting for text input
         self.design_guidelines = None  # Typography specs from selected reference (from SQLite)
         self.product_analysis = None  # Product image characteristics (colors, category, composition)
+        # Cache the last user-provided creative brief / scene description so we can always send a prompt to /pipeline
+        # even if the LLM forgets to emit a `PROMPT:` line inside the trigger block.
+        self.last_scene_prompt = None  # Optional[str]
 
     def chat(self, user_message: str, image_path: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -246,6 +249,28 @@ class NanoBananaAgent:
         # Store product image path if provided
         if image_path:
             self.product_image_path = image_path
+
+        # Cache user's creative brief so generation always has a non-empty prompt.
+        # We only record messages that look like an actual scene description (not control words / selections).
+        try:
+            msg_norm = (user_message or "").strip()
+            msg_lower = msg_norm.lower()
+            is_control = msg_lower in {"generar", "generate", "post", "reel", "reset_conversation", "start_conversation"}
+            is_selection = msg_norm.isdigit()
+            is_upload_marker = msg_norm in {"[user uploaded product image]", "📸 imagen subida"}
+            # If we're awaiting text input, the user's message is likely the overlay copy, not the scene prompt.
+            if (
+                msg_norm
+                and len(msg_norm) >= 20
+                and not is_control
+                and not is_selection
+                and not is_upload_marker
+                and not self.awaiting_text_input
+            ):
+                self.last_scene_prompt = msg_norm
+        except Exception:
+            # Never break chat flow due to caching logic
+            pass
         
         # Handle special reset conversation message
         if user_message == "RESET_CONVERSATION":
@@ -809,10 +834,24 @@ Return ONLY a JSON object with this structure:
             import requests
             
             # Call backend search endpoint
+            internal_token = os.environ.get("POSTTY_INTERNAL_TOKEN", "").strip()
+            headers = {}
+            if internal_token:
+                headers["X-Postty-Internal-Token"] = internal_token
+
+            # IMPORTANT (cloud): /search-references is protected.
+            # We authenticate internal agent calls using X-Postty-Internal-Token + userId.
+            uid = getattr(self, "user_id", None)
+            if isinstance(uid, str):
+                uid = uid.strip()
+            else:
+                uid = ""
+
             response = requests.post(
                 f'{self.backend_url}/search-references',
-                json={'query': query, 'limit': limit},
-                timeout=10
+                json={'query': query, 'limit': limit, 'userId': uid},
+                headers=headers,
+                timeout=15
             )
             response.raise_for_status()
             result = response.json()
@@ -876,7 +915,14 @@ Return ONLY a JSON object with this structure:
         except Exception as e:
             error_msg = f"Error buscando referencias: {str(e)}"
             print(error_msg)
-            fallback = "Tuve un problema buscando referencias. ¿Seguimos sin referencias visuales?"
+            # Make the failure actionable (common in cloud/local env misconfig).
+            if "DATABASE_URL" in str(e) or "Neon" in str(e):
+                fallback = (
+                    "La librería de referencias no está configurada (falta DATABASE_URL/Neon). "
+                    "¿Seguimos sin referencias visuales?"
+                )
+            else:
+                fallback = "Tuve un problema buscando referencias. ¿Seguimos sin referencias visuales?"
             self.history.append({"role": "assistant", "content": fallback})
             return {"type": "text", "text": fallback}
     
@@ -886,21 +932,24 @@ Return ONLY a JSON object with this structure:
         """
         # Extract parameters - use stored product image path
         product_image = self.product_image_path
-        reference_image = ""
+        reference_image = ""  # legacy local filename (only if available)
+        reference_image_url = ""  # preferred: DB/S3 signed URL
         prompt = ""
         skip_text = "true"
         
         # Use selected reference if available
         if self.selected_reference:
-            reference_image = self.selected_reference.get('filename', '')
-            print(f"[DEBUG] Using stored selected reference: {reference_image}")
+            # DB-backed references provide a signed S3 URL (`url`) and an `id`.
+            reference_image_url = str(self.selected_reference.get('url') or '').strip()
+            reference_image = str(self.selected_reference.get('filename') or '').strip()
+            print(f"[DEBUG] Using stored selected reference url: {reference_image_url[:60]}..." if reference_image_url else "[DEBUG] No stored selected reference url")
         
         for line in response_text.splitlines():
             line_stripped = line.strip()
             # NOTE: Don't override product_image - we use the stored path from upload
             # The LLM might hallucinate incorrect paths
-            # Only override reference if not already set from selection
-            if line_stripped.startswith("REFERENCE_IMAGE:") and not reference_image:
+            # Only override reference if not already set from selection (URL OR filename).
+            if line_stripped.startswith("REFERENCE_IMAGE:") and not reference_image and not reference_image_url:
                 reference_image = line_stripped[len("REFERENCE_IMAGE:"):].strip()
             elif line_stripped.startswith("PROMPT:"):
                 prompt = line_stripped[len("PROMPT:"):].strip()
@@ -914,11 +963,19 @@ Return ONLY a JSON object with this structure:
             return {"type": "text", "text": error_msg}
         
         print(f"[DEBUG] Using product image: {product_image}")
-        print(f"[DEBUG] Using reference: {reference_image}")
+        print(f"[DEBUG] Using reference url: {reference_image_url[:80]}..." if reference_image_url else "[DEBUG] Using reference url: (none)")
+        print(f"[DEBUG] Using reference filename: {reference_image}" if reference_image else "[DEBUG] Using reference filename: (none)")
         print(f"[DEBUG] Using prompt: {prompt}")
         
         if not prompt:
-            prompt = "Professional product photography with elegant composition"
+            # LLM sometimes omits `PROMPT:` in the trigger block.
+            # Use last user-provided scene description if available to avoid sending a generic prompt.
+            fallback = getattr(self, "last_scene_prompt", None)
+            if isinstance(fallback, str) and fallback.strip():
+                prompt = fallback.strip()
+                print(f"[DEBUG] Prompt missing in trigger; using last_scene_prompt fallback ({len(prompt)} chars)")
+            else:
+                prompt = "Professional product photography with elegant composition"
         
         try:
             import requests
@@ -932,6 +989,9 @@ Return ONLY a JSON object with this structure:
                 files = {'productImage': product_file}
                 data = {
                     'textPrompt': prompt,
+                    # Prefer DB/S3 reference URL if available; backend will download to temp.
+                    'referenceImageUrl': reference_image_url if reference_image_url else '',
+                    # Back-compat: still allow local filename references when present.
                     'referenceImage': reference_image if reference_image else '',
                     'skipText': 'false',  # Let Gemini generate text
                     'language': 'es',
