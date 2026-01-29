@@ -1,8 +1,100 @@
 @import "tailwindcss";
 
+/* ITC Benguiat - Logo font */
+@font-face {
+  font-family: 'ITC Benguiat';
+  src: url('/fonts/ITCBenguiatStdBookCn.OTF') format('opentype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ITC Benguiat';
+  src: url('/fonts/ITCBenguiatStdBookCnIt.OTF') format('opentype');
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ITC Benguiat';
+  src: url('/fonts/ITCBenguiatStdMediumCn.OTF') format('opentype');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ITC Benguiat';
+  src: url('/fonts/ITCBenguiatStdMediumCnIt.OTF') format('opentype');
+  font-weight: 500;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ITC Benguiat';
+  src: url('/fonts/ITCBenguiatStdBoldCn.OTF') format('opentype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ITC Benguiat';
+  src: url('/fonts/ITCBenguiatStdBoldCnIt.OTF') format('opentype');
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* Helvetica - Main app font */
+@font-face {
+  font-family: 'Helvetica';
+  src: url('/fonts/Helvetica.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Helvetica';
+  src: url('/fonts/Helvetica-Oblique.ttf') format('truetype');
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Helvetica';
+  src: url('/fonts/helvetica-light-587ebe5a59211.ttf') format('truetype');
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Helvetica';
+  src: url('/fonts/Helvetica-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Helvetica';
+  src: url('/fonts/Helvetica-BoldOblique.ttf') format('truetype');
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  --font-logo: 'ITC Benguiat', serif;
+  --font-main: 'Helvetica', Arial, sans-serif;
 }
 
 @theme inline {
@@ -22,7 +114,7 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-main);
 }
 
 /* V2 scrollbar styling (kept subtle to match the glass/gradient aesthetic) */
@@ -45,4 +137,28 @@ body {
 }
 .v2-scrollbar::-webkit-scrollbar-thumb:hover {
   background: rgba(15, 23, 42, 0.32);
+}
+
+/* Feedback success animation */
+@keyframes fade-in-out {
+  0% {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  15% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  85% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+}
+
+.animate-fade-in-out {
+  animation: fade-in-out 1.5s ease-in-out forwards;
 }
