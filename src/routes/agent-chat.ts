@@ -89,6 +89,16 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
       logger.info(`[Agent Chat] Received result type: ${result.type}`);
 
       // Handle different response types
+      if (result.type === 'post_type_options') {
+        // Post type options with example images
+        return reply.send({
+          type: 'post_type_options',
+          text: result.text,
+          productThumbnail: result.productThumbnail,
+          postTypes: result.postTypes,
+        });
+      }
+      
       if (result.type === 'reference_options') {
         // Reference images are being presented to user
         return reply.send({
@@ -117,10 +127,17 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
       }
 
       // Text response
-      return reply.send({
+      const textResponse: any = {
         type: 'text',
         text: result.text,
-      });
+      };
+      
+      // Include readyToGenerate if present
+      if (result.readyToGenerate !== undefined) {
+        textResponse.readyToGenerate = result.readyToGenerate;
+      }
+      
+      return reply.send(textResponse);
 
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';

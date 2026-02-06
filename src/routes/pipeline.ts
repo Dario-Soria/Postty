@@ -1,10 +1,21 @@
 /**
- * Pipeline Route
+ * =============================================================================
+ * PIPELINE ROUTE - VERSION 2 (STABLE)
+ * =============================================================================
+ * ⚠️  DO NOT EDIT without explicit permission from the user.
+ * 
  * HTTP endpoint for the complete image generation pipeline
  * 
  * POST /pipeline - Execute full pipeline
  * GET /pipeline/status - Check pipeline readiness
  * GET /pipeline/references - List available reference images
+ * 
+ * Features:
+ * - V2: Supports absolute paths for referenceImage (edit mode with generated images)
+ * 
+ * Backup: pipeline.backup-v1.ts
+ * Last verified: 2026-01-31
+ * =============================================================================
  */
 
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
@@ -244,20 +255,26 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
         referenceImagePath = downloadedReferencePath;
         logger.info(`✅ Reference image downloaded: ${downloadedReferencePath}`);
       } else if (formData.referenceImage) {
-        // Try reference-library first (indexed references)
-        const refLibPath = path.join(process.cwd(), 'reference-library', 'images', formData.referenceImage);
-        if (fs.existsSync(refLibPath)) {
-          referenceImagePath = refLibPath;
-          logger.info(`📚 Using reference from library: ${formData.referenceImage}`);
+        // V2: Support absolute paths (for edit mode with previously generated images)
+        if (formData.referenceImage.startsWith('/') && fs.existsSync(formData.referenceImage)) {
+          referenceImagePath = formData.referenceImage;
+          logger.info(`📁 Using absolute path reference: ${formData.referenceImage}`);
         } else {
-          // Fall back to reference-images directory
-          const refDir = path.join(process.cwd(), 'reference-images');
-          const refPath = path.join(refDir, formData.referenceImage);
-          if (fs.existsSync(refPath)) {
-            referenceImagePath = refPath;
-            logger.info(`📁 Using reference from reference-images: ${formData.referenceImage}`);
+          // Try reference-library first (indexed references)
+          const refLibPath = path.join(process.cwd(), 'reference-library', 'images', formData.referenceImage);
+          if (fs.existsSync(refLibPath)) {
+            referenceImagePath = refLibPath;
+            logger.info(`📚 Using reference from library: ${formData.referenceImage}`);
           } else {
-            logger.warn(`Reference image not found: ${formData.referenceImage}, using random`);
+            // Fall back to reference-images directory
+            const refDir = path.join(process.cwd(), 'reference-images');
+            const refPath = path.join(refDir, formData.referenceImage);
+            if (fs.existsSync(refPath)) {
+              referenceImagePath = refPath;
+              logger.info(`📁 Using reference from reference-images: ${formData.referenceImage}`);
+            } else {
+              logger.warn(`Reference image not found: ${formData.referenceImage}, using random`);
+            }
           }
         }
       }
@@ -313,7 +330,7 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
         referenceImagePath,
         textPrompt: formData.textPrompt,
         language: (formData.language as 'es' | 'en') || 'es',
-        aspectRatio: (formData.aspectRatio as '1:1' | '9:16' | '16:9' | '4:3' | '3:4') || '1:1',
+        aspectRatio: (formData.aspectRatio as '1:1' | '9:16' | '16:9' | '4:3' | '3:4' | '4:5') || '4:5',
         skipText: formData.skipText === 'true',
         style: formData.style || 'Elegante',
         useCase: formData.useCase || 'Promoción',
@@ -412,7 +429,7 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
         referenceImageUrl?: string; // signed S3 URL for DB-backed references
         productName?: string;
         language?: 'es' | 'en';
-        aspectRatio?: '1:1' | '9:16' | '16:9' | '4:3' | '3:4';
+        aspectRatio?: '1:1' | '9:16' | '16:9' | '4:3' | '3:4' | '4:5';
         contentType?: 'promo' | 'announcement' | 'product' | 'event' | 'generic';
         skipText?: boolean;
         brandColors?: string[];
@@ -479,18 +496,24 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
         referenceImagePath = downloadedReferencePath;
         logger.info(`✅ Reference image downloaded: ${downloadedReferencePath}`);
       } else if (body.referenceImage) {
-        // Try reference-library first (indexed references)
-        const refLibPath = path.join(process.cwd(), 'reference-library', 'images', body.referenceImage);
-        if (fs.existsSync(refLibPath)) {
-          referenceImagePath = refLibPath;
-          logger.info(`📚 Using reference from library: ${body.referenceImage}`);
+        // V2: Support absolute paths (for edit mode with previously generated images)
+        if (body.referenceImage.startsWith('/') && fs.existsSync(body.referenceImage)) {
+          referenceImagePath = body.referenceImage;
+          logger.info(`📁 Using absolute path reference: ${body.referenceImage}`);
         } else {
-          // Fall back to reference-images directory
-          const refDir = path.join(process.cwd(), 'reference-images');
-          const refPath = path.join(refDir, body.referenceImage);
-          if (fs.existsSync(refPath)) {
-            referenceImagePath = refPath;
-            logger.info(`📁 Using reference from reference-images: ${body.referenceImage}`);
+          // Try reference-library first (indexed references)
+          const refLibPath = path.join(process.cwd(), 'reference-library', 'images', body.referenceImage);
+          if (fs.existsSync(refLibPath)) {
+            referenceImagePath = refLibPath;
+            logger.info(`📚 Using reference from library: ${body.referenceImage}`);
+          } else {
+            // Fall back to reference-images directory
+            const refDir = path.join(process.cwd(), 'reference-images');
+            const refPath = path.join(refDir, body.referenceImage);
+            if (fs.existsSync(refPath)) {
+              referenceImagePath = refPath;
+              logger.info(`📁 Using reference from reference-images: ${body.referenceImage}`);
+            }
           }
         }
       }
@@ -501,7 +524,7 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
         referenceImagePath,
         textPrompt: body.textPrompt,
         language: body.language || 'es',
-        aspectRatio: body.aspectRatio || '1:1',
+        aspectRatio: body.aspectRatio || '4:5',
         skipText: body.skipText || false,
         style: body.style || 'Elegante',
         useCase: body.useCase || 'Promoción',

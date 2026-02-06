@@ -2404,7 +2404,7 @@ export function V2Chat({
 
                     {m.role === "assistant" && m.meta?.preview_image_url ? (
                       <div className="mt-3 space-y-3">
-                        <div className="relative rounded-2xl overflow-hidden border border-white/60 bg-white/50">
+                        <div className="relative rounded-sm overflow-hidden border border-white/60 bg-white/50">
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img src={m.meta.preview_image_url} alt="Generated" className="w-full h-auto" />
                           <button
@@ -2530,7 +2530,7 @@ export function V2Chat({
 
                     {m.role === "assistant" && m.meta?.uploaded_image_url ? (
                       <div className="mt-3 space-y-3">
-                        <div className="rounded-2xl overflow-hidden border border-white/60 bg-white/50">
+                        <div className="rounded-sm overflow-hidden border border-white/60 bg-white/50">
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img src={m.meta.uploaded_image_url} alt="Generated" className="w-full h-auto" />
                         </div>

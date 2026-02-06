@@ -191,6 +191,28 @@ Return ONLY a valid JSON object with the following structure:
     "era": "modern | retro | timeless | futuristic"
   },
 
+  "post_classification": {
+    "post_type": "hero-shot | product-on-human | lifestyle | flat-lay | unboxing | before-after | ingredients | texture-closeup | comparison | testimonial | how-to | seasonal | promo-sale",
+    "post_type_confidence": "high | medium | low",
+    "product_category": "cream | serum | moisturizer | cleanser | toner | mask | sunscreen | lipstick | lip-gloss | foundation | mascara | eyeshadow | nail-polish | perfume | shampoo | conditioner | body-lotion | soap | supplement | food | beverage | clothing | shoes | accessory | electronics | furniture | generic",
+    "text_in_image": true | false,
+    "text_analysis": {
+      "has_text": true | false,
+      "text_elements": [
+        {
+          "detected_text": "the actual text content if readable",
+          "position": "top | top-left | top-right | center | bottom | bottom-left | bottom-right | right-side | left-side",
+          "prominence": "primary | secondary | tertiary",
+          "visual_style": "describe the visual style: font weight, size relative to others, color, any effects",
+          "semantic_role": "what role does this text play in the design? (e.g., 'product name', 'section title', 'ingredient name', 'benefit description', 'call to action', 'promotional badge')"
+        }
+      ],
+      "text_count": "number of distinct text elements (EXCLUDING text on product labels/packaging)",
+      "text_hierarchy_summary": "brief description of how DESIGN text is organized (e.g., 'Large headline at top, small benefits below, CTA at bottom')",
+      "text_content_blueprint": "CRITICAL: A complete semantic description in natural language explaining the text structure of this template. Describe: 1) What types of text content exist (not categories, but actual meaning like 'section title', 'product name', 'ingredient blocks'), 2) How they are organized visually, 3) The relationship between text elements, 4) How this structure should be adapted for a different product. Example for an ingredients template: 'This template displays product ingredients with: a small section title at top (KEY INGREDIENTS), the product name in large elegant font (GLOW CREAM), and 4 ingredient blocks positioned around the product - each block has the ingredient name in bold uppercase and a benefit description below in regular text. To adapt: replace product name with user's product, replace each ingredient name and description with the user's product ingredients and their benefits.'"
+    }
+  },
+
   "technical_notes": {
     "safe_zone_top": "pixels or percentage to keep clear",
     "safe_zone_bottom": "pixels or percentage to keep clear",
@@ -223,6 +245,16 @@ When analyzing images, prioritize SPECIFIC over GENERAL tags:
 5. replication_priority should highlight what makes this design recognizable
 6. Return ONLY valid JSON, no explanations before or after
 7. If an element is not present in the image, set its value to null or false as appropriate
+8. CRITICAL - text_content_blueprint: This field is essential for text replication. Write a detailed, natural language description that another AI can use to generate equivalent text for a different product. Be specific about the structure, not generic categories. Describe what each text element IS (e.g., "ingredient name with benefit"), not what category it falls into.
+
+## CRITICAL RULE FOR TEXT DETECTION
+**IMPORTANT**: When analyzing text in images:
+- ONLY count text that is part of the DESIGN/LAYOUT (titles, headlines, CTAs, promotional text overlaid on the image background)
+- DO NOT count text that is ON THE PRODUCT ITSELF (product labels, packaging text, bottle labels, box text, brand names on the product)
+- The product in the reference will be REPLACED by a different product, so any text on the product packaging/label is IRRELEVANT
+- If the ONLY text in the image is on the product packaging/label, set "text_in_image" to false and "has_text" to false
+- Examples of text TO IGNORE: brand names on bottles, ingredient lists on boxes, product names on labels
+- Examples of text TO COUNT: "50% OFF" banners, "New Formula" badges (not on product), headline text, footer text, CTA buttons
 ```
 
 ---

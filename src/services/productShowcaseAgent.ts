@@ -213,7 +213,16 @@ export async function sendMessageToAgent(
   imagePath?: string,
   sessionId: string = 'default',
   userId?: string
-): Promise<{ type: 'text' | 'image' | 'reference_options'; text: string; file?: string; references?: any[]; textLayout?: any }> {
+): Promise<{ 
+  type: 'text' | 'image' | 'reference_options' | 'post_type_options'; 
+  text: string; 
+  file?: string; 
+  references?: any[]; 
+  textLayout?: any;
+  postTypes?: any[];
+  productThumbnail?: string;
+  readyToGenerate?: boolean;
+}> {
   if (!agentProcess || !isReady) {
     throw new Error('Agent process is not running');
   }

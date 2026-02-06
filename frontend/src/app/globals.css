@@ -139,6 +139,37 @@ body {
   background: rgba(15, 23, 42, 0.32);
 }
 
+/* 🚨 PROTECTED: V3 scrollbar - clipped by parent overflow-hidden, with track margin */
+/* V3 scrollbar - minimal, subtle thumb */
+.v3-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.15) transparent;
+}
+.v3-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.v3-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 250px 0;
+}
+.v3-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 999px;
+}
+.v3-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25);
+}
+
+/* 🚨 PROTECTED: Hide scrollbar for carousels - used on post type and reference carousels */
+/* Hide scrollbar but keep scroll functionality */
+.scrollbar-hide {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;  /* Chrome, Safari, Opera */
+}
+
 /* Feedback success animation */
 @keyframes fade-in-out {
   0% {
@@ -161,4 +192,32 @@ body {
 
 .animate-fade-in-out {
   animation: fade-in-out 1.5s ease-in-out forwards;
+}
+
+/* Chat message animations */
+@keyframes message-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-in {
+  animation: message-in 200ms ease-out;
+}
+
+.fade-in {
+  animation-name: message-in;
+}
+
+.slide-in-from-bottom-2 {
+  --tw-enter-translate-y: 0.5rem;
+}
+
+.duration-200 {
+  animation-duration: 200ms;
 }

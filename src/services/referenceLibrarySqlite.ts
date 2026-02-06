@@ -42,7 +42,12 @@ function getPool(): Pool {
   if (!connectionString) {
     throw new Error('Missing DATABASE_URL (Neon Postgres connection string)');
   }
-  _pool = new Pool({ connectionString, max: 10 });
+  _pool = new Pool({ 
+    connectionString, 
+    max: 10,
+    connectionTimeoutMillis: 60000,  // 60 segundos para conectar (Neon cold start)
+    idleTimeoutMillis: 30000,        // mantener conexiones vivas 30s
+  });
   return _pool;
 }
 
@@ -69,11 +74,29 @@ async function ensureSchema(): Promise<void> {
       aesthetic text NOT NULL DEFAULT '',
       mood text NOT NULL DEFAULT '',
       design_guidelines jsonb NOT NULL DEFAULT '{}'::jsonb,
-      ranking integer NOT NULL DEFAULT 1
+      ranking integer NOT NULL DEFAULT 1,
+      post_type text NULL,
+      text_in_image text NULL,
+      text_analysis jsonb NULL
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_reference_images_scope_owner_rank ON reference_images(scope, owner_uid, ranking DESC, created_at DESC);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_reference_images_sha_scope_owner ON reference_images(sha256, scope, owner_uid);`);
+  
+  // Add columns if they don't exist (for existing tables) - MUST be before creating indexes on these columns
+  await pool.query(`ALTER TABLE reference_images ADD COLUMN IF NOT EXISTS post_type text NULL;`);
+  await pool.query(`ALTER TABLE reference_images ADD COLUMN IF NOT EXISTS text_in_image text NULL;`);
+  await pool.query(`ALTER TABLE reference_images ADD COLUMN IF NOT EXISTS text_analysis jsonb NULL;`);
+  await pool.query(`ALTER TABLE reference_images ADD COLUMN IF NOT EXISTS product_category text NULL;`);
+  
+  // Create index on post_type AFTER the column exists (ignore error if already exists)
+  try {
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_reference_images_post_type ON reference_images(post_type);`);
+  } catch (e: any) {
+    // Ignore duplicate index error (code 23505)
+    if (e?.code !== '23505') throw e;
+  }
+  
   _schemaReady = true;
 }
 
@@ -220,14 +243,14 @@ export async function saveReferenceImageAsync(params: {
         const ext = params.mime.includes('png') ? 'png' : params.mime.includes('webp') ? 'webp' : 'jpg';
         tempPath = path.join(tempDir, `${Date.now()}_${id}.${ext}`);
         fs.writeFileSync(tempPath, params.buffer);
-        const { tags, industry, aesthetic, mood, design_guidelines } = await extractDesignGuidelinesWithGemini({ imagePath: tempPath });
+        const { tags, industry, aesthetic, mood, design_guidelines, post_type, product_category, text_in_image, text_analysis } = await extractDesignGuidelinesWithGemini({ imagePath: tempPath });
         await pool.query(
           `UPDATE reference_images
-           SET tags = $1, industry = $2, aesthetic = $3, mood = $4, design_guidelines = $5
-           WHERE id = $6`,
-          [tags, industry || '', aesthetic || '', mood || '', JSON.stringify(design_guidelines || {}), id]
+           SET tags = $1, industry = $2, aesthetic = $3, mood = $4, design_guidelines = $5, post_type = $6, text_in_image = $7, text_analysis = $8, product_category = $9
+           WHERE id = $10`,
+          [tags, industry || '', aesthetic || '', mood || '', JSON.stringify(design_guidelines || {}), post_type, text_in_image, text_analysis ? JSON.stringify(text_analysis) : null, product_category, id]
         );
-        logger.info(`Reference image indexed (Neon): id=${id} tags=${Array.isArray(tags) ? tags.length : 0} scope=${scope}`);
+        logger.info(`Reference image indexed (Neon): id=${id} tags=${Array.isArray(tags) ? tags.length : 0} post_type=${post_type || 'null'} product_category=${product_category || 'null'} scope=${scope}`);
       } catch (e) {
         const msg = e instanceof Error ? e.message : 'Unknown error';
         logger.warn(`Reference design guidelines indexing failed: ${msg}`);
@@ -255,6 +278,10 @@ export type ReferenceImageSearchResult = {
   relevance_score: number;
   ranking?: number;
   scope: ReferenceScope;
+  post_type?: string | null;
+  product_category?: string | null;
+  text_in_image?: string | null;
+  text_analysis?: object | null;
 };
 
 function normalizeTerms(query: string): string[] {
@@ -272,6 +299,7 @@ function scoreRow(row: any, terms: string[]): number {
   const mood = String(row.mood || '').toLowerCase();
   const filename = String(row.original_filename || '').toLowerCase();
   let score = 0;
+  
   for (const term of terms) {
     const tagMatch = tags.filter((t) => String(t).toLowerCase().includes(term) || term.includes(String(t).toLowerCase())).length;
     score += tagMatch * 10;
@@ -284,6 +312,18 @@ function scoreRow(row: any, terms: string[]): number {
 }
 
 /**
+ * =============================================================================
+ * SEARCH REFERENCE IMAGES - VERSION 2 (STABLE)
+ * =============================================================================
+ * DO NOT EDIT without explicit permission from the user.
+ * 
+ * Features:
+ * - Filters by productCategory for precise matching
+ * - Fallback to industry filter when category has no matches
+ * 
+ * Last verified: 2026-01-30
+ * =============================================================================
+ * 
  * Search reference images across:
  * - GLOBAL library
  * - USER library for the given uid
@@ -293,23 +333,47 @@ export async function searchReferenceImages(params: {
   query: string;
   limit?: number;
   signedUrlExpiresSeconds?: number;
+  postType?: string; // filter by post type
+  productCategory?: string; // V2: filter by product category (cream, lipstick, serum, etc.)
+  industry?: string; // V2: fallback filter by industry (beauty, fashion, etc.)
 }): Promise<ReferenceImageSearchResult[]> {
   await ensureSchema();
   const pool = getPool();
   const limit = params.limit || 3;
   const terms = normalizeTerms(params.query);
 
+  // Build query with post_type, productCategory, and industry filters (V2)
+  let whereClause = `(scope = 'global' OR (scope = 'user' AND owner_uid = $1))`;
+  const queryParams: any[] = [params.uid];
+  
+  if (params.postType && params.postType.trim().length > 0) {
+    queryParams.push(params.postType.trim().toLowerCase());
+    whereClause += ` AND post_type = $${queryParams.length}`;
+  }
+  
+  // V2: Filter by product_category (primary filter)
+  if (params.productCategory && params.productCategory.trim().length > 0) {
+    queryParams.push(params.productCategory.trim().toLowerCase());
+    whereClause += ` AND LOWER(product_category) = $${queryParams.length}`;
+  }
+  
+  // V2: Filter by industry (fallback filter when productCategory not specified)
+  if (params.industry && params.industry.trim().length > 0) {
+    queryParams.push(params.industry.trim().toLowerCase());
+    whereClause += ` AND LOWER(industry) = $${queryParams.length}`;
+  }
+
   // Pull a bounded candidate set then score in JS (simple + avoids dynamic SQL scoring).
   // We bias towards higher-ranked & recently created.
   const candidates = await pool.query(
     `
-    SELECT id, scope, owner_uid, original_filename, s3_bucket, s3_key, tags, industry, aesthetic, mood, design_guidelines, ranking, created_at
+    SELECT id, scope, owner_uid, original_filename, s3_bucket, s3_key, tags, industry, aesthetic, mood, design_guidelines, ranking, created_at, post_type, product_category, text_in_image, text_analysis
     FROM reference_images
-    WHERE scope = 'global' OR (scope = 'user' AND owner_uid = $1)
+    WHERE ${whereClause}
     ORDER BY ranking DESC, created_at DESC
     LIMIT 250
     `,
-    [params.uid]
+    queryParams
   );
 
   const expires = params.signedUrlExpiresSeconds ?? 10 * 60; // 10m
@@ -328,6 +392,10 @@ export async function searchReferenceImages(params: {
         design_guidelines: row.design_guidelines && typeof row.design_guidelines === 'object' ? row.design_guidelines : {},
         relevance_score: 0,
         ranking: typeof row.ranking === 'number' ? row.ranking : 1,
+        post_type: row.post_type || null,
+        product_category: row.product_category || null,
+        text_in_image: row.text_in_image || null,
+        text_analysis: row.text_analysis && typeof row.text_analysis === 'object' ? row.text_analysis : null,
       }))
     );
   }
@@ -359,6 +427,10 @@ export async function searchReferenceImages(params: {
           design_guidelines: row.design_guidelines && typeof row.design_guidelines === 'object' ? row.design_guidelines : {},
           relevance_score: x.score,
           ranking: typeof row.ranking === 'number' ? row.ranking : 1,
+          post_type: row.post_type || null,
+          product_category: row.product_category || null,
+          text_in_image: row.text_in_image || null,
+          text_analysis: row.text_analysis && typeof row.text_analysis === 'object' ? row.text_analysis : null,
         } as ReferenceImageSearchResult;
       })
     );
@@ -378,6 +450,10 @@ export async function searchReferenceImages(params: {
       design_guidelines: row.design_guidelines && typeof row.design_guidelines === 'object' ? row.design_guidelines : {},
       relevance_score: 0,
       ranking: typeof row.ranking === 'number' ? row.ranking : 1,
+      post_type: row.post_type || null,
+      product_category: row.product_category || null,
+      text_in_image: row.text_in_image || null,
+      text_analysis: row.text_analysis && typeof row.text_analysis === 'object' ? row.text_analysis : null,
     }))
   );
 }

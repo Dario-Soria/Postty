@@ -5,11 +5,33 @@ import { Spinner } from "@nextui-org/react";
 import { useAuth } from "@/contexts/AuthContext";
 import LoginScreen from "@/app/components/LoginScreen";
 
+type PostTypeOption = {
+  type: string;
+  label: string;
+  exampleImage: { url: string; id: string };
+};
+
+type ReferenceOption = {
+  id: string;
+  url: string;
+  description?: string;
+  tags?: string[];
+  design_guidelines?: any;
+  text_in_image?: string;
+  post_type?: string;
+};
+
 type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
   imageUrl?: string;
+  // New fields for rich responses
+  postTypeOptions?: PostTypeOption[];
+  referenceOptions?: ReferenceOption[];
+  selectedReference?: ReferenceOption;
+  productThumbnail?: string;
+  readyToGenerate?: boolean;
 };
 
 export default function V3Page() {
@@ -67,9 +89,107 @@ export default function V3Page() {
   const [isSending, setIsSending] = React.useState(false);
   const [clientSessionId, setClientSessionId] = React.useState<string | null>(null);
   const [isFirstPost, setIsFirstPost] = React.useState<boolean | null>(null); // null = loading
+  const [selectedReference, setSelectedReference] = React.useState<ReferenceOption | null>(null);
+  const [productThumbnail, setProductThumbnail] = React.useState<string | null>(null);
+  const [readyToGenerate, setReadyToGenerate] = React.useState(false);
+  const [isGenerating, setIsGenerating] = React.useState(false);
+  const [loadingMessageIndex, setLoadingMessageIndex] = React.useState(0);
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
+  
+  // Microphone / Audio Recording state
+  const [isRecording, setIsRecording] = React.useState(false);
+  const [isTranscribing, setIsTranscribing] = React.useState(false);
+  const [audioLevels, setAudioLevels] = React.useState<number[]>([0, 0, 0, 0, 0]); // 5 EQ bars
+  const [micError, setMicError] = React.useState<string | null>(null);
+  
+  // Audio recording refs
+  const mediaRecorderRef = React.useRef<MediaRecorder | null>(null);
+  const audioChunksRef = React.useRef<BlobPart[]>([]);
+  const audioStreamRef = React.useRef<MediaStream | null>(null);
+  const audioContextRef = React.useRef<AudioContext | null>(null);
+  const analyserRef = React.useRef<AnalyserNode | null>(null);
+  const animationFrameRef = React.useRef<number | null>(null);
+  
+  // Determine current loading stage based on conversation state
+  type LoadingStage = 'analyzing_product' | 'searching_references' | 'applying_changes';
+  
+  const loadingStage = React.useMemo((): LoadingStage => {
+    if (selectedReference) {
+      return 'applying_changes';
+    }
+    // Check if we've already shown reference options (means we're past product analysis)
+    const hasShownReferences = messages.some(m => m.referenceOptions && m.referenceOptions.length > 0);
+    const hasShownPostTypes = messages.some(m => m.postTypeOptions && m.postTypeOptions.length > 0);
+    
+    if (hasShownPostTypes && !hasShownReferences) {
+      return 'searching_references';
+    }
+    
+    return 'analyzing_product';
+  }, [selectedReference, messages]);
+
+  // Loading messages by stage - designed to NOT repeat (stops at last message)
+  const loadingMessagesByStage: Record<LoadingStage, string[]> = {
+    analyzing_product: [
+      "Analizando tu producto",
+      "Identificando características principales",
+      "Estudiando la iluminación",
+      "Evaluando composición y ángulos",
+      "Detectando colores dominantes",
+      "Analizando texturas y materiales",
+      "Extrayendo estilo visual",
+      "Casi listo..."
+    ],
+    searching_references: [
+      "Buscando inspiración",
+      "Explorando estilos similares",
+      "Filtrando referencias relevantes",
+      "Comparando opciones visuales",
+      "Analizando tendencias",
+      "Seleccionando las mejores coincidencias",
+      "Preparando opciones para vos",
+      "Ya casi..."
+    ],
+    applying_changes: [
+      "Aplicando tus cambios",
+      "Ajustando composición",
+      "Refinando detalles",
+      "Optimizando resultado",
+      "Procesando ajustes finales",
+      "Puliendo la imagen",
+      "Últimos retoques",
+      "Casi listo..."
+    ]
+  };
+
+  const loadingMessages = loadingMessagesByStage[loadingStage];
   const inputRef = React.useRef<HTMLInputElement>(null);
   const previousUserIdRef = React.useRef<string | null>(null);
+  const referenceInputRef = React.useRef<HTMLInputElement>(null);
+
+  // Track previous loading stage to reset index when stage changes
+  const prevLoadingStageRef = React.useRef<LoadingStage>(loadingStage);
+  
+  // Reset loading message index when stage changes
+  React.useEffect(() => {
+    if (prevLoadingStageRef.current !== loadingStage) {
+      setLoadingMessageIndex(0);
+      prevLoadingStageRef.current = loadingStage;
+    }
+  }, [loadingStage]);
+
+  // Cycle through loading messages while waiting (stops at last message, doesn't repeat)
+  React.useEffect(() => {
+    if (isTyping || isSending || isGenerating) {
+      const interval = setInterval(() => {
+        // Stop at the last message instead of looping back
+        setLoadingMessageIndex((prev) => Math.min(prev + 1, loadingMessages.length - 1));
+      }, 2500); // Change message every 2.5 seconds for better pacing
+      return () => clearInterval(interval);
+    } else {
+      setLoadingMessageIndex(0); // Reset when done loading
+    }
+  }, [isTyping, isSending, isGenerating, loadingMessages.length]);
 
   // Generate session ID
   const makeFreshSessionId = React.useCallback(() => {
@@ -92,6 +212,10 @@ export default function V3Page() {
       setIsSending(false);
       setClientSessionId(null);
       setIsFirstPost(null); // Reset to trigger re-fetch
+      setSelectedReference(null);
+      setProductThumbnail(null);
+      setReadyToGenerate(false);
+      setIsGenerating(false);
     }
     
     previousUserIdRef.current = currentUserId;
@@ -174,7 +298,7 @@ export default function V3Page() {
   };
 
   // Handle sending message to agent
-  const handleSendMessage = async (text?: string, uploadedFile?: File) => {
+  const handleSendMessage = async (text?: string, uploadedFile?: File, isReferenceUpload?: boolean) => {
     const messageText = text || inputValue.trim();
     if (!messageText && !uploadedFile) return;
     if (isSending || isTyping) return;
@@ -184,12 +308,16 @@ export default function V3Page() {
     // Add user message to chat
     const uiMessage = uploadedFile && !messageText ? "📸 Imagen subida" : messageText;
     const backendMessage = uploadedFile && (!messageText || messageText === "📸 Imagen subida")
-      ? "[User uploaded product image]"
+      ? isReferenceUpload ? "[User uploaded reference image]" : "[User uploaded product image]"
       : messageText;
 
     if (uploadedFile) {
       const imageUrl = URL.createObjectURL(uploadedFile);
       addUserMessage(uiMessage, imageUrl);
+      // Save product thumbnail for context display
+      if (!isReferenceUpload && !productThumbnail) {
+        setProductThumbnail(imageUrl);
+      }
     } else {
       addUserMessage(uiMessage);
     }
@@ -206,6 +334,9 @@ export default function V3Page() {
       if (clientSessionId) formData.append("sessionId", clientSessionId);
       if (uploadedFile) {
         formData.append("image", uploadedFile);
+        if (isReferenceUpload) {
+          formData.append("isReferenceUpload", "true");
+        }
       }
       if (user?.uid) {
         formData.append("userId", user.uid);
@@ -222,13 +353,36 @@ export default function V3Page() {
 
       const result = await response.json();
 
+      // Handle different response types
       if (result.type === "text") {
+        // Check if ready to generate flag is set
+        if (result.readyToGenerate) {
+          setReadyToGenerate(true);
+        }
         addAssistantMessage(result.text || "");
       } else if (result.type === "image") {
-        addAssistantMessage(result.text || "¡Listo! Acá está tu imagen 🎉", result.imageUrl);
+        setReadyToGenerate(false);
+        setIsGenerating(false);
+        addAssistantMessage(result.text || "¡Listo! Acá está tu imagen", result.imageUrl);
+      } else if (result.type === "post_type_options") {
+        // Step 1: Show post type options with images
+        const msg: Message = {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: result.text || "",
+          postTypeOptions: result.postTypes,
+          productThumbnail: productThumbnail || undefined,
+        };
+        setMessages((prev) => [...prev, msg]);
       } else if (result.type === "reference_options") {
-        // For now, just show the text - reference selection can be added later
-        addAssistantMessage(result.text || "Seleccioná una referencia");
+        // Step 3: Show reference options carousel
+        const msg: Message = {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: result.text || "",
+          referenceOptions: result.references,
+        };
+        setMessages((prev) => [...prev, msg]);
       }
     } catch (error) {
       console.error("Error sending message:", error);
@@ -236,6 +390,305 @@ export default function V3Page() {
     } finally {
       setIsSending(false);
     }
+  };
+
+  // Handle post type selection
+  const handlePostTypeSelect = (postType: PostTypeOption) => {
+    handleSendMessage(postType.label);
+  };
+
+  // Handle reference selection
+  const handleReferenceSelect = async (reference: ReferenceOption) => {
+    setSelectedReference(reference);
+    
+    // Add user message with reference thumbnail
+    addUserMessage("📷 Referencia seleccionada", reference.url);
+    
+    setIsSending(true);
+    
+    try {
+      const formData = new FormData();
+      formData.append("agentType", "product-showcase");
+      formData.append("message", `[User selected reference: ${reference.id}]`);
+      formData.append("conversationHistory", JSON.stringify(
+        messages.map((m) => ({ role: m.role, content: m.content }))
+      ));
+      formData.append("selectedReferenceId", reference.id);
+      formData.append("selectedReferenceUrl", reference.url);
+      if (clientSessionId) formData.append("sessionId", clientSessionId);
+      if (user?.uid) formData.append("userId", user.uid);
+
+      const response = await fetch("/api/agent-chat", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to get response from agent");
+      }
+
+      const result = await response.json();
+      
+      if (result.type === "text") {
+        if (result.readyToGenerate) {
+          setReadyToGenerate(true);
+        }
+        addAssistantMessage(result.text || "");
+      }
+    } catch (error) {
+      console.error("Error:", error);
+      addAssistantMessage("Lo siento, hubo un error. Por favor intenta de nuevo.");
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  // Handle custom reference upload
+  const handleReferenceUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      if (!file.type.startsWith("image/")) {
+        alert("Por favor subí un archivo de imagen");
+        return;
+      }
+      if (file.size > 10 * 1024 * 1024) {
+        alert("La imagen es muy grande. Máximo 10MB");
+        return;
+      }
+      // Create a custom reference from uploaded file
+      const imageUrl = URL.createObjectURL(file);
+      const customRef: ReferenceOption = {
+        id: `custom-${Date.now()}`,
+        url: imageUrl,
+        description: "Referencia personalizada",
+      };
+      setSelectedReference(customRef);
+      handleSendMessage("", file, true);
+    }
+  };
+
+  // ============ MICROPHONE / AUDIO FUNCTIONS ============
+  
+  // Cleanup audio resources
+  const cleanupAudio = React.useCallback(() => {
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
+    if (audioStreamRef.current) {
+      audioStreamRef.current.getTracks().forEach(track => track.stop());
+      audioStreamRef.current = null;
+    }
+    analyserRef.current = null;
+    mediaRecorderRef.current = null;
+    setAudioLevels([0, 0, 0, 0, 0]);
+  }, []);
+
+  // Update EQ levels from analyser - runs continuously while recording
+  const updateAudioLevels = React.useCallback(() => {
+    const analyser = analyserRef.current;
+    if (!analyser) {
+      return;
+    }
+    
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    analyser.getByteFrequencyData(dataArray);
+    
+    // Get overall volume from lower frequencies where voice is (0-40% of spectrum)
+    const voiceRange = Math.floor(bufferLength * 0.4);
+    let totalEnergy = 0;
+    for (let i = 0; i < voiceRange; i++) {
+      totalEnergy += dataArray[i];
+    }
+    const avgEnergy = totalEnergy / voiceRange;
+    const normalizedVolume = Math.min(1, avgEnergy / 100);
+    
+    // Create 5 bars with slight variation based on different frequency sub-ranges
+    // This makes all bars move while still reflecting the audio
+    const levels: number[] = [];
+    const subRangeSize = Math.floor(voiceRange / 5);
+    
+    for (let i = 0; i < 5; i++) {
+      const start = i * subRangeSize;
+      const end = start + subRangeSize;
+      let sum = 0;
+      for (let j = start; j < end; j++) {
+        sum += dataArray[j];
+      }
+      const bandAvg = sum / subRangeSize;
+      // Mix band-specific level with overall volume for more uniform movement
+      const bandLevel = Math.min(1, bandAvg / 100);
+      const mixedLevel = (bandLevel * 0.4) + (normalizedVolume * 0.6);
+      // Add slight random variation for visual interest
+      const variation = 0.9 + Math.random() * 0.2;
+      levels.push(Math.min(1, mixedLevel * variation));
+    }
+    
+    setAudioLevels(levels);
+    animationFrameRef.current = requestAnimationFrame(updateAudioLevels);
+  }, []);
+
+  // Start microphone capture
+  const startMicCapture = async () => {
+    try {
+      if (!navigator?.mediaDevices?.getUserMedia) {
+        throw new Error("Micrófono no soportado en este navegador");
+      }
+      
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioStreamRef.current = stream;
+      
+      // Setup AudioContext and Analyser for EQ visualization
+      const audioContext = new AudioContext();
+      audioContextRef.current = audioContext;
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.7;
+      source.connect(analyser);
+      analyserRef.current = analyser;
+      
+      // Setup MediaRecorder
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
+        ? 'audio/webm;codecs=opus' 
+        : MediaRecorder.isTypeSupported('audio/webm') 
+          ? 'audio/webm' 
+          : 'audio/mp4';
+      
+      audioChunksRef.current = [];
+      const recorder = new MediaRecorder(stream, { mimeType });
+      mediaRecorderRef.current = recorder;
+      
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
+      
+      recorder.start();
+      
+      // Start EQ animation
+      animationFrameRef.current = requestAnimationFrame(updateAudioLevels);
+      
+    } catch (err) {
+      cleanupAudio();
+      throw err;
+    }
+  };
+
+  // Stop capture and return audio blob
+  const stopMicCapture = async (): Promise<Blob | null> => {
+    return new Promise((resolve) => {
+      const recorder = mediaRecorderRef.current;
+      
+      if (!recorder || recorder.state === 'inactive') {
+        cleanupAudio();
+        resolve(null);
+        return;
+      }
+      
+      recorder.onstop = () => {
+        const mimeType = recorder.mimeType || 'audio/webm';
+        const blob = new Blob(audioChunksRef.current, { type: mimeType });
+        audioChunksRef.current = [];
+        cleanupAudio();
+        resolve(blob.size > 0 ? blob : null);
+      };
+      
+      recorder.stop();
+    });
+  };
+
+  // Transcribe audio blob
+  const transcribeAudio = async (blob: Blob) => {
+    setIsTranscribing(true);
+    try {
+      const form = new FormData();
+      const ext = blob.type.includes('wav') ? 'wav' 
+        : blob.type.includes('mp4') ? 'mp4' 
+        : blob.type.includes('ogg') ? 'ogg' 
+        : 'webm';
+      form.set('audio', blob, `voice.${ext}`);
+      
+      const res = await fetch('/api/transcribe', { method: 'POST', body: form });
+      const data = await res.json();
+      
+      if (data?.status !== 'success') {
+        throw new Error(data?.message || 'Error en la transcripción');
+      }
+      
+      const transcript = typeof data?.text === 'string' ? data.text.trim() : '';
+      if (transcript) {
+        setInputValue(prev => prev ? `${prev} ${transcript}` : transcript);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Error al transcribir';
+      setMicError(msg);
+      setTimeout(() => setMicError(null), 3000);
+    } finally {
+      setIsTranscribing(false);
+    }
+  };
+
+  // Mic button handlers - Click to start, click again to stop
+  const handleMicClick = async () => {
+    if (isRecording) {
+      // Stop recording
+      setIsRecording(false);
+      
+      try {
+        const blob = await stopMicCapture();
+        const MIN_AUDIO_BYTES = 2048;
+        
+        if (!blob || blob.size < MIN_AUDIO_BYTES) {
+          setMicError('Audio muy corto, intentá de nuevo');
+          setTimeout(() => setMicError(null), 3000);
+          return;
+        }
+        
+        await transcribeAudio(blob);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Error al procesar audio';
+        setMicError(msg);
+        setTimeout(() => setMicError(null), 3000);
+      }
+    } else {
+      // Start recording
+      if (isBusy || !hasMessages) return;
+      
+      setMicError(null);
+      
+      try {
+        await startMicCapture();
+        setIsRecording(true);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'No se pudo iniciar el micrófono';
+        setMicError(msg);
+        setTimeout(() => setMicError(null), 3000);
+        cleanupAudio();
+      }
+    }
+  };
+
+  // Cleanup on unmount
+  React.useEffect(() => {
+    return () => {
+      cleanupAudio();
+    };
+  }, [cleanupAudio]);
+
+  // ============ END MICROPHONE FUNCTIONS ============
+
+  // Handle generate button click
+  const handleGenerate = async () => {
+    if (!readyToGenerate || isGenerating) return;
+    setIsGenerating(true);
+    handleSendMessage("Generar");
   };
 
   // Handle file selection - now sends to agent
@@ -279,7 +732,7 @@ export default function V3Page() {
     }
   };
 
-  const isBusy = isSending || isTyping;
+  const isBusy = isSending || isTyping || isGenerating || isRecording || isTranscribing;
   const hasMessages = messages.length > 0;
 
   // Close dropdown when clicking outside
@@ -310,12 +763,20 @@ export default function V3Page() {
   // User is authenticated - show main app
   return (
     <div className="min-h-screen w-full bg-white text-slate-900">
-      {/* Hidden File Input */}
+      {/* Hidden File Input for Product */}
       <input
         type="file"
         ref={fileInputRef}
         onChange={handleFileSelect}
-        accept="image/*,video/*"
+        accept="image/*"
+        className="hidden"
+      />
+      {/* Hidden File Input for Reference */}
+      <input
+        type="file"
+        ref={referenceInputRef}
+        onChange={handleReferenceUpload}
+        accept="image/*"
         className="hidden"
       />
       {/* Logo - Top Left */}
@@ -338,71 +799,71 @@ export default function V3Page() {
       <div className="fixed z-40 
         bottom-6 left-1/2 -translate-x-1/2 flex-row
         sm:bottom-auto sm:left-6 sm:top-1/2 sm:-translate-y-1/2 sm:translate-x-0 sm:flex-col
-        flex gap-2 sm:gap-3 p-1.5 sm:p-2 rounded-full bg-[#f5f5f5]"
+        flex gap-1.5 sm:gap-2 p-1.5 sm:p-2 rounded-full bg-[#f5f5f5]"
       >
         <button 
-          className={`p-2 sm:p-2 rounded-full transition-all group cursor-pointer ${activeLeftMenu === 'home' ? 'bg-white' : ''}`}
+          className={`p-2 rounded-full transition-all group cursor-pointer ${activeLeftMenu === 'home' ? 'bg-white' : ''}`}
           title="Home"
           onClick={() => setActiveLeftMenu('home')}
         >
           <img 
             src="/icons/home-line.svg" 
             alt="Home" 
-            className={`w-4 h-4 sm:w-5 sm:h-5 transition-opacity ${activeLeftMenu === 'home' ? 'opacity-100' : 'opacity-40 group-hover:opacity-100'}`}
+            className={`w-4 h-4 sm:w-[18px] sm:h-[18px] transition-opacity ${activeLeftMenu === 'home' ? 'opacity-100' : 'opacity-40 group-hover:opacity-100'}`}
           />
         </button>
         <button 
-          className={`p-2 sm:p-2 rounded-full transition-all group cursor-pointer ${activeLeftMenu === 'posts' ? 'bg-white' : ''}`}
+          className={`p-2 rounded-full transition-all group cursor-pointer ${activeLeftMenu === 'posts' ? 'bg-white' : ''}`}
           title="Posts"
           onClick={() => setActiveLeftMenu('posts')}
         >
           <img 
             src="/icons/image-01.svg" 
             alt="Posts" 
-            className={`w-4 h-4 sm:w-5 sm:h-5 transition-opacity ${activeLeftMenu === 'posts' ? 'opacity-100' : 'opacity-40 group-hover:opacity-100'}`}
+            className={`w-4 h-4 sm:w-[18px] sm:h-[18px] transition-opacity ${activeLeftMenu === 'posts' ? 'opacity-100' : 'opacity-40 group-hover:opacity-100'}`}
           />
         </button>
         <button 
-          className={`p-2 sm:p-2 rounded-full transition-all group cursor-pointer ${activeLeftMenu === 'reels' ? 'bg-white' : ''}`}
+          className={`p-2 rounded-full transition-all group cursor-pointer ${activeLeftMenu === 'reels' ? 'bg-white' : ''}`}
           title="Reels"
           onClick={() => setActiveLeftMenu('reels')}
         >
           <img 
             src="/icons/video-recorder.svg" 
             alt="Reels" 
-            className={`w-4 h-4 sm:w-5 sm:h-5 transition-opacity ${activeLeftMenu === 'reels' ? 'opacity-100' : 'opacity-40 group-hover:opacity-100'}`}
+            className={`w-4 h-4 sm:w-[18px] sm:h-[18px] transition-opacity ${activeLeftMenu === 'reels' ? 'opacity-100' : 'opacity-40 group-hover:opacity-100'}`}
           />
         </button>
       </div>
 
       {/* Top Right Pill - Feedback, Notifications, Profile */}
       <div className="fixed top-4 right-4 sm:top-5 sm:right-8 z-40" ref={profileDropdownRef}>
-        <div className="flex items-center gap-2 sm:gap-3 p-1.5 sm:p-2 rounded-full bg-[#f5f5f5]">
+        <div className="flex items-center gap-1.5 sm:gap-2 p-1.5 sm:p-2 rounded-full bg-[#f5f5f5]">
           <button 
-            className={`p-2 sm:p-2 rounded-full transition-all group cursor-pointer ${showFeedbackModal ? 'bg-white' : ''}`}
+            className={`p-2 rounded-full transition-all group cursor-pointer ${showFeedbackModal ? 'bg-white' : ''}`}
             title="Feedback"
             onClick={() => { setShowFeedbackModal(true); setShowFeedbackBlur(true); }}
           >
             <img 
               src="/icons/message-chat-circle.svg" 
               alt="Feedback" 
-              className={`w-4 h-4 sm:w-5 sm:h-5 transition-opacity ${showFeedbackModal ? 'opacity-100' : 'opacity-40 group-hover:opacity-100'}`}
+              className={`w-4 h-4 sm:w-[18px] sm:h-[18px] transition-opacity ${showFeedbackModal ? 'opacity-100' : 'opacity-40 group-hover:opacity-100'}`}
             />
           </button>
           <button 
-            className={`p-2 sm:p-2 rounded-full transition-all group cursor-pointer ${activeRightMenu === 'notifications' ? 'bg-white' : ''}`}
+            className={`p-2 rounded-full transition-all group cursor-pointer ${activeRightMenu === 'notifications' ? 'bg-white' : ''}`}
             title="Notifications"
             onClick={() => setActiveRightMenu(activeRightMenu === 'notifications' ? null : 'notifications')}
           >
             <img 
               src="/icons/bell-01.svg" 
               alt="Notifications" 
-              className={`w-4 h-4 sm:w-5 sm:h-5 transition-opacity ${activeRightMenu === 'notifications' ? 'opacity-100' : 'opacity-40 group-hover:opacity-100'}`}
+              className={`w-4 h-4 sm:w-[18px] sm:h-[18px] transition-opacity ${activeRightMenu === 'notifications' ? 'opacity-100' : 'opacity-40 group-hover:opacity-100'}`}
             />
           </button>
           {/* Profile Photo */}
           <button 
-            className={`rounded-full transition-all cursor-pointer ${showProfileDropdown ? 'ring-2 ring-gray-300' : ''}`}
+            className={`rounded-full transition-all cursor-pointer overflow-hidden ${showProfileDropdown ? 'ring-2 ring-gray-300' : ''}`}
             title="Profile"
             onClick={() => setShowProfileDropdown(!showProfileDropdown)}
           >
@@ -410,14 +871,15 @@ export default function V3Page() {
               <img 
                 src={user.photoURL} 
                 alt="Profile" 
-                className="w-8 h-8 sm:w-9 sm:h-9 rounded-full object-cover"
+                className="w-7 h-7 sm:w-8 sm:h-8 rounded-full object-cover"
+                referrerPolicy="no-referrer"
               />
             ) : (
-              <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-gray-300 flex items-center justify-center">
+              <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-gray-300 flex items-center justify-center">
                 <img 
                   src="/icons/user-01.svg" 
                   alt="Profile" 
-                  className="w-4 h-4 sm:w-5 sm:h-5 opacity-60"
+                  className="w-3.5 h-3.5 sm:w-4 sm:h-4 opacity-60"
                 />
               </div>
             )}
@@ -456,7 +918,7 @@ export default function V3Page() {
                 alt="Logout" 
                 className="w-4 h-4 opacity-50 flex-shrink-0"
               />
-              <span className="text-sm text-gray-600">Logout</span>
+              <span className="text-sm text-gray-600">Cerrar sesión</span>
             </button>
           </div>
         )}
@@ -464,12 +926,13 @@ export default function V3Page() {
 
       {/* Main Content Area */}
       {/* Chatbox starts below top pill, same spacing on all sides relative to pills */}
-      <div className="fixed top-[88px] bottom-8 left-4 right-4 sm:left-[100px] sm:right-8 flex flex-col pb-16 sm:pb-0">
+      <div className="fixed top-[88px] bottom-8 left-4 right-4 sm:left-[96px] sm:right-8 flex flex-col pb-16 sm:pb-0">
         {/* Main Chat Container */}
-        <div className="w-full h-full flex flex-col rounded-[32px] border border-gray-200 bg-white">
+        <div className="w-full h-full flex flex-col rounded-[32px] border border-gray-200 bg-white overflow-hidden">
           
           {/* Chat Content Area */}
-          <div className="flex-1 overflow-y-auto p-4 sm:p-8">
+          <div className="flex-1 relative overflow-hidden">
+            <div className="h-full overflow-y-auto p-5 sm:px-8 sm:py-6 scrollbar-hide">
             {!hasMessages ? (
               /* Welcome Box - Dashed border, hover effect, clickable to upload */
               <div className="h-full flex items-center justify-center">
@@ -497,73 +960,216 @@ export default function V3Page() {
               </div>
             ) : (
               /* Chat Messages */
-              <div className="space-y-4 max-w-3xl mx-auto">
+              <div className="space-y-4 relative w-full">
                 {messages.map((msg) => (
                   <div 
                     key={msg.id} 
-                    className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+                    className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"} animate-in fade-in slide-in-from-bottom-2 duration-200`}
                   >
-                    <div
-                      className={`max-w-[80%] rounded-[20px] px-4 py-3 ${
-                        msg.role === "user"
-                          ? "bg-gray-900 text-white"
-                          : "bg-[#f5f5f5] text-gray-900"
-                      }`}
-                    >
-                      {/* Message text */}
-                      {msg.content && (
-                        <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.content}</p>
-                      )}
-
-                      {/* User uploaded image */}
-                      {msg.role === "user" && msg.imageUrl && (
-                        <img
-                          src={msg.imageUrl}
-                          alt="Uploaded"
-                          className="mt-2 rounded-lg max-w-[200px]"
-                        />
-                      )}
-
-                      {/* Generated image */}
-                      {msg.role === "assistant" && msg.imageUrl && (
-                        <div className="mt-3">
-                          <img
-                            src={msg.imageUrl}
-                            alt="Generated"
-                            className="w-full rounded-xl"
-                          />
-                          <div className="flex gap-2 mt-3">
-                            <button
-                              onClick={() => {
-                                const link = document.createElement("a");
-                                link.href = msg.imageUrl!;
-                                link.download = `postty-${Date.now()}.png`;
-                                link.click();
+                    {/* 🚨 PROTECTED: Agent message styling - See flag below for user messages */}
+                    {msg.role === "assistant" && (
+                      <div className="w-full">
+                        {/* Top row: Avatar + Product thumbnail + Text - limited to 40% */}
+                        <div className="flex items-start gap-2 max-w-[40%]">
+                          {/* Avatar P - Postty brand with ITC Benguiat font */}
+                          <div className="w-5 h-5 rounded-full bg-gray-900 flex items-center justify-center shrink-0">
+                            <span 
+                              className="text-white text-[10px]"
+                              style={{ 
+                                fontFamily: 'var(--font-logo)',
+                                letterSpacing: '-0.04em',
+                                transform: 'scaleY(0.85)'
                               }}
-                              className="flex-1 py-2 px-3 bg-gray-900 text-white text-xs font-medium rounded-full hover:bg-gray-800 transition"
-                            >
-                              Descargar
-                            </button>
-                            <button
-                              className="flex-1 py-2 px-3 border border-gray-200 text-gray-700 text-xs font-medium rounded-full hover:bg-gray-50 transition"
-                            >
-                              Publicar
-                            </button>
+                            >P</span>
                           </div>
+
+                          {/* Product thumbnail next to avatar */}
+                          {msg.productThumbnail && (
+                            <img 
+                              src={msg.productThumbnail} 
+                              alt="Product" 
+                              className="w-8 h-8 rounded-lg object-cover border border-gray-100 shrink-0"
+                            />
+                          )}
+
+                          {/* Message text */}
+                          {msg.content && (
+                            <div 
+                              className="text-[14px] leading-normal text-gray-900"
+                              dangerouslySetInnerHTML={{
+                                __html: msg.content
+                                  .replace(/\*\*(.*?)\*\*/g, '<strong class="font-semibold">$1</strong>')
+                                  .replace(/\n/g, '<br/>')
+                              }}
+                            />
+                          )}
                         </div>
-                      )}
-                    </div>
+
+                        {/* Content below (cards, images, etc) - full width for carousels */}
+                        <div className="ml-7">
+                          {/* 🚨 PROTECTED: Post Type Carousel - horizontal scroll, no scrollbar visible, extends to chatbox edge */}
+                          {/* Post Type Options - Step 1 */}
+                          {msg.postTypeOptions && msg.postTypeOptions.length > 0 && (
+                            <div className="flex gap-4 overflow-x-auto scrollbar-hide pb-2 mt-4">
+                              {msg.postTypeOptions.map((option) => (
+                                <button
+                                  key={option.type}
+                                  onClick={() => handlePostTypeSelect(option)}
+                                  disabled={isBusy}
+                                  className="relative flex-shrink-0 w-64 h-96 rounded overflow-hidden border-2 border-gray-100 hover:border-gray-300 transition-all cursor-pointer group disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  <img 
+                                    src={option.exampleImage.url} 
+                                    alt={option.label}
+                                    className="w-full h-full object-cover"
+                                  />
+                                  {/* Label pill at top */}
+                                  <div className="absolute top-3 left-1/2 -translate-x-1/2">
+                                    <span className="bg-white/95 backdrop-blur-sm px-3 py-1.5 rounded-full text-[11px] font-medium text-gray-900 shadow-sm whitespace-nowrap">
+                                      {option.label}
+                                    </span>
+                                  </div>
+                                  {/* Hover overlay */}
+                                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
+                                </button>
+                              ))}
+                              {/* Spacer for right padding in scroll */}
+                              <div className="flex-shrink-0 w-6" aria-hidden="true" />
+                            </div>
+                          )}
+
+                          {/* 🚨 PROTECTED: Reference Carousel - horizontal scroll, no scrollbar visible, extends to chatbox edge */}
+                          {/* Reference Options - Step 3 (Carousel) */}
+                          {msg.referenceOptions && msg.referenceOptions.length > 0 && (
+                            <div className="mt-6">
+                              <div className="flex gap-4 overflow-x-auto scrollbar-hide pb-2">
+                                {/* Upload custom reference button */}
+                                <button
+                                  onClick={() => referenceInputRef.current?.click()}
+                                  disabled={isBusy}
+                                  className="flex-shrink-0 w-64 h-96 rounded border-2 border-dashed border-gray-200 hover:border-gray-300 hover:bg-gray-50 transition-all cursor-pointer flex flex-col items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" className="text-gray-400">
+                                    <path d="M12 5V19M5 12H19" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                  </svg>
+                                  <span className="text-xs text-gray-500 text-center px-2">Subir referencia</span>
+                                </button>
+
+                                {/* Reference images */}
+                                {msg.referenceOptions.slice(0, 20).map((ref, idx) => (
+                                  <button
+                                    key={ref.id}
+                                    onClick={() => handleReferenceSelect(ref)}
+                                    disabled={isBusy}
+                                    className="relative flex-shrink-0 w-64 h-96 rounded overflow-hidden border-2 border-gray-100 hover:border-gray-300 transition-all cursor-pointer group disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    <img 
+                                      src={ref.url} 
+                                      alt={`Reference ${idx + 1}`}
+                                      className="w-full h-full object-cover"
+                                    />
+                                    {/* Hover overlay */}
+                                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
+                                  </button>
+                                ))}
+                                {/* Spacer for right padding in scroll */}
+                                <div className="flex-shrink-0 w-4" aria-hidden="true" />
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Generated image */}
+                          {msg.imageUrl && (
+                            <div className="mt-3 max-w-md">
+                              <img
+                                src={msg.imageUrl}
+                                alt="Generated"
+                                className="w-full rounded-2xl border border-gray-100"
+                              />
+                              <div className="flex gap-2 mt-3">
+                                <button
+                                  onClick={() => {
+                                    const link = document.createElement("a");
+                                    link.href = msg.imageUrl!;
+                                    link.download = `postty-${Date.now()}.png`;
+                                    link.click();
+                                  }}
+                                  className="flex-1 py-2.5 px-4 bg-gray-900 text-white text-sm font-medium rounded-xl hover:bg-gray-800 transition"
+                                >
+                                  Descargar
+                                </button>
+                                <button
+                                  className="flex-1 py-2.5 px-4 border border-gray-200 text-gray-700 text-sm font-medium rounded-xl hover:bg-gray-50 transition"
+                                >
+                                  Publicar
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ============================================================
+                        🚨 DO NOT MODIFY - PROTECTED MESSAGE BUBBLE STYLING 🚨
+                        ============================================================
+                        This message bubble design is APPROVED and FINALIZED.
+                        Source: "mejores practicas para chat.pdf"
+                        
+                        Key styling that MUST be preserved:
+                        - User messages: rounded-2xl rounded-br-md (bottom-right corner different)
+                        - Agent messages: rounded-2xl rounded-bl-md (bottom-left corner different)
+                        - Padding: px-4 py-2.5
+                        - Font: text-[15px] leading-relaxed
+                        - Colors: bg-gray-100 for user, no background for agent
+                        
+                        ⚠️ BEFORE ANY CHANGES: Always ask the user first!
+                        ============================================================ */}
+                    
+                    {/* User messages - max 40% width, aligned right */}
+                    {msg.role === "user" && msg.content !== "📸 Imagen subida" && (
+                      <div className="ml-auto flex items-center gap-2 max-w-[40%]">
+                        {/* Reference selection with thumbnail */}
+                        {msg.content === "📷 Referencia seleccionada" && msg.imageUrl ? (
+                          <div className="flex items-center gap-2 bg-gray-100 rounded-2xl rounded-br-md px-3 py-2">
+                            <span className="text-[14px] text-gray-900">Referencia seleccionada</span>
+                            <img 
+                              src={msg.imageUrl} 
+                              alt="Reference" 
+                              className="w-8 h-8 rounded-lg object-cover"
+                            />
+                          </div>
+                        ) : (
+                          <div className="bg-gray-100 text-gray-900 rounded-2xl rounded-br-md px-3 py-2">
+                            <p className="text-[14px] leading-relaxed">{msg.content}</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))}
 
                 {/* Typing indicator */}
-                {(isTyping || isSending) && (
-                  <div className="flex justify-start">
-                    <div className="bg-[#f5f5f5] rounded-[20px] px-4 py-3">
-                      <div className="flex gap-1.5">
-                        <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                        <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                        <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                {(isTyping || isSending || isGenerating) && (
+                  <div className="flex justify-start animate-in fade-in duration-200">
+                    <div className="flex items-center gap-2 max-w-[40%]">
+                      <div className="w-5 h-5 rounded-full bg-gray-900 flex items-center justify-center shrink-0">
+                        <span 
+                          className="text-white text-[10px]"
+                          style={{ 
+                            fontFamily: 'var(--font-logo)',
+                            letterSpacing: '-0.04em',
+                            transform: 'scaleY(0.85)'
+                          }}
+                        >P</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {/* Spinning loader */}
+                        <div className="w-5 h-5 border-2 border-gray-200 border-t-gray-400 rounded-full animate-spin" />
+                        {/* Changing text */}
+                        <span className="text-[15px] text-gray-600">
+                          {isGenerating ? "Generando post" : loadingMessages[loadingMessageIndex]}
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -572,57 +1178,109 @@ export default function V3Page() {
                 <div ref={messagesEndRef} />
               </div>
             )}
+            </div>
           </div>
 
           {/* Bottom Input Bar */}
           <div className="p-3 sm:p-4">
-            <form onSubmit={handleSubmit} className="flex items-center gap-2 p-1.5 sm:p-2 rounded-full bg-[#f5f5f5]">
-              {/* Plus Button - Attach files (always enabled and white background) */}
-              <button 
-                type="button"
-                onClick={handleAttachClick}
-                className="p-1.5 rounded-full bg-white transition-colors cursor-pointer group"
-                title="Adjuntar archivo"
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="opacity-40 group-hover:opacity-100 transition-opacity">
-                  <path d="M12 5V19M5 12H19" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-              </button>
+            <div className="flex items-center gap-3">
+              {/* Input form - Enter only sends text, NOT generate */}
+              <form onSubmit={handleSubmit} className="flex-1 flex items-center gap-2 p-1.5 sm:p-2 rounded-full bg-[#f5f5f5]">
+                {/* Plus Button - Attach files (always enabled and white background) */}
+                <button 
+                  type="button"
+                  onClick={handleAttachClick}
+                  className="p-1.5 rounded-full bg-white transition-colors cursor-pointer group"
+                  title="Adjuntar archivo"
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="opacity-40 group-hover:opacity-100 transition-opacity">
+                    <path d="M12 5V19M5 12H19" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </button>
 
-              {/* Input Field */}
-              <input
-                ref={inputRef}
-                type="text"
-                value={inputValue}
-                onChange={(e) => setInputValue(e.target.value)}
-                onKeyDown={handleKeyPress}
-                placeholder={hasMessages ? "Escribí tu mensaje..." : "Sube una foto primero por favor"}
-                disabled={isBusy || !hasMessages}
-                className="flex-1 bg-transparent outline-none text-sm text-gray-700 placeholder-gray-400 py-1 disabled:opacity-50 disabled:cursor-not-allowed"
-              />
+                {/* Input Field */}
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={inputValue}
+                  onChange={(e) => setInputValue(e.target.value)}
+                  onKeyDown={handleKeyPress}
+                  placeholder={hasMessages ? "Describe tu post" : "Sube una foto primero por favor"}
+                  disabled={isBusy || !hasMessages}
+                  className="flex-1 bg-transparent outline-none text-[15px] text-gray-700 placeholder-gray-400 py-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                />
 
-              {/* Microphone Button */}
-              <button 
-                type="button"
-                disabled={isBusy || !hasMessages}
-                className="p-1.5 rounded-full hover:bg-white transition-colors cursor-pointer group disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="opacity-40 group-hover:opacity-100 transition-opacity">
-                  <path d="M19 10V12C19 15.866 15.866 19 12 19M5 10V12C5 15.866 8.13401 19 12 19M12 19V22M8 22H16M12 15C10.3431 15 9 13.6569 9 12V5C9 3.34315 10.3431 2 12 2C13.6569 2 15 3.34315 15 5V12C15 13.6569 13.6569 15 12 15Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-              </button>
+                {/* Microphone Button with EQ Visualization */}
+                {isRecording ? (
+                  /* Recording: EQ Bars + Stop button */
+                  <button 
+                    type="button"
+                    onClick={handleMicClick}
+                    className="flex items-center gap-2 px-3 py-2 rounded-full bg-gray-100 hover:bg-gray-200 transition-all cursor-pointer"
+                  >
+                    {/* EQ Bars */}
+                    <div className="flex items-center gap-[3px] h-[18px]">
+                      {audioLevels.map((level, i) => (
+                        <div
+                          key={i}
+                          className="w-[3px] bg-gray-500 rounded-full"
+                          style={{ 
+                            height: `${Math.max(4, level * 18)}px`,
+                            transition: 'height 50ms ease-out'
+                          }}
+                        />
+                      ))}
+                    </div>
+                    {/* Stop icon */}
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="text-gray-600">
+                      <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>
+                    </svg>
+                  </button>
+                ) : isTranscribing ? (
+                  /* Transcribing indicator */
+                  <div className="flex items-center gap-1.5 px-3 py-1.5">
+                    <div className="w-4 h-4 border-2 border-gray-300 border-t-gray-500 rounded-full animate-spin" />
+                    <span className="text-xs text-gray-500">Transcribiendo...</span>
+                  </div>
+                ) : (
+                  /* Normal mic button */
+                  <button 
+                    type="button"
+                    onClick={handleMicClick}
+                    disabled={(isBusy && !isRecording) || !hasMessages}
+                    title={micError || "Click para grabar"}
+                    className={`p-1.5 rounded-full hover:bg-white transition-colors cursor-pointer group disabled:opacity-40 disabled:cursor-not-allowed ${micError ? 'bg-red-50' : ''}`}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className={`transition-opacity ${micError ? 'text-red-500 opacity-100' : 'opacity-40 group-hover:opacity-100'}`}>
+                      <path d="M19 10V12C19 15.866 15.866 19 12 19M5 10V12C5 15.866 8.13401 19 12 19M12 19V22M8 22H16M12 15C10.3431 15 9 13.6569 9 12V5C9 3.34315 10.3431 2 12 2C13.6569 2 15 3.34315 15 5V12C15 13.6569 13.6569 15 12 15Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  </button>
+                )}
 
-              {/* Send Button */}
-              <button 
-                type="submit"
-                disabled={!inputValue.trim() || isBusy || !hasMessages}
-                className="p-1.5 rounded-full bg-white transition-colors cursor-pointer group disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="opacity-40 group-hover:opacity-100 transition-opacity">
-                  <path d="M18 15L12 9L6 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-              </button>
-            </form>
+                {/* Send Button - always visible */}
+                <button 
+                  type="submit"
+                  disabled={!inputValue.trim() || isBusy || !hasMessages}
+                  className="p-1.5 rounded-full bg-white transition-colors cursor-pointer group disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="opacity-40 group-hover:opacity-100 transition-opacity">
+                    <path d="M18 15L12 9L6 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </button>
+              </form>
+
+              {/* Generate Button - OUTSIDE the form, must be clicked (Enter won't trigger) */}
+              {readyToGenerate && (
+                <button 
+                  type="button"
+                  onClick={handleGenerate}
+                  disabled={isGenerating}
+                  className="px-6 py-2.5 rounded-full bg-gray-900 text-white text-sm font-medium hover:bg-gray-800 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                >
+                  {isGenerating ? "Generando..." : "Generar"}
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>

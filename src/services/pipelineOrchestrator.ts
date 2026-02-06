@@ -41,7 +41,7 @@ export interface PipelineInput {
   };
   textFormat?: string; // User's description of how they want text formatted
   language?: 'es' | 'en';
-  aspectRatio?: '1:1' | '9:16' | '16:9' | '4:3' | '3:4';
+  aspectRatio?: '1:1' | '9:16' | '16:9' | '4:3' | '3:4' | '4:5';
   skipText?: boolean;
   
   // NEW: Gemini text generation params

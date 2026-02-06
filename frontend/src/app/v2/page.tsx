@@ -12,7 +12,6 @@ import { AnalyzingScreen, type ImageAnalyzerResult } from "./_components/Analyzi
 import { DirectGenerateScreen } from "./_components/DirectGenerateScreen";
 import { ConversationalChat } from "./_components/ConversationalChat";
 import { Toast } from "./_components/ui/Toast";
-import { UserProfileMenu } from "./_components/ui/UserProfileMenu";
 import { EmailVerificationScreen } from "./_components/EmailVerificationScreen";
 import { useAuth } from "@/contexts/AuthContext";
 import { reloadUser } from "@/lib/firebase/auth";
@@ -423,11 +422,88 @@ export default function V2Page() {
   }, [authLoading, handleSignOut, instagramHandle, productImageFile, productPrompt, selectedAgent, selectedStyle, showToast, step, textIntent, user, userName, userProfile, profileTimeout]);
 
   return (
-    <div className="min-h-[100dvh] w-full bg-[radial-gradient(1200px_circle_at_20%_-10%,#FCE3C8,transparent_60%),radial-gradient(1000px_circle_at_90%_0%,#EAD5FF,transparent_55%),radial-gradient(900px_circle_at_35%_95%,#BFE7FF,transparent_55%),linear-gradient(180deg,#FCE3C8_0%,#EAD5FF_45%,#BFE7FF_100%)] text-slate-900">
-      {/* User Profile Menu - Show when authenticated and not on welcome screen */}
+    <div className="min-h-[100dvh] w-full bg-white text-slate-900">
+      {/* Logo - Top Left */}
       {user && step > 1 && (
-        <div className="fixed top-5 right-5 sm:top-10 sm:right-10 z-40">
-          <UserProfileMenu onSignOut={handleSignOut} />
+        <div className="fixed top-8 left-8 z-40">
+          <h1 
+            className="text-2xl text-black"
+            style={{ 
+              fontFamily: 'var(--font-logo)',
+              letterSpacing: '-0.04em',
+              fontStyle: 'normal',
+              transform: 'scaleY(0.85)'
+            }}
+          >
+            Postty
+          </h1>
+        </div>
+      )}
+
+      {/* Left Sidebar Pill - Home, Posts, Reels */}
+      {user && step > 1 && (
+        <div 
+          className="fixed left-8 top-1/2 -translate-y-1/2 z-40 flex flex-col gap-1 p-2 rounded-2xl bg-white"
+          style={{
+            boxShadow: `
+              2px 2px 4px rgba(0,0,0,0.06),
+              -1px -1px 2px rgba(255,255,255,0.8),
+              inset 0 0 0 1px rgba(255,255,255,0.9)
+            `,
+          }}
+        >
+          <button 
+            className="p-3 rounded-xl hover:bg-gray-50 transition-colors"
+            title="Home"
+          >
+            <img src="/icons/home-line.svg" alt="Home" className="w-6 h-6 opacity-70" />
+          </button>
+          <button 
+            className="p-3 rounded-xl hover:bg-gray-50 transition-colors"
+            title="Posts"
+          >
+            <img src="/icons/grid-01.svg" alt="Posts" className="w-6 h-6 opacity-70" />
+          </button>
+          <button 
+            className="p-3 rounded-xl hover:bg-gray-50 transition-colors"
+            title="Reels"
+          >
+            <img src="/icons/film-01.svg" alt="Reels" className="w-6 h-6 opacity-70" />
+          </button>
+        </div>
+      )}
+
+      {/* Top Right Pill - Feedback, Notifications, Profile */}
+      {user && step > 1 && (
+        <div 
+          className="fixed top-8 right-8 z-40 flex items-center gap-1 p-2 rounded-2xl bg-white"
+          style={{
+            boxShadow: `
+              2px 2px 4px rgba(0,0,0,0.06),
+              -1px -1px 2px rgba(255,255,255,0.8),
+              inset 0 0 0 1px rgba(255,255,255,0.9)
+            `,
+          }}
+        >
+          <button 
+            className="p-3 rounded-xl hover:bg-gray-50 transition-colors"
+            title="Feedback"
+          >
+            <img src="/icons/message-chat-circle.svg" alt="Feedback" className="w-6 h-6 opacity-70" />
+          </button>
+          <button 
+            className="p-3 rounded-xl hover:bg-gray-50 transition-colors"
+            title="Notifications"
+          >
+            <img src="/icons/bell-01.svg" alt="Notifications" className="w-6 h-6 opacity-70" />
+          </button>
+          <button 
+            className="p-3 rounded-xl hover:bg-gray-50 transition-colors"
+            title="Profile"
+            onClick={() => {/* TODO: Open profile menu */}}
+          >
+            <img src="/icons/user-01.svg" alt="Profile" className="w-6 h-6 opacity-70" />
+          </button>
         </div>
       )}
 

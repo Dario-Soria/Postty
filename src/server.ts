@@ -40,6 +40,7 @@ import postsRoutes from './routes/posts';
 import postsAnalyticsRoutes from './routes/posts-analytics';
 import instagramAuthRoutes from './routes/instagram-auth';
 import userFirstPostRoute from './routes/user-first-post';
+import getPostTypesRoute from './routes/get-post-types';
 import * as logger from './utils/logger';
 
 // Configuration
@@ -118,6 +119,7 @@ async function start(): Promise<void> {
     await fastify.register(postsAnalyticsRoutes);
     await fastify.register(instagramAuthRoutes);
     await fastify.register(userFirstPostRoute);
+    await fastify.register(getPostTypesRoute);
     await fastify.register(chatRoute);
     await fastify.register(posttyArchitectRoute);
     await fastify.register(captionRoute);

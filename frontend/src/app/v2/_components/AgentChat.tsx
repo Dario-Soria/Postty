@@ -1034,7 +1034,7 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
                       <img
                         src={msg.imageUrl}
                         alt="Generated"
-                        className="w-full rounded-xl shadow-sm"
+                        className="w-full rounded-sm shadow-sm"
                       />
                       <div className="flex gap-2 mt-3">
                         <button

@@ -1,3 +1,17 @@
+/**
+ * =============================================================================
+ * SEARCH REFERENCES - VERSION 2 (STABLE)
+ * =============================================================================
+ * DO NOT EDIT without explicit permission from the user.
+ * 
+ * Features:
+ * - Filters by productCategory (cream, lipstick, serum) for precise matching
+ * - Fallback to industry filter when category has no matches
+ * - Category normalization in agent (facial cream -> cream)
+ * 
+ * Last verified: 2026-01-30
+ * =============================================================================
+ */
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as logger from '../utils/logger';
 import { searchReferenceImages } from '../services/referenceLibrarySqlite';
@@ -7,12 +21,15 @@ interface SearchReferencesBody {
   query: string;
   limit?: number;
   userId?: string; // internal-token auth fallback
+  postType?: string; // filter by post type (e.g., 'hero-shot', 'product-on-human')
+  productCategory?: string; // V2: filter by product category (e.g., 'cream', 'lipstick', 'serum')
+  industry?: string; // V2: fallback filter by industry (e.g., 'beauty', 'fashion')
 }
 
 export default async function searchReferencesRoute(fastify: FastifyInstance): Promise<void> {
   fastify.post('/search-references', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      const { query, limit } = request.body as SearchReferencesBody;
+      const { query, limit, postType, productCategory, industry } = request.body as SearchReferencesBody;
 
       if (!query || typeof query !== 'string') {
         return reply.status(400).send({
@@ -47,12 +64,15 @@ export default async function searchReferencesRoute(fastify: FastifyInstance): P
         }
       }
 
-      logger.info(`🔍 Searching reference images for: "${query}"`);
+      logger.info(`🔍 Searching reference images for: "${query}"${postType ? ` (postType: ${postType})` : ''}${productCategory ? ` (productCategory: ${productCategory})` : ''}${industry ? ` (industry: ${industry})` : ''}`);
 
       const results = await searchReferenceImages({
         uid: uid!,
         query,
         limit: limit || 3,
+        postType: postType,
+        productCategory: productCategory, // V2: Filter by product category (cream, lipstick, serum)
+        industry: industry, // V2: Fallback filter by industry
       });
 
       logger.info(`✅ Found ${results.length} reference images`);
@@ -72,6 +92,10 @@ export default async function searchReferencesRoute(fastify: FastifyInstance): P
           design_guidelines: r.design_guidelines,
           relevance_score: r.relevance_score,
           ranking: r.ranking ?? 1,
+          post_type: r.post_type || null,
+          product_category: r.product_category || null,
+          text_in_image: r.text_in_image || null,
+          text_analysis: r.text_analysis || null,
         })),
       });
 

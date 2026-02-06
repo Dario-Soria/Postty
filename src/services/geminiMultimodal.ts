@@ -77,12 +77,34 @@ export type GeminiKeywordResult = {
   keywords: string[];
 };
 
+export type TextElementAnalysis = {
+  type?: string; // Legacy field for backward compatibility
+  detected_text?: string;
+  position?: string;
+  prominence?: string;
+  estimated_purpose?: string; // Legacy field for backward compatibility
+  visual_style?: string;
+  semantic_role?: string;
+};
+
+export type TextAnalysis = {
+  has_text: boolean;
+  text_elements: TextElementAnalysis[];
+  text_count: number;
+  text_hierarchy_summary?: string;
+  text_content_blueprint?: string; // Semantic description for contextual text generation
+};
+
 export type GeminiDesignGuidelinesResult = {
   tags: string[];
   industry: string;
   aesthetic: string;
   mood: string;
   design_guidelines: object;
+  post_type: string | null;
+  product_category: string | null;
+  text_in_image: string | null;
+  text_analysis: TextAnalysis | null;
 };
 
 export type GeminiSubjectMaskResult = {
@@ -186,6 +208,10 @@ export async function extractDesignGuidelinesWithGemini(params: {
       aesthetic: '',
       mood: '',
       design_guidelines: {},
+      post_type: null,
+      product_category: null,
+      text_in_image: null,
+      text_analysis: null,
     };
   }
 
@@ -281,12 +307,47 @@ export async function extractDesignGuidelinesWithGemini(params: {
   // Remove duplicates and limit to reasonable number (increased from 20 to 30 for richer keywords)
   const uniqueTags = Array.from(new Set(tags.filter(t => t.length > 0))).slice(0, 30);
 
+  // Extract post classification
+  const postClassification = parsed.post_classification || {};
+  const postType = postClassification.post_type 
+    ? String(postClassification.post_type).toLowerCase().trim() 
+    : null;
+  const productCategory = postClassification.product_category 
+    ? String(postClassification.product_category).toLowerCase().trim() 
+    : null;
+  const textInImage = postClassification.text_in_image === true ? 'yes' : null;
+
+  // Extract text analysis
+  let textAnalysis: TextAnalysis | null = null;
+  if (postClassification.text_analysis && typeof postClassification.text_analysis === 'object') {
+    const ta = postClassification.text_analysis;
+    textAnalysis = {
+      has_text: ta.has_text === true,
+      text_elements: Array.isArray(ta.text_elements) ? ta.text_elements.map((el: any) => ({
+        type: el.type || undefined, // Legacy field
+        detected_text: el.detected_text || undefined,
+        position: el.position || undefined,
+        prominence: el.prominence || undefined,
+        estimated_purpose: el.estimated_purpose || undefined, // Legacy field
+        visual_style: el.visual_style || undefined,
+        semantic_role: el.semantic_role || undefined,
+      })) : [],
+      text_count: typeof ta.text_count === 'number' ? ta.text_count : 0,
+      text_hierarchy_summary: ta.text_hierarchy_summary || undefined,
+      text_content_blueprint: ta.text_content_blueprint || undefined,
+    };
+  }
+
   return {
     tags: uniqueTags,
     industry,
     aesthetic,
     mood,
     design_guidelines: parsed,
+    post_type: postType,
+    product_category: productCategory,
+    text_in_image: textInImage,
+    text_analysis: textAnalysis,
   };
 }
 

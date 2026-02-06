@@ -10,37 +10,16 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as logger from '../utils/logger';
-import { getPromptTemplateReader } from './promptTemplateReader';
+// NOTE: promptTemplateReader removed in V2 - agent now provides complete prompt
 
 // Note: We use dynamic import for @google/generative-ai to support both libraries
 // The @google/genai library doesn't support gemini-2.5-flash-image model
 
-// Modelo Gemini 2.5 Flash Image (Nano Banana)
-const NANO_BANANA_MODEL = 'gemini-2.5-flash-image';
+// Modelo Gemini 3 Pro Image (Nano Banana Pro) - Better text rendering
+const NANO_BANANA_MODEL = 'gemini-3-pro-image-preview';
 
-/**
- * Build a descriptive font specification from typography style object
- * Format: "serif elegant (thin strokes, flowing style)"
- */
-function buildFontDescription(style: any): string {
-  const fontStyle = style.font_style || 'sans-serif';
-  const fontCharacter = style.font_character || '';
-  const fontNotes = style.font_specific_notes || '';
-  
-  let description = fontStyle;
-  
-  // Add character description if available (inline, not as a separate phrase)
-  if (fontCharacter) {
-    description += ` ${fontCharacter}`;
-  }
-  
-  // Add specific notes in parentheses if available
-  if (fontNotes) {
-    description += ` (${fontNotes})`;
-  }
-  
-  return description;
-}
+// VERSION 3: buildFontDescription removed - NanoBanana now visually analyzes reference for typography
+// Typography instructions from DB are no longer sent to avoid generic fonts
 
 export interface NanoBananaInput {
   /** Path to reference image (from local folder) */
@@ -50,12 +29,12 @@ export interface NanoBananaInput {
   /** User's intent/description for the generation */
   userIntent?: string;
   /** Output aspect ratio */
-  aspectRatio?: '1:1' | '9:16' | '16:9' | '4:3' | '3:4';
+  aspectRatio?: '1:1' | '9:16' | '16:9' | '4:3' | '3:4' | '4:5';
   
   // NEW: Text generation params
   /** User's text to display in the image */
   textContent?: string[];
-  /** Typography style from design_guidelines */
+  /** @deprecated V3: Typography style no longer used - NanoBanana visually analyzes reference */
   typographyStyle?: any;
   /** Product dominant colors for text contrast */
   productColors?: string[];
@@ -146,69 +125,29 @@ function buildGenerationPrompt(params: {
   let basePrompt = '';
   
   if (params.textContent && params.textContent.length > 0) {
-    // Text generation mode - include text in the image
-    // Build text elements string with typography from design_guidelines
-    let textElements = '';
-    params.textContent.forEach((text, index) => {
-      const style = index === 0 
-        ? params.typographyStyle?.headline 
-        : index === 1 
-          ? params.typographyStyle?.subheadline 
-          : params.typographyStyle?.badges;
-      
-      if (style) {
-        textElements += `\nText ${index + 1}: "${text}"`;
-        
-        // Enhanced font description with character and specific notes
-        const fontDesc = buildFontDescription(style);
-        logger.info(`   📝 Text ${index + 1} font description: "${fontDesc}"`);
-        logger.info(`   📝 Text ${index + 1} style object: ${JSON.stringify(style, null, 2)}`);
-        textElements += `\n- Typography: ${fontDesc}`;
-        
-        textElements += `\n- Weight: ${style.font_weight || 'regular'}`;
-        textElements += `\n- Case: ${style.case || 'normal'}`;
-        textElements += `\n- Color: ${style.color || '#FFFFFF'}`;
-        
-        // More specific positioning with Y percentage
-        if (style.position_y_percent) {
-          textElements += `\n- Vertical Position: ${style.position_y_percent}% from top edge`;
-        } else if (style.position) {
-          textElements += `\n- Position: ${style.position}`;
-        }
-        
-        textElements += `\n- Size: ${style.size || 'medium'} (relative to canvas)`;
-        textElements += `\n- Alignment: ${style.alignment || 'center'}`;
-        textElements += `\n- Letter Spacing: ${style.letter_spacing || 'normal'}`;
-        
-        // Add spacing guidance for subheadline
-        if (index === 1 && style.spacing_from_headline) {
-          textElements += `\n- Spacing: ${style.spacing_from_headline} gap from headline above`;
-        }
-        textElements += '\n';
-      } else {
-        textElements += `\nText ${index + 1}: "${text}"\n`;
-      }
-    });
-
-    // Build product colors string
+    // VERSION 3: No typography instructions from DB
+    // NanoBanana must visually analyze the reference image to replicate typography
+    // We only pass the text content - the agent's prompt has instructions for visual analysis
+    
+    // Build product colors string (still useful for contrast guidance)
     let productColors = '';
     if (params.productColors && params.productColors.length > 0) {
       productColors = `PRODUCT DOMINANT COLORS: ${params.productColors.join(', ')}`;
     }
 
-    // Use template reader to build final prompt from prompt.md
-    const reader = getPromptTemplateReader();
-    basePrompt = reader.buildPrompt({
-      userIntent: params.userIntent || 'Professional product photography with elegant composition',
-      sceneDescription,
-      textElements,
-      productColors,
-      aspectRatio: params.aspectRatio,
-    });
-
-    logger.info(`📝 Nano Banana prompt built (WITH TEXT) from template:`);
+    // VERSION 3: Use the agent's complete prompt directly
+    // The agent builds the full prompt in _build_nanobanana_prompt() with === TEXT === section
+    // Typography replication is handled by visual analysis instructions in the agent's prompt
+    // NO typography instructions from DB are passed - NanoBanana must analyze the reference visually
+    basePrompt = params.userIntent || 'Professional product photography with elegant composition';
+    
+    if (productColors) {
+      basePrompt += `\n\n${productColors}`;
+    }
+    
+    logger.info(`📝 VERSION 3: Using agent-provided prompt (NO typography from DB)`);
+    logger.info(`📝 NanoBanana will visually analyze reference for typography`);
     logger.info(`   - Text elements: ${params.textContent.length}`);
-    logger.info(`   - Typography style provided: ${!!params.typographyStyle}`);
     
     // Save prompt to file for debugging
     const debugPromptPath = path.join(process.cwd(), 'temp-uploads', `prompt_${Date.now()}.txt`);
@@ -434,53 +373,18 @@ export async function generateBaseImage(input: NanoBananaInput): Promise<NanoBan
     const filename = `${timestamp}_nanobanana_base.png`;
     const outputPath = path.join(outputDir, filename);
 
-    let imageBuffer: Buffer = Buffer.from(imageBase64, 'base64');
+    // V2: Pass NanoBanana output directly without any resizing
+    // The agent prompt instructs NanoBanana to always output 4:5 and adapt composition
+    // Backend should NOT modify the output - NanoBanana is responsible for aspect ratio
+    const imageBuffer: Buffer = Buffer.from(imageBase64, 'base64');
     
-    // Get image dimensions using sharp
+    // Get image dimensions for logging only
     const sharp = (await import('sharp')).default;
-    let metadata = await sharp(imageBuffer).metadata();
+    const metadata = await sharp(imageBuffer).metadata();
     
-    // FORCE correct aspect ratio by cropping/resizing
-    const targetRatios: Record<string, { width: number; height: number }> = {
-      '1:1': { width: 1080, height: 1080 },
-      '9:16': { width: 1080, height: 1920 },  // Story format
-      '16:9': { width: 1920, height: 1080 },
-      '4:3': { width: 1440, height: 1080 },
-      '3:4': { width: 1080, height: 1440 },
-    };
-    
-    const target = targetRatios[aspectRatio] || targetRatios['1:1'];
-    const currentRatio = (metadata.width || 1) / (metadata.height || 1);
-    const targetRatio = target.width / target.height;
-    
-    logger.info(`📐 Current image: ${metadata.width}x${metadata.height} (ratio: ${currentRatio.toFixed(2)})`);
-    logger.info(`📐 Target: ${target.width}x${target.height} (ratio: ${targetRatio.toFixed(2)})`);
-    
-    // If ratio is significantly different, resize to target.
-    // IMPORTANT: When text is requested for 1:1, avoid cropping (cover) because it can cut off edge text.
-    // Use contain+padding instead so all rendered text stays inside frame.
-    if (Math.abs(currentRatio - targetRatio) > 0.1) {
-      const hasTextRequested = Array.isArray(input.textContent) && input.textContent.length > 0;
-      const useContainPadding = hasTextRequested && aspectRatio === '1:1';
-
-      logger.info(
-        useContainPadding
-          ? `🔄 Resizing image to match ${aspectRatio} using contain+padding (avoid cropping text)...`
-          : `🔄 Resizing image to match ${aspectRatio} aspect ratio...`
-      );
-
-      const resized = sharp(imageBuffer).resize(target.width, target.height, {
-        fit: useContainPadding ? 'contain' : 'cover',
-        position: 'center',
-        background: useContainPadding ? { r: 255, g: 255, b: 255, alpha: 1 } : undefined,
-      });
-
-      const resizedBuffer = await resized.png().toBuffer();
-
-      imageBuffer = Buffer.from(resizedBuffer);
-      metadata = await sharp(imageBuffer).metadata();
-      logger.info(`✅ Resized to: ${metadata.width}x${metadata.height}`);
-    }
+    logger.info(`📐 NanoBanana output: ${metadata.width}x${metadata.height}`);
+    logger.info(`📐 Aspect ratio: ${((metadata.width || 1) / (metadata.height || 1)).toFixed(2)}`);
+    logger.info(`📐 Note: No backend resizing - output passed through directly`);
     
     fs.writeFileSync(outputPath, imageBuffer);
     const finalImageBase64 = imageBuffer.toString('base64');
