@@ -60,6 +60,13 @@ export interface ReferenceJSON {
 
 /**
  * Convert reference JSON to CompositionLayout format for text compositor
+ * 
+ * V2 FIX: Sort JSON texts by font size (descending) before mapping
+ * This ensures the user's first text (headline) maps to the largest text element,
+ * and the second text (subheadline) maps to the smaller one.
+ * 
+ * Previously, mapping was by position order, which caused headline/subheadline swaps
+ * when the reference had the smaller text positioned above the larger one.
  */
 function convertReferenceJSONToLayout(
   refJSON: ReferenceJSON,
@@ -69,8 +76,15 @@ function convertReferenceJSONToLayout(
   logger.info(`   User texts: ${JSON.stringify(userTextArray)}`);
   logger.info(`   JSON texts count: ${refJSON.texts.length}`);
 
-  const elements: TextElement[] = refJSON.texts.map((textSpec, index) => {
-    // Replace content with user's text (by position)
+  // V2 FIX: Sort texts by font size (largest first) to match semantic importance
+  // User sends: [headline (most important), subheadline, ...] 
+  // We map: largest font -> userText[0], second largest -> userText[1], etc.
+  const sortedTexts = [...refJSON.texts].sort((a, b) => b.size_px - a.size_px);
+  
+  logger.info(`   Sorted by size: ${sortedTexts.map(t => `${t.size_px}px`).join(' > ')}`);
+
+  const elements: TextElement[] = sortedTexts.map((textSpec, index) => {
+    // Replace content with user's text (by importance order after sorting)
     const userText = userTextArray[index] || textSpec.content;
     
     logger.info(`   Element ${index}: "${userText}" (${textSpec.font.family} ${textSpec.size_px}px)`);

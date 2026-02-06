@@ -307,7 +307,6 @@ class NanoBananaAgent:
         self.design_changes = None  # Store user's requested design changes
         self.changes_summary = None  # Store summarized version of design changes
         self.text_analysis = None  # Store text analysis from selected reference
-        self.reference_analysis = None  # V5: Store real-time Gemini Vision analysis of reference
         self.last_smart_suggestions = None  # V2: Store smart suggestions for when user accepts them
         self.product_name = None  # Store analyzed product name
         self.product_industry = None  # Store analyzed product industry
@@ -338,46 +337,14 @@ class NanoBananaAgent:
             self.changes_summary = None
             self.text_content = None
             self.text_analysis = None
-            self.reference_analysis = None
             self.design_guidelines = None
             
             # Step 1: Product uploaded, analyze and get post types
             print(f"[DEBUG] Product image uploaded, triggering Step 1: {image_path}")
             return self._handle_get_post_types()
         
-        # Normalize user message for comparisons
-        user_msg_lower = user_message.lower().strip()
-        
-        # ================================================================================
-        # PRIORITY 1: Edit Mode Detection (Step 7) - MUST BE FIRST
-        # After generating an image, ALL messages are treated as edit feedback
-        # except explicit "start over" requests.
-        # ================================================================================
-        if self.current_step == 7 and self.last_generated_image:
-            print(f"[DEBUG] Step 7 (edit mode) active, processing: {user_message[:50]}...")
-            
-            # Check if user clicked "Generar" - apply pending edits
-            if user_msg_lower in ['generar', 'generate']:
-                print(f"[DEBUG] Edit mode: User clicked Generar, calling edit pipeline")
-                return self._handle_edit_pipeline()
-            
-            # Check if user wants to start over with a NEW product
-            start_over_words = ['nuevo producto', 'otra imagen', 'empezar de nuevo', 'otro producto', 
-                               'cambiar producto', 'different product', 'new product', 'start over']
-            if any(word in user_msg_lower for word in start_over_words):
-                print(f"[DEBUG] User wants to start over from edit mode")
-                self.last_generated_image = None
-                self.current_step = 0
-                return {
-                    "type": "text",
-                    "text": "¡Perfecto! Para crear algo nuevo, subí la foto de tu producto usando el botón (+)."
-                }
-            
-            # ALL other messages are edit feedback - let the agent handle conversationally
-            print(f"[DEBUG] Processing edit feedback at Step 7: {user_message[:50]}...")
-            return self._handle_edit_feedback(user_message)
-        
         # Check if user selected a post type (Step 1 -> Step 2)
+        user_msg_lower = user_message.lower().strip()
         
         # First, check against hardcoded keywords for common types
         post_type_keywords = {
@@ -430,13 +397,38 @@ class NanoBananaAgent:
             print(f"[DEBUG] Processing design changes at Step 3")
             return self._handle_design_changes(user_message)
         
-        # Check if we're awaiting text input (Step 4) - USE CONVERSATIONAL FLOW
+        # Check if we're awaiting text input (Step 4)
         if self.awaiting_text_input:
-            print(f"[DEBUG] Processing conversational text flow at Step 4")
-            return self._handle_conversational_text_flow(user_message)
+            print(f"[DEBUG] Processing text input at Step 4")
+            return self._handle_text_confirmed(user_message)
         
-        # NOTE: Step 7 (Edit Mode) detection was MOVED to the beginning of chat()
-        # to ensure it has priority over post type keyword detection.
+        # ================================================================================
+        # VERSION 2 (STABLE) - Edit Mode Detection (Step 7)
+        # DO NOT MODIFY without explicit permission from the user.
+        # ================================================================================
+        # Check if we're in edit mode (Step 7) - user providing feedback on generated image
+        if self.current_step == 7 and self.last_generated_image:
+            # CRITICAL: Check if user clicked "Generar" FIRST before treating as feedback
+            # This fix prevents the infinite thinking bug when user clicks Generate in edit mode
+            if user_msg_lower in ['generar', 'generate']:
+                print(f"[DEBUG] Edit mode: User clicked Generar, calling edit pipeline")
+                return self._handle_edit_pipeline()
+            
+            # Check if user wants to start over
+            start_over_words = ['nuevo', 'otra', 'empezar', 'diferente', 'cambiar producto', 'otro producto']
+            if any(word in user_msg_lower for word in start_over_words):
+                # User wants to start fresh - reset and prompt for new product
+                print(f"[DEBUG] User wants to start over from edit mode")
+                self.last_generated_image = None
+                self.current_step = 0
+                return {
+                    "type": "text",
+                    "text": "¡Perfecto! Para crear algo nuevo, subí la foto de tu producto usando el botón (+)."
+                }
+            
+            # User is providing edit feedback
+            print(f"[DEBUG] Processing edit feedback at Step 7: {user_message[:50]}...")
+            return self._handle_edit_feedback(user_message)
         
         # Check if user clicked "Generar" (Step 5 -> Step 6, or edit mode)
         if user_msg_lower in ['generar', 'generate']:
@@ -1186,29 +1178,26 @@ Responde SOLO con las instrucciones (sin explicaciones adicionales):"""
             print(f"[DEBUG] Error interpreting changes: {e}", file=sys.stderr)
             return user_input  # Fallback: usar el texto original
     
-    def _generate_smart_text_suggestions(self, text_elements: list = None) -> dict:
+    def _generate_smart_text_suggestions(self, text_elements: list) -> dict:
         """
         =======================================================================
-        SMART TEXT SUGGESTIONS - VERSION 5 (REALTIME CONTEXTUAL)
+        SMART TEXT SUGGESTIONS - VERSION 4 (CONTEXTUAL BLUEPRINT)
         =======================================================================
-        Generate contextual text suggestions using REAL-TIME analysis from
-        self.reference_analysis (generated by _analyze_reference_realtime).
+        Generate contextual text suggestions based on the reference's 
+        text_content_blueprint - a semantic description of the text structure.
         
-        NO hardcoded categories. Labels come from Gemini's analysis:
-        - ubicacion: where the text is (using image elements)
-        - tipo: what kind of text it is (Gemini's description)
+        NO hardcoded categories. The LLM reads the blueprint and generates
+        text that matches the EXACT structure and meaning of the reference.
         
-        Returns dict with contextual labels:
-        {
-            "text_1": {"etiqueta": "Título llamativo (en la tapa de la caja)", "sugerencia": "..."},
-            "text_2": {"etiqueta": "Slogan de marca (debajo del título)", "sugerencia": "..."}
-        }
+        Returns dict with suggestions indexed by position in the original list:
+        {"text_1": "...", "text_2": "...", "text_3": "..."}
         or None if generation fails.
         
-        V5 Changes:
-        - Uses self.reference_analysis from real-time Gemini Vision analysis
-        - Labels are fully contextual (generated by Gemini, not hardcoded)
-        - No category classifications in code
+        V4 Changes:
+        - Uses text_content_blueprint for semantic understanding
+        - Passes original detected texts so LLM understands the structure
+        - No hardcoded type categories
+        - Fully contextual to the reference template
         =======================================================================
         """
         product_name = self.product_name or 'Tu producto'
@@ -1218,59 +1207,83 @@ Responde SOLO con las instrucciones (sin explicaciones adicionales):"""
             print("[DEBUG] No product name available, skipping smart suggestions")
             return None
         
-        # V5: Use reference_analysis from real-time analysis
-        if not self.reference_analysis or not self.reference_analysis.get('textos'):
-            print("[DEBUG] No reference_analysis or no textos, skipping smart suggestions")
-            return None
+        # V4: Get the blueprint from text_analysis
+        blueprint = None
+        if self.text_analysis and isinstance(self.text_analysis, dict):
+            blueprint = self.text_analysis.get('text_content_blueprint')
         
-        textos_ref = self.reference_analysis['textos']
-        num_texts = len(textos_ref)
-        
-        # Build description of each text using Gemini's ubicacion + tipo
-        textos_descripcion = []
-        for i, t in enumerate(textos_ref, 1):
-            ubicacion = t.get('ubicacion', 'en la imagen')
-            tipo = t.get('tipo', 'texto')
-            contenido = t.get('contenido', '')
-            palabras = t.get('palabras_aprox', 3)
+        # Build the list of original texts from the reference
+        original_texts = []
+        for i, elem in enumerate(text_elements, 1):
+            detected = elem.get('detected_text', '')
+            position = elem.get('position', '')
+            semantic_role = elem.get('semantic_role', elem.get('type', ''))
+            visual_style = elem.get('visual_style', '')
             
-            textos_descripcion.append(
-                f"Texto {i}:\n"
-                f"  - Ubicación: {ubicacion}\n"
-                f"  - Tipo: {tipo}\n"
-                f"  - Original: \"{contenido}\"\n"
-                f"  - Largo: ~{palabras} palabras"
-            )
+            text_desc = f"Texto {i}: \"{detected}\""
+            if semantic_role:
+                text_desc += f" (rol: {semantic_role})"
+            if position:
+                text_desc += f" [posición: {position}]"
+            if visual_style:
+                text_desc += f" [estilo: {visual_style}]"
+            original_texts.append(text_desc)
         
-        textos_descripcion_str = "\n\n".join(textos_descripcion)
+        original_texts_str = "\n".join(original_texts)
+        num_texts = len(text_elements)
         
-        print(f"[DEBUG] Smart suggestions V5: product={product_name}, num_texts={num_texts}", file=sys.stderr)
+        print(f"[DEBUG] Smart suggestions V4: product={product_name}, num_texts={num_texts}, has_blueprint={blueprint is not None}", file=sys.stderr)
         
-        prompt = f"""Eres un experto en copywriting para productos de belleza y consumo.
+        # V4: Build prompt using blueprint if available
+        if blueprint:
+            prompt = f"""Eres un experto en marketing y copywriting para productos de belleza y consumo.
 
 PRODUCTO DEL USUARIO: "{product_name}" (categoría: {product_category})
 
-TEXTOS DE LA REFERENCIA:
-{textos_descripcion_str}
+DESCRIPCIÓN DEL TEMPLATE DE REFERENCIA:
+{blueprint}
+
+TEXTOS ORIGINALES DE LA REFERENCIA:
+{original_texts_str}
 
 TU TAREA:
-Para CADA texto, genera una versión adaptada al producto del usuario que:
-1. MANTENGA EL MISMO TIPO Y PROPÓSITO (si es un título tipo pregunta, genera un título tipo pregunta)
-2. TENGA LARGO SIMILAR (mismo número aproximado de palabras)
-3. SEA RELEVANTE al producto del usuario
+Genera {num_texts} textos que REPLIQUEN EXACTAMENTE la estructura y el propósito de cada texto original, pero ADAPTADOS al producto del usuario.
+
+REGLAS CRÍTICAS:
+1. Mantén el MISMO propósito semántico de cada texto (si el original es un nombre de ingrediente, genera un nombre de ingrediente real del producto del usuario)
+2. Mantén una longitud SIMILAR a cada texto original
+3. Si el original tiene porcentajes o números, incluye datos similares si los conoces del producto
+4. Si el original es un título de sección (como "KEY INGREDIENTS"), tradúcelo/adáptalo manteniendo su función
+5. Si el original es el nombre de un producto, usa el nombre del producto del usuario
+6. NUNCA uses corchetes [], placeholders, ni textos genéricos como "[Tu texto]"
+7. Responde SOLO en español
+8. Usa tu conocimiento sobre "{product_name}" para generar contenido REAL y RELEVANTE
+
+Responde SOLO con este JSON exacto (sin explicaciones):
+{{"text_1": "...", "text_2": "...", ... "text_{num_texts}": "..."}}
+"""
+        else:
+            # Fallback: Use detected texts directly without blueprint
+            prompt = f"""Eres un experto en marketing y copywriting para productos de belleza y consumo.
+
+PRODUCTO DEL USUARIO: "{product_name}" (categoría: {product_category})
+
+TEXTOS ORIGINALES DE LA REFERENCIA:
+{original_texts_str}
+
+TU TAREA:
+Genera {num_texts} textos que ADAPTEN cada texto original al producto del usuario, manteniendo la misma estructura y propósito.
+
+REGLAS:
+1. Observa cada texto original y entiende su PROPÓSITO (¿es un título? ¿un ingrediente? ¿un beneficio? ¿un nombre de producto?)
+2. Genera un texto equivalente para el producto del usuario
+3. Mantén longitud similar al original
 4. NUNCA uses corchetes [], placeholders, ni textos genéricos
+5. Responde SOLO en español
+6. Usa tu conocimiento real sobre "{product_name}"
 
-Responde en JSON. Para cada texto incluye:
-- "etiqueta": Combina el tipo de texto con su ubicación para que el usuario entienda a cuál te refieres (ej: "Título llamativo (en la tapa de la caja)")
-- "sugerencia": El texto adaptado al producto
-
-Ejemplo de respuesta:
-{{
-  "text_1": {{"etiqueta": "Título llamativo (en la tapa de la caja)", "sugerencia": "¿Lista para brillar?"}},
-  "text_2": {{"etiqueta": "Slogan de marca (debajo del título)", "sugerencia": "vichy mineral 89"}}
-}}
-
-IMPORTANTE: Las etiquetas deben ser DESCRIPTIVAS usando la ubicación y el tipo que te di arriba.
+Responde SOLO con este JSON exacto (sin explicaciones):
+{{"text_1": "...", "text_2": "...", ... "text_{num_texts}": "..."}}
 """
         
         try:
@@ -1279,145 +1292,370 @@ IMPORTANTE: Las etiquetas deben ser DESCRIPTIVAS usando la ubicación y el tipo 
                 contents=[{"role": "user", "parts": [{"text": prompt}]}]
             )
             result = response.text.strip()
-            print(f"[DEBUG] LLM smart suggestions V5 response: {result[:500]}", file=sys.stderr)
+            print(f"[DEBUG] LLM smart suggestions V4 response: {result[:500]}", file=sys.stderr)
             
             # Parse JSON response
             if '{' in result:
                 json_str = result[result.find('{'):result.rfind('}')+1]
                 suggestions = json.loads(json_str)
                 
-                # Validate structure - each entry should have etiqueta and sugerencia
-                validated = {}
+                # Filter out any placeholders that might have slipped through
+                filtered = {}
                 for key, value in suggestions.items():
-                    if isinstance(value, dict):
-                        etiqueta = value.get('etiqueta', f'Texto {key.split("_")[1] if "_" in key else key}')
-                        sugerencia = value.get('sugerencia', '')
-                        if sugerencia and '[' not in sugerencia and ']' not in sugerencia:
-                            validated[key] = {"etiqueta": etiqueta, "sugerencia": sugerencia}
-                    elif isinstance(value, str):
-                        # Backwards compatibility: if LLM returns just strings
-                        if value and '[' not in value and ']' not in value:
-                            # Try to build etiqueta from reference_analysis
-                            idx = int(key.split("_")[1]) - 1 if "_" in key else 0
-                            if idx < len(textos_ref):
-                                t = textos_ref[idx]
-                                tipo = t.get('tipo', 'Texto')
-                                ubicacion = t.get('ubicacion', '')
-                                etiqueta = f"{tipo.capitalize()} ({ubicacion})" if ubicacion else tipo.capitalize()
-                            else:
-                                etiqueta = f"Texto {idx + 1}"
-                            validated[key] = {"etiqueta": etiqueta, "sugerencia": value}
+                    if value and '[' not in value and ']' not in value:
+                        filtered[key] = value
                 
-                print(f"[DEBUG] Parsed smart suggestions V5: {validated}", file=sys.stderr)
-                return validated if validated else None
+                print(f"[DEBUG] Parsed smart suggestions V4: {filtered}", file=sys.stderr)
+                return filtered if filtered else None
         except Exception as e:
-            print(f"[DEBUG] Smart suggestions V5 LLM failed: {e}", file=sys.stderr)
+            print(f"[DEBUG] Smart suggestions V4 LLM failed: {e}", file=sys.stderr)
         
         return None
     
     def _build_nanobanana_prompt(self) -> str:
         """
         =======================================================================
-        BUILD NANOBANANA PROMPT - VERSION 6 (SIMPLIFIED)
+        BUILD NANOBANANA PROMPT - VERSION 5 (STABLE)
         =======================================================================
-        Simplified prompt focusing on core instructions:
-        1. Replicate reference EXACTLY
-        2. Replace product with user's product
-        3. Adapt colors to harmonize with user's product
-        4. For text: maintain EXACT typography, only change the words
+        DO NOT EDIT without explicit permission from the user.
         
-        V6 Changes:
-        - Dramatically simplified prompt
-        - Clear, direct instructions
-        - Focus on visual text replication without hardcoded typography data
+        Build the fixed prompt template for NanoBanana.
+        Uses confirmed user inputs instead of LLM-generated prompts.
+        
+        Features:
+        - Fixed template structure (ROLE, OBJECTIVE, MY PRODUCT, etc.)
+        - Uses self.product_category, self.product_name for product info
+        - V2: Uses _interpret_user_changes() to process design_changes with LLM
+        - V3: Added CRITICAL PRODUCT REPLACEMENT section to ensure reference
+              product is removed and only user's product appears
+        - V4: Added AUTOMATIC COLOR ADAPTATION section to always adapt
+              background colors to harmonize with the user's product palette
+        - V5: Added Rule 11 - ASPECT RATIO 4:5 MANDATORY with composition
+              adaptation (no padding, extend backgrounds instead)
+        - Uses self.text_content for text overlay (headline, subheadline, cta)
+        - Includes enhanced IMMUTABLE RULES for quality control
+        
+        Template based on: nanobanana prompt.pdf
+        Last verified: 2026-01-31
         =======================================================================
         """
+        # === MY PRODUCT section ===
+        product_type = self.product_category or self.product_name or "producto"
         product_name = self.product_name or "producto"
         
-        # Build changes section
+        # === REQUESTED CHANGES section ===
+        # V3: Use _summarize_changes_for_nanobanana() for consistent formatting
+        # This function creates structured, clean instructions from accumulated user messages
         if self.design_changes and self.design_changes.strip():
-            changes = self.design_changes.strip()
+            summarized_changes = self._summarize_changes_for_nanobanana(self.design_changes)
+            
+            if summarized_changes.upper() == "NONE":
+                changes_section = "- None. Keep reference exact."
+            else:
+                # The function already returns properly formatted lines with "- " prefix
+                changes_section = summarized_changes
         else:
-            changes = "Ninguno"
+            changes_section = "- None. Keep reference exact."
         
-        # Build text section from text_content (V5 format with etiqueta/sugerencia)
-        if self.text_content and len(self.text_content) > 0:
-            text_list = []
-            for key, value in self.text_content.items():
-                if isinstance(value, dict):
-                    # New V5 format: {"etiqueta": "...", "sugerencia": "..."}
-                    etiqueta = value.get('etiqueta', key)
-                    sugerencia = value.get('sugerencia', '')
-                    if sugerencia:
-                        text_list.append(f"- {etiqueta}: \"{sugerencia}\"")
-                elif isinstance(value, str) and value:
-                    # Legacy format: just string value
-                    text_list.append(f"- {key}: \"{value}\"")
-            text_section = "\n".join(text_list) if text_list else "Sin texto"
+        # === TEXT section ===
+        # V4: Support dynamic text keys (text_1, text_2, etc.) AND legacy keys for backward compatibility
+        has_text = self.text_content is not None and len(self.text_content) > 0
+        if has_text:
+            text_parts = []
+            
+            # V4: First try the new dynamic format (text_1, text_2, etc.)
+            for i in range(1, 20):  # Support up to 20 text elements
+                text_value = self.text_content.get(f'text_{i}')
+                if text_value and text_value not in [p.split('"')[1] for p in text_parts if '"' in p]:
+                    text_parts.append(f'Text {i}: "{text_value}"')
+            
+            # V4: Fallback to legacy format if no text_N keys found
+            if not text_parts:
+                # Legacy: Collect all headlines (indexed or not)
+                for i in range(1, 10):
+                    headline = self.text_content.get(f'headline_{i}') or (self.text_content.get('headline') if i == 1 else None)
+                    if headline and f'Headline: "{headline}"' not in text_parts:
+                        text_parts.append(f'Headline: "{headline}"')
+                
+                # Legacy: Collect all subheadlines
+                for i in range(1, 10):
+                    subheadline = self.text_content.get(f'subheadline_{i}') or (self.text_content.get('subheadline') if i == 1 else None)
+                    if subheadline and f'Subheadline: "{subheadline}"' not in text_parts:
+                        text_parts.append(f'Subheadline: "{subheadline}"')
+                
+                # Legacy: Collect taglines
+                for i in range(1, 10):
+                    tagline = self.text_content.get(f'tagline_{i}') or (self.text_content.get('tagline') if i == 1 else None)
+                    if tagline and f'Tagline: "{tagline}"' not in text_parts:
+                        text_parts.append(f'Tagline: "{tagline}"')
+                
+                # Legacy: Collect CTAs
+                for i in range(1, 10):
+                    cta = self.text_content.get(f'cta_{i}') or (self.text_content.get('cta') if i == 1 else None)
+                    if cta and f'CTA: "{cta}"' not in text_parts:
+                        text_parts.append(f'CTA: "{cta}"')
+            
+            confirmed_text = "\n".join([f"- {part}" for part in text_parts])
+            # VERSION 4: Strict visual typography replication
+            text_section = f"""=== CRITICAL: TEXT DESIGN REPLICATION ===
+
+YOU MUST REPLICATE THE EXACT TEXT DESIGN FROM THE REFERENCE IMAGE.
+
+STEP 1 - ANALYZE THE REFERENCE TEXT VISUALLY:
+Look CAREFULLY at the text in the REFERENCE IMAGE and identify:
+- FONT WEIGHT: Is it thin, light, regular, medium, semi-bold, bold, or black?
+- FONT STYLE: Is it serif, sans-serif, script, display, or decorative?
+- TEXT POSITION: Is text on the LEFT side, RIGHT side, CENTER, TOP, or BOTTOM?
+- TEXT COLOR: What is the exact color?
+- TEXT SIZE: How large is each text element relative to the image?
+- TEXT EFFECTS: Are there shadows, outlines, gradients, or other effects?
+- LETTER SPACING: Is it tight, normal, or wide?
+
+STEP 2 - REPLICATE EXACTLY WHAT YOU SEE:
+- If the reference has THIN/LIGHT font → use THIN/LIGHT font (NOT bold)
+- If the reference has text on the LEFT → keep text on the LEFT (NOT center)
+- If the reference has small text → keep it small (NOT large)
+- If the reference has specific spacing → match that spacing exactly
+
+STEP 3 - TEXT CONTENT (use ONLY these texts):
+{confirmed_text}
+
+=== FORBIDDEN ACTIONS (VIOLATING ANY = FAILURE) ===
+1. FORBIDDEN: Using BOLD font when the reference has THIN/LIGHT font
+2. FORBIDDEN: Moving text to CENTER when the reference has text on LEFT/RIGHT
+3. FORBIDDEN: Using Arial, Helvetica, Times New Roman, or any generic system font
+4. FORBIDDEN: Changing the relative size of text elements
+5. FORBIDDEN: Adding text that is not in the list above
+6. FORBIDDEN: Copying/reading text from the reference image
+7. FORBIDDEN: Spelling errors - text must be EXACTLY as provided
+8. FORBIDDEN: Repositioning text elements to different locations than the reference
+
+=== MANDATORY ===
+- The typography must LOOK IDENTICAL to the reference (same weight, style, position)
+- Only the TEXT CONTENT changes (to what is listed above)
+- The DESIGN/STYLE of the text stays the same as the reference"""
         else:
-            text_section = "Sin texto"
+            text_section = "- No text."
         
-        prompt = f"""TAREA: Recrear la REFERENCIA con el producto del usuario.
+        # === BUILD FULL PROMPT ===
+        # V3: Enhanced prompt with explicit product replacement instructions
+        prompt = f"""=== ROLE ===
+You are an expert Instagram product post designer. Your job is to replicate visual references with different products.
 
-PRODUCTO: {product_name} (usar la imagen adjunta)
+=== OBJECTIVE ===
+Take the REFERENCE IMAGE and recreate it exactly, but replace the original product with MY PRODUCT.
 
-INSTRUCCIONES PRINCIPALES:
-1. REPLICAR la referencia EXACTAMENTE
-2. REEMPLAZAR el producto de la referencia con MI PRODUCTO
-3. ADAPTAR colores de fondo para que armonicen con mi producto
+=== MY PRODUCT ===
+- Type: {product_type}
+- Name: {product_name}
+- Visual: Use the product image I provided (attached)
 
-CAMBIOS SOLICITADOS POR EL USUARIO:
-{changes}
+=== CRITICAL: PRODUCT REPLACEMENT ===
+- The product shown in the REFERENCE IMAGE MUST BE COMPLETELY REMOVED
+- ONLY MY PRODUCT (the one I uploaded/attached) should appear in the final image
+- DO NOT show any part of the original product from the reference
+- The reference is ONLY for style, composition, lighting, and background - NOT for the product itself
+- If the reference shows a jar, bottle, tube, or any product: REMOVE IT and put MY PRODUCT instead
 
-TEXTO A USAR:
+=== CRITICAL: USE EXACT UPLOADED PRODUCT ===
+
+YOU MUST USE THE EXACT PRODUCT IMAGE I UPLOADED:
+- The product I attached has SPECIFIC branding, labels, text, and visual design
+- DO NOT create a "similar" or "generic" product - use MY EXACT PRODUCT
+- If my product has text/labels (brand name, product name, etc.) - they MUST appear in the output
+- The product in the output must be RECOGNIZABLE as the same product I uploaded
+- DO NOT simplify, clean up, or modify the product appearance
+- PRESERVE: All text, logos, colors, shape, cap, label design from my product
+
+FORBIDDEN:
+- Creating a generic/blank version of my product
+- Removing branding or labels from my product
+- Changing the product's visual design or shape
+- Generating a "cleaner" version without the original details
+
+=== CRITICAL: LAYOUT REPLICATION ===
+
+YOU ARE NOT CREATING A NEW IMAGE. YOU ARE REPLICATING AN EXISTING DESIGN.
+
+REPLICATE THESE ELEMENTS EXACTLY FROM THE REFERENCE:
+1. PRODUCT POSITION: If product is on LEFT, keep it on LEFT. If CENTER, keep CENTER. If RIGHT, keep RIGHT.
+2. TEXT POSITION: If text is on the RIGHT side with bullets/icons, keep text on RIGHT with bullets/icons. If text is on TOP, keep on TOP.
+3. BACKGROUND: Replicate the EXACT background color/gradient from the reference (unless user requests a change in REQUESTED CHANGES)
+4. COMPOSITION: Same arrangement of ALL elements - do NOT rearrange anything
+5. GRAPHIC ELEMENTS: If reference has icons, lines, bullet points, or decorative elements - YOU MUST INCLUDE THEM in the same positions
+6. VISUAL HIERARCHY: Same size relationships between elements
+7. TYPOGRAPHY STYLE: Same font weight, style, and visual appearance as the reference
+
+FORBIDDEN LAYOUT CHANGES (unless explicitly requested in REQUESTED CHANGES):
+- FORBIDDEN: Moving product from its original position
+- FORBIDDEN: Moving text to a different location (e.g., from RIGHT to CENTER)
+- FORBIDDEN: Removing icons, bullet points, lines, or graphic elements that exist in reference
+- FORBIDDEN: Changing background color unless requested
+- FORBIDDEN: Creating a "cleaner" or "simpler" version - replicate EXACTLY
+- FORBIDDEN: Interpreting or reimagining the design
+- FORBIDDEN: Changing typography style (thin to bold, etc.)
+
+THE OUTPUT MUST LOOK LIKE THE REFERENCE, WITH ONLY THESE EXCEPTIONS:
+1. Product is replaced with MY PRODUCT (always mandatory)
+2. Text content is replaced with the provided text (always mandatory)
+3. Any specific changes listed in "REQUESTED CHANGES" section below (user-requested modifications)
+
+EVERYTHING ELSE must remain IDENTICAL to the reference unless explicitly requested by the user.
+
+=== REFERENCE IMAGE ===
+Use the reference for:
+- EXACT composition and layout (replicate it)
+- EXACT positions of all elements
+- EXACT background colors/gradients (unless user requests change)
+- EXACT typography style and positioning
+- Lighting and atmosphere
+- All graphic elements (icons, bullets, lines)
+
+=== REQUESTED CHANGES ===
+IMPORTANT: These changes are IN ADDITION to replacing the product. Product replacement is ALWAYS mandatory regardless of what changes are requested.
+{changes_section}
+
+=== TEXT ===
 {text_section}
 
-REGLA CRÍTICA PARA EL TEXTO:
-- Analiza visualmente la REFERENCIA para entender: tipografía, tamaño, posición, color, efectos, sombras
-- Mantener EXACTAMENTE: el mismo estilo visual del texto de la referencia
-- Solo cambiar las PALABRAS por las que te di arriba
-- NO modificar NADA del diseño visual del texto
-- El texto debe verse IDÉNTICO al de la referencia, solo con diferentes palabras
+=== IMMUTABLE RULES ===
+0. PRODUCT REPLACEMENT IS ALWAYS MANDATORY - regardless of what changes the user requests, MY PRODUCT must ALWAYS replace the reference product. User changes are ADDITIONAL to this core requirement.
+1. Format: Instagram Post 4:5 (1080x1350px)
+2. The ORIGINAL PRODUCT from the reference MUST NOT appear - replace it 100% with MY PRODUCT
+3. DO NOT invent elements not present in the reference
+4. DO NOT modify anything the user did not request
+5. NO spelling errors in text
+6. MY PRODUCT must look professional and be the protagonist
+7. Commercial advertising quality
+8. If there is text, it must be 100% legible
+9. Maintain total visual coherence with the reference (except the product)
+10. When in doubt: REMOVE the reference product, KEEP everything else
+11. ASPECT RATIO 4:5 IS MANDATORY: Adapt composition to 4:5 by extending backgrounds if needed. NEVER add padding or whitespace.
+12. LAYOUT IS SACRED: The spatial arrangement of ALL elements must be IDENTICAL to the reference. Product position, text position, graphic elements, icons, bullets - ALL must match the reference layout exactly unless the user explicitly requests a change."""
 
-REGLAS ADICIONALES:
-- Formato: Instagram 4:5 (1080x1350px)
-- El producto de la referencia debe ser REMOVIDO completamente
-- Solo MI PRODUCTO debe aparecer
-- Mantener la misma composición y layout
-- Calidad profesional de publicidad
-- Sin errores de ortografía en el texto
-"""
         return prompt
     
     def _build_nanobanana_edit_prompt(self, user_feedback: str) -> str:
         """
         =======================================================================
-        BUILD NANOBANANA EDIT PROMPT - VERSION 4 (SIMPLIFIED)
+        BUILD NANOBANANA EDIT PROMPT - VERSION 3.1 (SUPER FUNCIONAL)
         =======================================================================
-        Simplified edit prompt focusing on minimal changes.
+        ⚠️  ASK USER BEFORE EDITING THIS FUNCTION
         
-        V4 Changes:
-        - Dramatically simplified prompt
-        - Clear, direct instructions
-        - For text changes: maintain typography, only change words
+        Build the fixed prompt template for NanoBanana EDIT mode.
+        Used when user provides feedback after seeing generated image.
+        
+        Features:
+        - Only applies requested changes to existing image
+        - Preserves everything not explicitly mentioned
+        - Critical constraint: editing, not recreating
+        - V2: Includes original reference design_guidelines for context
+        - V3: Added Rule 9 - ASPECT RATIO 4:5 MANDATORY (no padding)
+        - V3.1: Receives pre-summarized changes from _summarize_changes_for_nanobanana()
+        
+        Template based on: nanobanan edit output prompt.pdf
+        Last verified working: 2026-01-31
         =======================================================================
         """
-        user_changes = user_feedback.strip() if user_feedback else "No se especificaron cambios"
+        # Extract user's requested changes
+        user_changes = user_feedback.strip() if user_feedback else "No changes specified"
         
-        prompt = f"""TAREA: Aplicar cambios mínimos a la imagen existente.
+        # V2: Build reference style section from design_guidelines
+        reference_style_section = ""
+        if self.selected_reference and self.selected_reference.get('design_guidelines'):
+            dg = self.selected_reference.get('design_guidelines', {})
+            style_parts = []
+            
+            # Background info
+            bg = dg.get('background', {})
+            if bg:
+                bg_type = bg.get('type', 'unknown')
+                bg_colors = bg.get('colors', [])
+                bg_elements = bg.get('elements', '')
+                if bg_type or bg_colors:
+                    style_parts.append(f"Background: {bg_type}, colors {bg_colors}, {bg_elements}")
+            
+            # Lighting info
+            lighting = dg.get('lighting', {})
+            if lighting:
+                light_type = lighting.get('type', '')
+                light_temp = lighting.get('color_temperature', '')
+                if light_type:
+                    style_parts.append(f"Lighting: {light_type}, {light_temp}")
+            
+            # Color palette
+            palette = dg.get('color_palette', {})
+            if palette:
+                primary = palette.get('primary', '')
+                secondary = palette.get('secondary', '')
+                temp = palette.get('temperature', '')
+                if primary:
+                    style_parts.append(f"Colors: primary {primary}, secondary {secondary}, {temp}")
+            
+            # Overall style
+            overall = dg.get('overall_style', {})
+            if overall:
+                mood = overall.get('mood', '')
+                aesthetic = overall.get('aesthetic', '')
+                if mood or aesthetic:
+                    style_parts.append(f"Style: {aesthetic}, mood {mood}")
+            
+            if style_parts:
+                reference_style_section = f"""
+=== ORIGINAL REFERENCE STYLE (for context) ===
+The user selected a reference with these characteristics:
+- {chr(10).join(['- ' + p for p in style_parts])}
+If the user mentions "reference" or "original", they mean this style.
+"""
+        
+        prompt = f"""=== ROLE ===
+You are an expert Instagram product post designer. Your job is to make ONLY the requested changes to an existing image.
 
-CAMBIOS SOLICITADOS:
+=== OBJECTIVE ===
+Take the PROVIDED IMAGE and apply ONLY the specific changes listed below. Everything else must remain identical.
+
+=== CRITICAL CONSTRAINT ===
+You are NOT creating a new image. You are editing an existing one.
+- DO NOT reinterpret the image
+- DO NOT add creative improvements
+- DO NOT change anything not explicitly requested
+- DO NOT modify composition, lighting, colors, or any other element unless specifically asked
+{reference_style_section}
+=== REQUESTED CHANGES ===
 {user_changes}
 
-REGLAS:
-1. Mantener TODO exactamente igual EXCEPTO lo que se pide cambiar
-2. Si el cambio es de texto: mantener tipografía, tamaño, posición, color - solo cambiar las palabras
-3. NO reinterpretar ni mejorar nada
-4. NO agregar elementos nuevos
-5. El resultado debe ser casi idéntico al input, con solo el cambio pedido
+=== ELEMENTS TO PRESERVE (DO NOT TOUCH) ===
+- Product appearance and position
+- Background and all props
+- Lighting and shadows
+- Color palette and grading
+- Composition and framing
+- Text style, font, color, and position (if present)
+- Overall mood and atmosphere
+- Every single detail NOT mentioned in REQUESTED CHANGES
 
-FORMATO: Mantener 4:5 (1080x1350px)
-"""
+=== TEXT RULES (CRITICAL) ===
+1. If the image has text, preserve it EXACTLY as it appears unless the user explicitly asks to change it
+2. If the user requests text changes:
+   - Keep the EXACT same font style, weight, color, and effects
+   - Keep the EXACT same position and size
+   - Only change the specific text content requested
+3. DO NOT add any new text unless the user explicitly requests it
+4. DO NOT remove any text unless the user explicitly requests it
+5. DO NOT modify text spelling, capitalization, or formatting unless requested
+6. Text must remain 100% legible and professional
+
+=== IMMUTABLE RULES ===
+1. Format: Instagram Post 4:5 (1080x1350px) - MUST remain the same
+2. Change ONLY what is explicitly requested - nothing more
+3. NO spelling errors if text is modified
+4. NO creative liberties or "improvements"
+5. NO reinterpretation of the image
+6. The output must be identical to the input EXCEPT for the requested changes
+7. If in doubt, DO NOT change it
+8. Commercial advertising quality must be maintained
+9. ASPECT RATIO 4:5 IS MANDATORY: The output MUST be 4:5. NEVER add padding, whitespace, or black bars."""
+
         return prompt
     
     def _handle_edit_feedback(self, user_feedback: str) -> Dict[str, Any]:
@@ -2018,128 +2256,9 @@ Tu respuesta (SOLO el resumen, sin comillas ni explicaciones):"""
                 "text": "Tuve un problema buscando referencias. ¿Querés continuar sin referencia?"
             }
     
-    def _analyze_reference_realtime(self, reference_image_url: str) -> dict:
-        """
-        =======================================================================
-        ANALYZE REFERENCE IN REALTIME - VERSION 1
-        =======================================================================
-        Analyzes the reference image with Gemini Vision in real-time.
-        Gemini describes what it SEES using natural language and the ELEMENTS
-        of the image. No hardcoded categories.
-        
-        Returns dict with:
-        - contenido_principal: description of what's in the image
-        - elementos_clave: key elements found
-        - textos: list of text elements with ubicacion, tipo, contenido, palabras_aprox
-        - estilo: brief style description
-        =======================================================================
-        """
-        print(f"[DEBUG] Analyzing reference in realtime: {reference_image_url[:80]}...")
-        
-        prompt = """Analiza esta imagen de referencia para Instagram.
-
-DESCRIBE LO QUE VES:
-
-1. CONTENIDO PRINCIPAL: Qué elementos hay en la imagen? Describe de forma simple.
-   Ejemplos: "una caja de producto abierta mostrando dos frascos", 
-   "una mujer aplicándose crema en el rostro", "un frasco sobre fondo degradado rosa"
-
-2. TEXTOS VISIBLES: Para CADA texto que veas:
-   
-   a) DONDE ESTÁ: Describe la ubicación usando los ELEMENTOS de la imagen.
-      - Si hay una caja: "en la tapa interior de la caja", "en el lateral de la caja"
-      - Si hay una persona: "junto al rostro", "sobre el hombro"
-      - Si hay un producto: "arriba del producto", "al lado del frasco"
-      - Usa los elementos reales, no solo "arriba/abajo/izquierda"
-   
-   b) QUÉ TIPO DE TEXTO ES: Describe su función según lo que ves.
-      - "un título grande tipo pregunta que llama la atención"
-      - "el nombre de la marca en letra pequeña"
-      - "un slogan corto"
-      - "texto descriptivo sobre ingredientes"
-      - "una frase motivacional"
-   
-   c) QUÉ DICE: El contenido literal del texto
-   
-   d) LARGO: Cuántas palabras tiene aproximadamente
-
-3. ESTILO VISUAL: Describe brevemente (elegante, minimalista, fresco, etc.)
-
-Responde en JSON:
-{
-  "contenido_principal": "descripción de los elementos de la imagen",
-  "elementos_clave": ["elemento1", "elemento2", "elemento3"],
-  "textos": [
-    {
-      "ubicacion": "dónde está usando los elementos (ej: en la tapa de la caja)",
-      "tipo": "qué tipo de texto es (ej: título grande tipo pregunta)",
-      "contenido": "texto literal",
-      "palabras_aprox": numero
-    }
-  ],
-  "estilo": "descripción breve"
-}
-
-IMPORTANTE: Usa los ELEMENTOS de la imagen para describir dónde está cada texto.
-No digas solo "arriba" - di "en la tapa de la caja" o "sobre el producto".
-Si no hay texto visible, devuelve "textos": []
-"""
-        
-        try:
-            # Load the reference image
-            image_part = _load_image(reference_image_url)
-            if not image_part:
-                print(f"[DEBUG] Failed to load reference image for analysis")
-                return {
-                    "contenido_principal": "un diseño profesional",
-                    "elementos_clave": [],
-                    "textos": [],
-                    "estilo": "profesional"
-                }
-            
-            # Call Gemini Vision
-            response = self.client.models.generate_content(
-                model=self.config.text_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}, image_part]}]
-            )
-            
-            result_text = response.text.strip()
-            print(f"[DEBUG] Reference analysis raw response: {result_text[:500]}...")
-            
-            # Parse JSON response
-            if '{' in result_text:
-                json_str = result_text[result_text.find('{'):result_text.rfind('}')+1]
-                analysis = json.loads(json_str)
-                
-                print(f"[DEBUG] Reference analysis parsed: contenido={analysis.get('contenido_principal', '')[:50]}, textos={len(analysis.get('textos', []))}")
-                return analysis
-            else:
-                print(f"[DEBUG] No JSON found in reference analysis response")
-                return {
-                    "contenido_principal": "un diseño profesional",
-                    "elementos_clave": [],
-                    "textos": [],
-                    "estilo": "profesional"
-                }
-                
-        except Exception as e:
-            print(f"[DEBUG] Error analyzing reference: {e}")
-            return {
-                "contenido_principal": "un diseño profesional",
-                "elementos_clave": [],
-                "textos": [],
-                "estilo": "profesional"
-            }
-    
     def _handle_reference_selected(self, reference: Dict[str, Any]) -> Dict[str, Any]:
         """
-        =======================================================================
         Step 3: Analyze selected reference and ask about changes
-        VERSION 3: Real-time Gemini Vision analysis - no hardcoded categories
-        =======================================================================
-        Uses _analyze_reference_realtime() to describe the reference in real-time
-        instead of relying only on pre-analyzed DB data.
-        =======================================================================
         """
         debug_tracker.log_step("3.0 STEP3_REFERENCE_SELECTED", {
             "reference_id": reference.get('id', 'unknown'),
@@ -2148,57 +2267,160 @@ Si no hay texto visible, devuelve "textos": []
             "text_in_image": reference.get('text_in_image')
         })
         
-        # 1. Store reference and DB guidelines (as complement for colors, etc.)
         self.selected_reference = reference
         self.design_guidelines = reference.get('design_guidelines', {})
-        self.text_analysis = reference.get('text_analysis', {})  # Keep for backwards compatibility
+        self.text_analysis = reference.get('text_analysis', {})
         self.current_step = 3
         
-        # 2. REAL-TIME ANALYSIS: Call Gemini Vision to analyze the reference
-        reference_url = reference.get('imageUrl') or reference.get('url')
-        print(f"[DEBUG] Starting real-time reference analysis for: {reference_url[:80] if reference_url else 'NO URL'}...")
-        
-        self.reference_analysis = self._analyze_reference_realtime(reference_url)
-        
-        debug_tracker.log_step("3.1 REALTIME_ANALYSIS_COMPLETE", {
-            "contenido_principal": self.reference_analysis.get('contenido_principal', '')[:100],
-            "elementos_clave": self.reference_analysis.get('elementos_clave', []),
-            "num_textos": len(self.reference_analysis.get('textos', [])),
-            "estilo": self.reference_analysis.get('estilo', '')
+        debug_tracker.log_step("3.1 DESIGN_GUIDELINES_LOADED", {
+            "typography": bool(self.design_guidelines.get('typography') if self.design_guidelines else False),
+            "background": self.design_guidelines.get('background', {}).get('type') if self.design_guidelines else None,
+            "text_elements_count": len(self.text_analysis.get('text_elements', [])) if self.text_analysis else 0
         })
         
-        # 3. Build description using what Gemini SAW (not DB data)
-        descripcion = self.reference_analysis.get('contenido_principal', 'un diseño profesional')
-        elementos = self.reference_analysis.get('elementos_clave', [])
-        textos = self.reference_analysis.get('textos', [])
-        estilo = self.reference_analysis.get('estilo', '')
+        # Build description of what we see in the reference based on design_guidelines
+        # Using simple, non-technical language that anyone can understand
+        elements = []
+        modifiable_suggestions = []
         
-        # Build response message
-        text = f"¡Buena elección! Veo que tu referencia muestra **{descripcion}**."
+        # Helper function to convert hex colors to simple names
+        def hex_to_simple_color(hex_color):
+            if not hex_color:
+                return None
+            hex_color = hex_color.upper().replace('#', '')
+            color_map = {
+                'FFFFFF': 'blanco', 'FFF': 'blanco',
+                '000000': 'negro', '000': 'negro',
+                'FF0000': 'rojo', 'F00': 'rojo',
+                '00FF00': 'verde', '0F0': 'verde',
+                '0000FF': 'azul', '00F': 'azul',
+                'FFFF00': 'amarillo', 'FF0': 'amarillo',
+                'FFA500': 'naranja',
+                'FFC0CB': 'rosa', 'FFB6C1': 'rosa claro',
+                '808080': 'gris', 'C0C0C0': 'gris claro',
+                'F5F5DC': 'beige', 'FFFDD0': 'crema',
+                'E6F7FF': 'celeste', 'ADD8E6': 'celeste',
+                '87CEEB': 'celeste', '77B5FE': 'azul claro',
+            }
+            if hex_color in color_map:
+                return color_map[hex_color]
+            # Try to detect general color family
+            if hex_color.startswith('FF') or hex_color.startswith('F'):
+                if 'FF' in hex_color[2:4]:
+                    return 'amarillo/naranja'
+            return None  # Return None if we can't simplify
         
-        # Add style info if available
-        if estilo:
-            text += f"\n\nEl estilo es **{estilo}**."
+        # Helper to translate English terms to simple Spanish
+        def simplify_term(term):
+            translations = {
+                'female': 'una mujer', 'male': 'un hombre',
+                'posing': 'posando', 'applying product': 'aplicándose el producto',
+                'holding product': 'sosteniendo el producto',
+                'soft-diffused': 'suave y difusa', 'soft diffused': 'suave y difusa',
+                'natural': 'natural', 'dramatic': 'dramática',
+                'calm': 'tranquilo', 'energetic': 'energético',
+                'luxurious': 'lujosa', 'minimal': 'minimalista',
+                'clinical': 'clínico/profesional', 'playful': 'divertido',
+                'elegant': 'elegante', 'modern': 'moderno',
+            }
+            term_lower = term.lower() if term else ''
+            return translations.get(term_lower, term)
         
-        # Add text info if there are text elements
-        if textos:
-            text += f"\n\nTiene **{len(textos)} elemento(s) de texto**:"
-            for i, t in enumerate(textos, 1):
-                ubicacion = t.get('ubicacion', '')
-                tipo = t.get('tipo', '')
-                # Create a brief description combining location and type
-                if ubicacion and tipo:
-                    text += f"\n- {tipo.capitalize()} ({ubicacion})"
-                elif tipo:
-                    text += f"\n- {tipo.capitalize()}"
+        # Check for people
+        content_elements = self.design_guidelines.get('content_elements', {}) if self.design_guidelines else {}
+        people = content_elements.get('people', {})
+        has_people = people.get('present', False)
+        if has_people:
+            gender_raw = people.get('gender_presentation', ['persona'])[0] if people.get('gender_presentation') else 'persona'
+            activity_raw = people.get('activity', ['usando el producto'])[0] if people.get('activity') else 'usando el producto'
+            gender = simplify_term(gender_raw)
+            activity = simplify_term(activity_raw)
+            elements.append(f"{gender} {activity}")
+            modifiable_suggestions.append("el modelo o persona")
         
-        text += "\n\n**¿Te gustaría mantener el diseño actual o modificar algún elemento?**"
+        # Check for background
+        background = self.design_guidelines.get('background', {}) if self.design_guidelines else {}
+        bg_type = background.get('type', '')
+        bg_colors = background.get('colors', [])
+        if bg_type:
+            if bg_type == 'solid':
+                # Try to get simple color name
+                color_name = hex_to_simple_color(bg_colors[0]) if bg_colors else None
+                if color_name:
+                    elements.append(f"fondo {color_name}")
+                else:
+                    elements.append("fondo de color sólido")
+            elif bg_type == 'gradient':
+                elements.append("fondo degradado")
+            elif bg_type == 'environmental':
+                elements.append("ambiente natural")
+                modifiable_suggestions.append("el ambiente")
+            else:
+                elements.append(f"fondo {bg_type}")
+            modifiable_suggestions.append("el color del fondo")
         
-        debug_tracker.log_step("3.2 REFERENCE_DESCRIPTION_BUILT", {
-            "descripcion": descripcion[:50],
-            "num_textos": len(textos),
-            "response_length": len(text)
+        # Check for decorative elements - simplify
+        decorative = self.design_guidelines.get('decorative_elements', {}) if self.design_guidelines else {}
+        if decorative.get('present', False):
+            dec_types = decorative.get('type', [])
+            if dec_types:
+                # Translate common decorative elements
+                dec_translations = {
+                    'bubbles': 'burbujas', 'flowers': 'flores', 'leaves': 'hojas',
+                    'water': 'agua', 'ice': 'hielo', 'droplets': 'gotas'
+                }
+                simple_dec = [dec_translations.get(d.lower(), d) for d in dec_types[:3]]
+                elements.append(f"elementos decorativos ({', '.join(simple_dec)})")
+                modifiable_suggestions.append("los elementos decorativos")
+        
+        # Check for lighting - simplified
+        lighting = self.design_guidelines.get('lighting', {}) if self.design_guidelines else {}
+        light_type = lighting.get('type', '')
+        if light_type:
+            simple_light = simplify_term(light_type)
+            elements.append(f"iluminación {simple_light}")
+            modifiable_suggestions.append("la iluminación")
+        
+        # Check for mood/aesthetic - simplified
+        overall_style = self.design_guidelines.get('overall_style', {}) if self.design_guidelines else {}
+        mood = overall_style.get('mood', '')
+        aesthetic = overall_style.get('aesthetic', '')
+        if mood:
+            simple_mood = simplify_term(mood)
+            elements.append(f"estilo {simple_mood}")
+        if aesthetic:
+            simple_aesthetic = simplify_term(aesthetic)
+            elements.append(f"estética {simple_aesthetic}")
+        
+        # Check for text in image - must verify actual text elements exist
+        text_in_image_flag = reference.get('text_in_image') == 'yes'
+        text_elements = self.text_analysis.get('text_elements', []) if self.text_analysis else []
+        has_actual_text = text_in_image_flag and len(text_elements) > 0
+        
+        if has_actual_text:
+            text_count = len(text_elements)
+            elements.append(f"texto ({text_count} elementos)")
+            modifiable_suggestions.append("el contenido del texto")
+        
+        elements_text = ", ".join(elements) if elements else "un diseño profesional"
+        
+        # Build contextual suggestions based on what's actually in the reference
+        if modifiable_suggestions:
+            suggestions_text = ", ".join(modifiable_suggestions[:3])
+            modification_hint = f"\n\nPor ejemplo, podemos cambiar {suggestions_text}."
+        else:
+            modification_hint = ""
+        
+        debug_tracker.log_step("3.2 REFERENCE_ANALYSIS_COMPLETE", {
+            "detected_elements": elements,
+            "has_people": has_people,
+            "text_in_image_flag": text_in_image_flag,
+            "has_actual_text": has_actual_text,
+            "text_elements_count": len(text_elements) if text_elements else 0,
+            "modifiable_suggestions": modifiable_suggestions
         })
+        
+        text = f"¡Buena elección! Veo que tu referencia contiene {elements_text}.\n\n**¿Te gustaría mantener el diseño actual o modificar algún elemento?**{modification_hint}"
         
         return {
             "type": "text",
@@ -2413,66 +2635,53 @@ Tu respuesta (SOLO el formato de salida, sin explicaciones ni texto adicional):"
                 'tagline': 'Tagline/Slogan'
             }
             
-            # VERSION 5: Use real-time reference_analysis instead of DB text_analysis
-            if self.reference_analysis and self.reference_analysis.get('textos'):
-                debug_tracker.log_step("4.2 REALTIME_TEXT_ANALYSIS", {
-                    "textos": self.reference_analysis.get('textos', []),
-                    "num_textos": len(self.reference_analysis.get('textos', []))
+            if self.text_analysis and self.text_analysis.get('text_elements'):
+                debug_tracker.log_step("4.2 TEXT_ANALYSIS_AVAILABLE", {
+                    "text_elements": self.text_analysis.get('text_elements', []),
+                    "has_blueprint": self.text_analysis.get('text_content_blueprint') is not None
                 })
                 
                 product_name = self.product_name or 'Tu producto'
                 
-                # VERSION 5: Generate contextual suggestions using real-time analysis
-                smart_suggestions = self._generate_smart_text_suggestions()
+                # VERSION 4: Generate contextual suggestions using blueprint
+                smart_suggestions = self._generate_smart_text_suggestions(self.text_analysis['text_elements'])
                 self.last_smart_suggestions = smart_suggestions  # Store for when user accepts
                 using_smart = smart_suggestions is not None
                 
-                debug_tracker.log_step("4.2.1 SMART_SUGGESTIONS_V5", {
+                debug_tracker.log_step("4.2.1 SMART_SUGGESTIONS_ATTEMPT", {
                     "using_smart": using_smart,
                     "smart_suggestions": smart_suggestions
                 })
                 
-                # V5: Iterate through textos from real-time analysis
-                for i, texto_ref in enumerate(self.reference_analysis['textos'], 1):
-                    original_text = texto_ref.get('contenido', '')
-                    ubicacion = texto_ref.get('ubicacion', '')
-                    tipo = texto_ref.get('tipo', 'texto')
+                # V4: Iterate through text elements by index (no hardcoded types)
+                for i, elem in enumerate(self.text_analysis['text_elements'], 1):
+                    detected_text = elem.get('detected_text', '')
+                    semantic_role = elem.get('semantic_role', elem.get('type', 'texto'))
+                    position = elem.get('position', '')
+                    
+                    # V4: Use semantic_role as the display label (dynamic, not hardcoded)
+                    # Capitalize first letter and replace dashes/underscores with spaces
+                    friendly_role = semantic_role.replace('-', ' ').replace('_', ' ').title() if semantic_role else f"Texto {i}"
                     
                     # Store info about what was detected
-                    text_elements_info.append(f"- {tipo} ({ubicacion}): \"{original_text}\"")
+                    text_elements_info.append(f"- **{friendly_role}**: \"{detected_text}\"")
                     
-                    # V5: Get suggestion with contextual etiqueta
+                    # V4: Get suggestion by position index
                     if using_smart:
-                        suggestion_data = smart_suggestions.get(f"text_{i}")
+                        suggestion = smart_suggestions.get(f"text_{i}")
                         
-                        if isinstance(suggestion_data, dict):
-                            # New format: {"etiqueta": "...", "sugerencia": "..."}
-                            etiqueta = suggestion_data.get('etiqueta', f'Texto {i}')
-                            sugerencia = suggestion_data.get('sugerencia', '')
-                            
-                            if sugerencia and '[' not in sugerencia and ']' not in sugerencia:
-                                text_suggestions.append(f"**{etiqueta}:** {sugerencia}")
-                            else:
-                                # Fallback with contextual label
-                                text_suggestions.append(f"**{etiqueta}:** {original_text or product_name}")
-                        elif isinstance(suggestion_data, str):
-                            # Old format backwards compatibility
-                            friendly_label = f"{tipo.capitalize()} ({ubicacion})" if ubicacion else tipo.capitalize()
-                            if suggestion_data and '[' not in suggestion_data and ']' not in suggestion_data:
-                                text_suggestions.append(f"**{friendly_label}:** {suggestion_data}")
-                            else:
-                                text_suggestions.append(f"**{friendly_label}:** {original_text or product_name}")
+                        # Only show if we have a real suggestion (no placeholders)
+                        if suggestion and '[' not in suggestion and ']' not in suggestion:
+                            text_suggestions.append(f"**{friendly_role}:** {suggestion}")
                         else:
-                            # No suggestion for this text
-                            friendly_label = f"{tipo.capitalize()} ({ubicacion})" if ubicacion else tipo.capitalize()
-                            text_suggestions.append(f"**{friendly_label}:** {original_text or product_name}")
+                            # Fallback: use product name for primary roles, generic for others
+                            text_suggestions.append(f"**{friendly_role}:** {detected_text or product_name}")
                     else:
-                        # Fallback when no smart suggestions
-                        friendly_label = f"{tipo.capitalize()} ({ubicacion})" if ubicacion else tipo.capitalize()
-                        if original_text:
-                            text_suggestions.append(f"**{friendly_label}:** [Adaptar: \"{original_text}\"]")
+                        # Fallback when no smart suggestions: show original text for context
+                        if detected_text:
+                            text_suggestions.append(f"**{friendly_role}:** [Adaptar: \"{detected_text}\"]")
                         else:
-                            text_suggestions.append(f"**{friendly_label}:** Tu texto aquí")
+                            text_suggestions.append(f"**{friendly_role}:** Tu texto aquí")
             
             debug_tracker.log_step("4.3 TEXT_SUGGESTIONS_GENERATED", {
                 "suggestions_count": len(text_suggestions),
@@ -2500,213 +2709,12 @@ Tu respuesta (SOLO el formato de salida, sin explicaciones ni texto adicional):"
             # No text, go directly to confirm - include changes confirmation
             return self._handle_confirm_ready(include_changes_confirmation=True)
     
-    def _handle_conversational_text_flow(self, user_message: str) -> Dict[str, Any]:
-        """
-        =======================================================================
-        CONVERSATIONAL TEXT FLOW - VERSION 2
-        =======================================================================
-        Let the LLM control the conversation after Step 3.
-        
-        The LLM decides:
-        - If user asks a question → Answer it, don't advance
-        - If user requests changes → Show new suggestions, wait for confirmation
-        - If user confirms → Set readyToGenerate: true
-        
-        V2 Changes:
-        - Added FAST confirmation detection to avoid LLM misinterpretation
-        - "mantener", "ok", "sí" etc. now bypass LLM and confirm directly
-        
-        This replaces the hardcoded _handle_text_confirmed() flow.
-        =======================================================================
-        """
-        debug_tracker.log_step("CONVERSATIONAL_FLOW_START", {
-            "user_message": user_message[:100],
-            "current_suggestions": self.last_smart_suggestions
-        })
-        
-        user_msg_lower = user_message.lower().strip()
-        
-        # =========================================================================
-        # FAST CONFIRMATION DETECTION - Bypass LLM for clear confirmations
-        # This fixes the "mantener" being misinterpreted as a question bug
-        # =========================================================================
-        confirmation_words = [
-            'mantener', 'ok', 'okey', 'okay', 'sí', 'si', 'perfecto', 'dale', 
-            'vamos', 'me gusta', 'me gustan', 'está bien', 'esta bien', 'genial',
-            'excelente', 'bueno', 'listo', 'de acuerdo', 'acepto', 'confirmo',
-            'los dos', 'ambos', 'todos', 'esos'
-        ]
-        
-        # Check if message is a simple confirmation (no question marks, short message)
-        is_simple_confirmation = (
-            any(word in user_msg_lower for word in confirmation_words) and
-            '?' not in user_message and
-            len(user_message) < 100 and
-            not any(change_word in user_msg_lower for change_word in ['cambiar', 'cambio', 'otro', 'otra', 'sin', 'quiero', 'prefiero', 'mejor'])
-        )
-        
-        if is_simple_confirmation and self.last_smart_suggestions:
-            debug_tracker.log_step("CONVERSATIONAL_FLOW_FAST_CONFIRM", {
-                "detected_as": "simple_confirmation",
-                "user_message": user_message
-            })
-            
-            # Store the suggestions as text_content
-            self.text_content = self.last_smart_suggestions.copy()
-            self.awaiting_text_input = False
-            self.current_step = 5
-            
-            print(f"[DEBUG] Fast confirmation detected: '{user_message}' -> readyToGenerate")
-            
-            return {
-                "type": "text",
-                "text": "¡Genial! Cuando estés listo, hacé click en **Generar** para crear tu post.",
-                "readyToGenerate": True
-            }
-        
-        # =========================================================================
-        # LLM-based conversational flow for complex interactions
-        # =========================================================================
-        
-        # Build context for the LLM
-        suggestions_str = json.dumps(self.last_smart_suggestions, ensure_ascii=False, indent=2) if self.last_smart_suggestions else "{}"
-        product_name = self.product_name or "el producto"
-        
-        # Get text analysis context
-        text_analysis_context = ""
-        if self.text_analysis:
-            blueprint = self.text_analysis.get('text_content_blueprint', '')
-            if blueprint:
-                text_analysis_context = f"\nBLUEPRINT DE LA REFERENCIA:\n{blueprint}\n"
-        
-        prompt = f"""Eres un asistente de diseño ayudando a crear un post de Instagram para "{product_name}".
-
-CONTEXTO ACTUAL:
-- El usuario ya seleccionó una referencia con texto
-- Le mostraste estas sugerencias de texto:
-{suggestions_str}
-{text_analysis_context}
-MENSAJE DEL USUARIO:
-"{user_message}"
-
-TU TAREA: Analiza el mensaje del usuario y responde de forma conversacional.
-
-REGLAS CRÍTICAS:
-
-1. Si el usuario hace una PREGUNTA (contiene "?", "por qué", "cómo", "qué significa"):
-   - Responde la pregunta de forma clara y útil
-   - NO avances al siguiente paso
-   - Pregunta si quiere cambiar algo o si está conforme
-   - readyToGenerate: false
-
-2. Si el usuario pide CAMBIOS ("quiero", "prefiero", "cambia", "sin", "mejor", "otra"):
-   - Genera NUEVAS sugerencias aplicando los cambios pedidos
-   - Muestra las nuevas sugerencias claramente formateadas
-   - Pregunta si le gustan los cambios
-   - readyToGenerate: false
-   - IMPORTANTE: Incluye un campo "new_suggestions" con el JSON de las nuevas sugerencias
-
-3. Si el usuario CONFIRMA ("ok", "sí", "me gusta", "perfecto", "dale", "está bien", "vamos"):
-   - Confirma brevemente
-   - Indica que puede hacer click en Generar
-   - readyToGenerate: true
-
-4. Si el usuario proporciona TEXTO ESPECÍFICO que quiere usar:
-   - Confirma que usarás ese texto exacto
-   - readyToGenerate: true
-   - Incluye "custom_text" con el texto que proporcionó
-
-FORMATO DE RESPUESTA (JSON estricto):
-{{
-  "text": "Tu respuesta conversacional aquí",
-  "readyToGenerate": true/false,
-  "new_suggestions": {{}},  // Solo si generaste nuevas sugerencias
-  "custom_text": null       // Solo si el usuario dio texto específico
-}}
-
-Responde SOLO con el JSON, sin explicaciones adicionales.
-"""
-        
-        try:
-            response = self.client.models.generate_content(
-                model=self.config.text_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}]}]
-            )
-            result = response.text.strip()
-            
-            # Parse JSON response
-            if '{' in result:
-                json_str = result[result.find('{'):result.rfind('}')+1]
-                llm_response = json.loads(json_str)
-                
-                debug_tracker.log_step("CONVERSATIONAL_FLOW_LLM_RESPONSE", {
-                    "llm_response": llm_response
-                })
-                
-                # Handle new suggestions if provided
-                if llm_response.get('new_suggestions') and isinstance(llm_response['new_suggestions'], dict) and llm_response['new_suggestions']:
-                    self.last_smart_suggestions = llm_response['new_suggestions']
-                    debug_tracker.log_step("CONVERSATIONAL_FLOW_NEW_SUGGESTIONS", {
-                        "new_suggestions": self.last_smart_suggestions
-                    })
-                
-                # Handle custom text if provided
-                if llm_response.get('custom_text'):
-                    self.text_content = self._parse_text_content(llm_response['custom_text'])
-                    debug_tracker.log_step("CONVERSATIONAL_FLOW_CUSTOM_TEXT", {
-                        "custom_text": self.text_content
-                    })
-                
-                # If ready to generate, store the current suggestions as text_content
-                if llm_response.get('readyToGenerate') and not llm_response.get('custom_text'):
-                    if self.last_smart_suggestions:
-                        self.text_content = self.last_smart_suggestions.copy()
-                        debug_tracker.log_step("CONVERSATIONAL_FLOW_CONFIRMED", {
-                            "text_content": self.text_content
-                        })
-                    # Mark that we're no longer awaiting text input
-                    self.awaiting_text_input = False
-                    self.current_step = 5
-                
-                # Keep awaiting_text_input true if not ready to generate
-                if not llm_response.get('readyToGenerate'):
-                    self.awaiting_text_input = True
-                else:
-                    self.awaiting_text_input = False
-                
-                return {
-                    "type": "text",
-                    "text": llm_response.get('text', 'Entendido. ¿Listo para generar?'),
-                    "readyToGenerate": llm_response.get('readyToGenerate', False)
-                }
-                
-        except Exception as e:
-            print(f"[DEBUG] Conversational flow error: {e}", file=sys.stderr)
-            debug_tracker.log_step("CONVERSATIONAL_FLOW_ERROR", {"error": str(e)})
-        
-        # Fallback: assume confirmation and proceed
-        self.awaiting_text_input = False
-        if self.last_smart_suggestions:
-            self.text_content = self.last_smart_suggestions.copy()
-        return {
-            "type": "text",
-            "text": "Genial! Cuando estés listo, haz click en **Generar** para crear tu post.",
-            "readyToGenerate": True
-        }
-
-    # =========================================================================
-    # LEGACY FUNCTIONS (kept for backward compatibility, may be removed later)
-    # =========================================================================
-
     def _interpret_text_response(self, user_message: str) -> dict:
         """
         =======================================================================
-        INTERPRET TEXT RESPONSE - VERSION 1 (LEGACY)
+        INTERPRET TEXT RESPONSE - VERSION 1
         =======================================================================
         Use LLM to classify user's intent regarding text suggestions.
-        
-        NOTE: This function is now LEGACY. The conversational flow is handled
-        by _handle_conversational_text_flow() which gives the LLM more control.
         
         Returns: {"type": "accept|modify|custom", "modifications": "...", "custom_text": "..."}
         =======================================================================
