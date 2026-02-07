@@ -3829,7 +3829,7 @@ Responde SOLO con JSON valido con las sugerencias modificadas:
                     f'{self.backend_url}/pipeline',
                     files=files,
                     data=data,
-                    timeout=60  # Pipeline can take longer
+                    timeout=180  # Pipeline can take up to 3 minutes
                 )
             
             response.raise_for_status()
