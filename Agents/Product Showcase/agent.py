@@ -362,36 +362,22 @@ class NanoBananaAgent:
         
         # ================================================================================
         # PRIORITY 1: Edit Mode Detection (Step 7) - MUST BE FIRST
-        # After generating an image, ALL messages are treated as edit feedback
-        # except explicit "start over" requests.
+        # After generating an image, use LLM to understand user intent naturally
         # ================================================================================
         if self.current_step == 7 and self.last_generated_image:
             print(f"[DEBUG] Step 7 (edit mode) active, processing: {user_message[:50]}...")
             
-            # V3: Check if there's a pending text edit awaiting confirmation
+            # V4: Check if there's a pending text edit awaiting confirmation
             if self.pending_text_edit:
                 return self._handle_pending_text_confirmation(user_message)
             
-            # Check if user clicked "Generar" - apply pending edits
+            # Check if user clicked "Generar" button - apply pending edits
             if user_msg_lower in ['generar', 'generate']:
                 print(f"[DEBUG] Edit mode: User clicked Generar, calling edit pipeline")
                 return self._handle_edit_pipeline()
             
-            # Check if user wants to start over with a NEW product
-            start_over_words = ['nuevo producto', 'otra imagen', 'empezar de nuevo', 'otro producto', 
-                               'cambiar producto', 'different product', 'new product', 'start over']
-            if any(word in user_msg_lower for word in start_over_words):
-                print(f"[DEBUG] User wants to start over from edit mode")
-                self.last_generated_image = None
-                self.current_step = 0
-                return {
-                    "type": "text",
-                    "text": "¡Perfecto! Para crear algo nuevo, subí la foto de tu producto usando el botón (+)."
-                }
-            
-            # ALL other messages are edit feedback - let the agent handle conversationally
-            print(f"[DEBUG] Processing edit feedback at Step 7: {user_message[:50]}...")
-            return self._handle_edit_feedback(user_message)
+            # V4: Use LLM to understand user intent naturally (no hardcoded scenarios)
+            return self._handle_edit_mode_contextual(user_message)
         
         # Check if user selected a post type (Step 1 -> Step 2)
         
@@ -441,10 +427,10 @@ class NanoBananaAgent:
                     return self._handle_reference_selected(ref)
             print(f"[DEBUG] Reference {ref_id} not found in available_references")
         
-        # Check if we're at Step 3 waiting for design changes
+        # Check if we're at Step 3 waiting for design changes - USE CONTEXTUAL FLOW V1
         if self.current_step == 3 and not self.awaiting_text_input:
-            print(f"[DEBUG] Processing design changes at Step 3")
-            return self._handle_design_changes(user_message)
+            print(f"[DEBUG] Processing design changes at Step 3 with CONTEXTUAL handler")
+            return self._handle_design_mode_contextual(user_message)
         
         # Check if we're awaiting text input (Step 4) - USE CONVERSATIONAL FLOW
         if self.awaiting_text_input:
@@ -1408,38 +1394,418 @@ REGLAS ADICIONALES:
     def _build_nanobanana_edit_prompt(self, user_feedback: str) -> str:
         """
         =======================================================================
-        BUILD NANOBANANA EDIT PROMPT - VERSION 4 (SIMPLIFIED)
+        BUILD NANOBANANA EDIT PROMPT - VERSION 5 (PRODUCT PROTECTION)
         =======================================================================
-        Simplified edit prompt focusing on minimal changes.
+        Edit prompt with ABSOLUTE product protection rule.
         
-        V4 Changes:
-        - Dramatically simplified prompt
-        - Clear, direct instructions
-        - For text changes: maintain typography, only change words
+        V5 Changes:
+        - Added strict product protection rule (CRITICAL)
+        - Product must NEVER be modified unless explicitly requested
+        - Clear hierarchy: product > background > text
         =======================================================================
         """
         user_changes = user_feedback.strip() if user_feedback else "No se especificaron cambios"
         
         prompt = f"""TAREA: Aplicar cambios mínimos a la imagen existente.
 
+⚠️ REGLA ABSOLUTA - PRODUCTO INTOCABLE ⚠️
+El producto del usuario NO se modifica BAJO NINGUNA CIRCUNSTANCIA:
+- NO cambiar: etiquetas, texto del envase, forma, colores, textura del producto
+- NO remover: texto impreso en el packaging, logotipos, información del producto
+- El producto debe verse 100% IDÉNTICO al de la imagen original
+- Esta regla se rompe ÚNICAMENTE si el usuario pide EXPLÍCITAMENTE modificar el producto
+
 CAMBIOS SOLICITADOS:
 {user_changes}
 
-REGLAS:
+REGLAS DE EDICIÓN:
 1. Mantener TODO exactamente igual EXCEPTO lo que se pide cambiar
-2. Si el cambio es de texto: mantener tipografía, tamaño, posición, color - solo cambiar las palabras
-3. NO reinterpretar ni mejorar nada
-4. NO agregar elementos nuevos
-5. El resultado debe ser casi idéntico al input, con solo el cambio pedido
+2. Solo modificar elementos del FONDO o DECORATIVOS que el usuario pidió
+3. Si el cambio es de texto del DISEÑO (títulos, CTAs, NO del producto): mantener tipografía, tamaño, posición, color - solo cambiar las palabras
+4. NO reinterpretar ni mejorar nada
+5. NO agregar elementos que el usuario no pidió
+6. El resultado debe ser casi idéntico al input, con solo el cambio pedido
 
 FORMATO: Mantener 4:5 (1080x1350px)
 """
         return prompt
     
+    def _handle_design_mode_contextual(self, user_message: str) -> Dict[str, Any]:
+        """
+        ================================================================================
+        VERSION 1 - Natural Design Mode Handler (LLM-based intent detection + HISTORY)
+        ================================================================================
+        
+        Step 3: After reference is selected, user can request design changes.
+        Uses LLM to naturally understand user intent and respond contextually.
+        
+        Possible intents:
+        - User wants to keep design as-is (mantener, está bien, etc.)
+        - User wants to add an element (agregar planta, poner agua, etc.)
+        - User wants to change something specific (cambiar colores, etc.)
+        - User has a question about the design
+        - User confirms they're ready with design changes
+        ================================================================================
+        """
+        debug_tracker.log_step("3.5 DESIGN_MODE_CONTEXTUAL", {
+            "user_message": user_message[:100],
+            "has_reference_analysis": bool(self.reference_analysis),
+            "history_length": len(self.history)
+        })
+        
+        # QUICK CHECK: If user clicked "Generar" button and we have accumulated changes, proceed directly to image generation
+        generate_keywords = ["generar", "genera", "generate", "listo", "dale", "vamos", "ok", "sí", "si"]
+        if user_message.lower().strip() in generate_keywords and self.design_changes:
+            print(f"[DEBUG] _handle_design_mode_contextual: Detected generate command with changes={self.design_changes}, proceeding DIRECTLY to _handle_generate_pipeline", file=sys.stderr, flush=True)
+            # Go directly to pipeline generation - the function that worked well before
+            return self._handle_generate_pipeline("")
+        
+        # Build conversation history context
+        conversation_context = ""
+        if self.history:
+            for m in self.history[-10:]:
+                role = "Usuario" if m["role"] == "user" else "Asistente"
+                content = m["content"][:200] + "..." if len(m["content"]) > 200 else m["content"]
+                conversation_context += f"{role}: {content}\n"
+        
+        # Get reference description for context
+        reference_description = ""
+        if self.reference_analysis:
+            reference_description = self.reference_analysis.get('contenido_principal', 'diseño de referencia seleccionado')
+        
+        # Check if reference has text elements
+        has_text_in_reference = False
+        text_types_in_reference = []
+        if self.reference_analysis and self.reference_analysis.get('textos'):
+            has_text_in_reference = True
+            for texto in self.reference_analysis.get('textos', []):
+                text_types_in_reference.append(texto.get('tipo', 'texto'))
+        
+        prompt = f"""Sos un asistente de diseño de posts para Instagram.
+El usuario seleccionó una referencia de diseño y ahora puede pedir cambios al diseño.
+
+CONTEXTO ACTUAL:
+- Producto: {self.product_name or 'producto del usuario'}
+- Tipo de post: {self.selected_post_type or 'no especificado'}
+- Referencia seleccionada: {reference_description}
+- ¿La referencia tiene textos? {f'Sí, tipos: {", ".join(text_types_in_reference)}' if has_text_in_reference else 'No tiene textos de diseño'}
+- Cambios de diseño acumulados: {self.design_changes if self.design_changes else 'ninguno todavía'}
+
+HISTORIAL DE CONVERSACIÓN RECIENTE:
+{conversation_context if conversation_context else '(inicio de conversación)'}
+
+MENSAJE ACTUAL DEL USUARIO: "{user_message}"
+
+TU TAREA: Entender qué quiere el usuario respecto al DISEÑO y responder de forma natural.
+
+ANALIZA EL INTENT:
+1. ¿Quiere mantener el diseño como está? → Confirmar y preguntar si está listo para pasar al texto
+2. ¿Quiere agregar un elemento (ej: "agregar planta")? → PROPONER algo CONCRETO (ej: "Perfecto, ¿te gustaría una planta tropical a la derecha del producto o prefieres algo más sutil como hojas decorativas?")
+3. ¿Quiere cambiar algo específico (colores, layout)? → Confirmar lo que entendiste y preguntar si quiere más cambios
+4. ¿Hace una pregunta? → Responderla en contexto del diseño
+5. ¿Confirma que está listo con los cambios de diseño? → Proceder al texto
+6. ¿No está claro? → Preguntar amablemente qué necesita
+
+REGLAS IMPORTANTES:
+- Respondé en español argentino, casual pero profesional
+- Si el usuario quiere AGREGAR algo, SIEMPRE proponé opciones CONCRETAS basadas en el producto y contexto
+- NO asumas que el usuario está listo hasta que lo confirme explícitamente
+- MIRÁ EL HISTORIAL: No repitas preguntas ya hechas, recordá lo que el usuario dijo antes
+- Sé conciso (máximo 2-3 oraciones)
+- Cuando confirmes un cambio, mencioná que si está conforme puede hacer clic en **Generar**
+- NO menciones los textos todavía, eso viene después
+
+Responde SOLO en JSON válido:
+{{
+  "intent": "mantener|agregar_elemento|cambiar_algo|pregunta|listo_para_texto|clarificar",
+  "respuesta": "tu respuesta natural al usuario",
+  "elemento_propuesto": null,
+  "cambio_acumulado": null,
+  "ready_for_text_step": false
+}}
+
+SOBRE LOS CAMPOS:
+- intent: Qué quiere hacer el usuario
+- respuesta: Tu respuesta natural (la verá el usuario)
+- elemento_propuesto: Si el usuario quiere agregar algo, describí el elemento concreto que proponés (ej: "planta tropical a la derecha")
+- cambio_acumulado: Si confirmaste un cambio, resumilo brevemente para acumular (ej: "agregar planta tropical")
+- ready_for_text_step: true SOLO si el usuario confirmó que está listo con el diseño (dijo "listo", "mantener", "ok vamos", etc.)
+"""
+        
+        try:
+            import time
+            print(f"[DEBUG] _handle_design_mode_contextual: Calling Gemini with model {self.config.text_model}...", file=sys.stderr, flush=True)
+            start_time = time.time()
+            
+            response = self.client.models.generate_content(
+                model=self.config.text_model,
+                contents=[prompt]
+            )
+            
+            elapsed = time.time() - start_time
+            print(f"[DEBUG] _handle_design_mode_contextual: Gemini responded in {elapsed:.2f}s", file=sys.stderr, flush=True)
+            
+            result_text = response.text.strip()
+            print(f"[DEBUG] _handle_design_mode_contextual: Response length={len(result_text)}", file=sys.stderr, flush=True)
+            
+            # Parse JSON from response
+            import re
+            json_match = re.search(r'\{[\s\S]*\}', result_text)
+            if json_match:
+                result = json.loads(json_match.group())
+                print(f"[DEBUG] _handle_design_mode_contextual: Parsed intent={result.get('intent')}", file=sys.stderr, flush=True)
+            else:
+                print(f"[DEBUG] _handle_design_mode_contextual: No JSON found, using fallback", file=sys.stderr, flush=True)
+                result = {"intent": "clarificar", "respuesta": "No entendí bien, ¿podrías decirme qué cambios querés hacer al diseño?", "ready_for_text_step": False}
+            
+            debug_tracker.log_step("3.5.1 DESIGN_CONTEXTUAL_RESPONSE", {
+                "intent": result.get("intent"),
+                "ready_for_text_step": result.get("ready_for_text_step"),
+                "elemento_propuesto": result.get("elemento_propuesto"),
+                "cambio_acumulado": result.get("cambio_acumulado")
+            })
+            
+            # Accumulate design changes if confirmed
+            if result.get("cambio_acumulado"):
+                if self.design_changes:
+                    self.design_changes += f", {result['cambio_acumulado']}"
+                else:
+                    self.design_changes = result['cambio_acumulado']
+                print(f"[DEBUG] _handle_design_mode_contextual: Accumulated changes={self.design_changes}", file=sys.stderr, flush=True)
+                    
+            # If ready to proceed to text step
+            if result.get("ready_for_text_step"):
+                print(f"[DEBUG] _handle_design_mode_contextual: Ready for text step, proceeding...", file=sys.stderr, flush=True)
+                # Store the final design changes summary
+                if not self.design_changes:
+                    self.design_changes = "mantener diseño original"
+                
+                # Call the original design changes handler to proceed to text step
+                return self._handle_design_changes(self.design_changes)
+            
+            # Otherwise, keep in design mode and return conversational response
+            # Show Generate button if there's an accumulated change
+            has_accumulated_change = bool(result.get("cambio_acumulado") or self.design_changes)
+            print(f"[DEBUG] _handle_design_mode_contextual: Staying in design mode, readyToGenerate={has_accumulated_change}", file=sys.stderr, flush=True)
+            return {
+                "type": "text",
+                "text": result.get("respuesta", "¿Qué cambios te gustaría hacer al diseño?"),
+                "readyToGenerate": has_accumulated_change
+            }
+            
+        except Exception as e:
+            print(f"[ERROR] _handle_design_mode_contextual: {str(e)}", file=sys.stderr, flush=True)
+            import traceback
+            print(f"[ERROR] Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+            debug_tracker.log_step("3.5.ERROR", {"error": str(e)})
+            # Fallback: proceed with original handler
+            return self._handle_design_changes(user_message)
+    
+    def _handle_edit_mode_contextual(self, user_message: str) -> Dict[str, Any]:
+        """
+        ================================================================================
+        VERSION 5 - Natural Edit Mode Handler (LLM-based intent detection + HISTORY)
+        ================================================================================
+        
+        Uses LLM to naturally understand user intent after image generation.
+        No hardcoded scenarios - the LLM interprets and responds contextually.
+        
+        V5 Changes:
+        - Includes conversation history for context (last 10 messages)
+        - LLM can see what was discussed before to avoid repetition
+        
+        Possible intents:
+        - User is satisfied (felicitación, confirmación)
+        - User has a question
+        - User wants a text change
+        - User wants a design change  
+        - User wants to start over
+        ================================================================================
+        """
+        debug_tracker.log_step("7.0 EDIT_MODE_CONTEXTUAL", {
+            "user_message": user_message[:100],
+            "has_text_content": bool(self.text_content),
+            "has_design_changes": bool(self.design_changes),
+            "history_length": len(self.history)
+        })
+        
+        # V5: Build conversation history context
+        conversation_context = ""
+        if self.history:
+            for m in self.history[-10:]:
+                role = "Usuario" if m["role"] == "user" else "Asistente"
+                content = m["content"][:200] + "..." if len(m["content"]) > 200 else m["content"]
+                conversation_context += f"{role}: {content}\n"
+        
+        # Build context about current state
+        text_context = ""
+        if self.text_content:
+            text_items = []
+            for key, val in self.text_content.items():
+                if isinstance(val, dict) and 'sugerencia' in val:
+                    text_items.append(f"- {val.get('etiqueta', key)}: \"{val['sugerencia']}\"")
+            if text_items:
+                text_context = "\n".join(text_items[:5])  # Limit to 5 for brevity
+                if len(text_items) > 5:
+                    text_context += f"\n... y {len(text_items) - 5} textos más"
+        
+        prompt = f"""Sos un asistente de diseño de posts para Instagram. El usuario acaba de recibir una imagen generada.
+
+CONTEXTO ACTUAL:
+- Producto: {self.product_name or 'producto del usuario'}
+- Tipo de post: {self.selected_post_type or 'no especificado'}
+- Textos en la imagen: {text_context if text_context else 'sin texto adicional'}
+- Cambios previos aplicados: {self.design_changes if self.design_changes else 'ninguno, diseño original'}
+
+HISTORIAL DE CONVERSACIÓN RECIENTE:
+{conversation_context if conversation_context else '(inicio de conversación)'}
+
+MENSAJE ACTUAL DEL USUARIO: "{user_message}"
+
+TU TAREA: Entender qué quiere el usuario y responder de forma natural.
+
+ANALIZA EL INTENT:
+1. ¿Está satisfecho/felicitando? → Agradecer y recordarle que puede pedir cambios o ya está listo
+2. ¿Hace una pregunta? → Responderla en contexto
+3. ¿Quiere cambiar TEXTO? → Identificar qué texto y proponer uno nuevo concreto
+4. ¿Quiere cambiar DISEÑO (colores, layout, elementos)? → Confirmar lo que entendiste
+5. ¿Quiere empezar de nuevo? → Confirmar que puede subir otro producto
+6. ¿No está claro? → Preguntar amablemente qué necesita
+
+REGLAS:
+- Respondé en español argentino, casual pero profesional
+- Si propones un cambio de texto, da el texto nuevo CONCRETO
+- NO inventes cambios que el usuario no pidió
+- Sé conciso (máximo 2-3 oraciones)
+- MIRÁ EL HISTORIAL: No repitas preguntas ya hechas ni ignores lo que el usuario dijo antes
+- Si el usuario ya mencionó algo específico (ej: "una planta"), usa eso, no inventes alternativas
+
+Responde SOLO en JSON válido:
+{{
+  "intent": "satisfecho|pregunta|cambio_texto|cambio_diseño|nuevo_producto|clarificar",
+  "respuesta": "tu respuesta natural al usuario",
+  "texto_propuesto": null,
+  "texto_afectado": null,
+  "ready_to_generate": false
+}}
+
+IMPORTANTE sobre ready_to_generate:
+- true SOLO si el usuario pidió un cambio de DISEÑO y confirmaste que lo vas a aplicar
+- false para satisfacción, preguntas, o si propones un texto nuevo (debe confirmar primero)
+"""
+        
+        try:
+            import time
+            print(f"[DEBUG] _handle_edit_mode_contextual: Calling Gemini with model {self.config.text_model}...", file=sys.stderr, flush=True)
+            start_time = time.time()
+            
+            response = self.client.models.generate_content(
+                model=self.config.text_model,
+                contents=[prompt]
+            )
+            
+            elapsed = time.time() - start_time
+            print(f"[DEBUG] _handle_edit_mode_contextual: Gemini responded in {elapsed:.2f}s", file=sys.stderr, flush=True)
+            
+            result_text = response.text.strip()
+            print(f"[DEBUG] _handle_edit_mode_contextual: Response length={len(result_text)}, preview: {result_text[:100]}...", file=sys.stderr, flush=True)
+            
+            # Parse JSON response
+            if '{' in result_text:
+                json_str = result_text[result_text.find('{'):result_text.rfind('}')+1]
+                parsed = json.loads(json_str)
+                
+                intent = parsed.get('intent', 'clarificar')
+                respuesta = parsed.get('respuesta', 'No entendí bien, ¿podrías explicarme qué necesitás?')
+                ready = parsed.get('ready_to_generate', False)
+                texto_propuesto = parsed.get('texto_propuesto')
+                texto_afectado = parsed.get('texto_afectado')
+                
+                debug_tracker.log_step("7.1 INTENT_DETECTED", {
+                    "intent": intent,
+                    "ready_to_generate": ready,
+                    "has_texto_propuesto": bool(texto_propuesto)
+                })
+                
+                # Handle based on intent
+                if intent == 'satisfecho':
+                    return {
+                        "type": "text",
+                        "text": respuesta,
+                        "readyToGenerate": False  # Already generated, no need for button
+                    }
+                
+                elif intent == 'pregunta':
+                    return {
+                        "type": "text",
+                        "text": respuesta,
+                        "readyToGenerate": False
+                    }
+                
+                elif intent == 'cambio_texto':
+                    # Store the proposed text change for confirmation
+                    if texto_propuesto and texto_afectado:
+                        self.pending_text_edit = {
+                            "texto_afectado": texto_afectado,
+                            "texto_propuesto": texto_propuesto,
+                            "original_feedback": user_message
+                        }
+                        return {
+                            "type": "text",
+                            "text": respuesta,
+                            "readyToGenerate": False  # Wait for confirmation
+                        }
+                    else:
+                        # LLM detected text change intent but didn't propose - ask for clarification
+                        return {
+                            "type": "text",
+                            "text": respuesta,
+                            "readyToGenerate": False
+                        }
+                
+                elif intent == 'cambio_diseño':
+                    # Accumulate design changes
+                    if self.design_changes:
+                        self.design_changes = f"{self.design_changes}. Además: {user_message}"
+                    else:
+                        self.design_changes = user_message
+                    
+                    return {
+                        "type": "text",
+                        "text": respuesta,
+                        "readyToGenerate": ready
+                    }
+                
+                elif intent == 'nuevo_producto':
+                    self.last_generated_image = None
+                    self.current_step = 0
+                    return {
+                        "type": "text",
+                        "text": respuesta or "¡Perfecto! Para crear algo nuevo, subí la foto de tu producto usando el botón (+)."
+                    }
+                
+                else:  # clarificar or unknown
+                    return {
+                        "type": "text",
+                        "text": respuesta,
+                        "readyToGenerate": False
+                    }
+                    
+        except Exception as e:
+            print(f"[ERROR] _handle_edit_mode_contextual: {str(e)}", file=sys.stderr, flush=True)
+            import traceback
+            print(f"[ERROR] Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+            # Fallback to simple response
+            return {
+                "type": "text",
+                "text": "No entendí bien tu mensaje. ¿Querés hacer algún cambio en la imagen? Contame qué te gustaría modificar.",
+                "readyToGenerate": False
+            }
+    
     def _handle_edit_feedback(self, user_feedback: str) -> Dict[str, Any]:
         """
         ================================================================================
-        VERSION 3 - Edit Feedback Handler (CONTEXTUAL)
+        VERSION 3 - Edit Feedback Handler (LEGACY - kept for reference)
         ================================================================================
         
         Handle user feedback after image generation.
@@ -2508,6 +2874,7 @@ RECORDATORIO:
         # This step is only for DESIGN changes (layout, colors, composition)
         
         text += "\n\n**¿Te gustaría mantener el diseño actual o modificar algún elemento?** (colores, composición, estilo)"
+        text += "\n\n_El contenido de los textos lo vamos a definir en el siguiente paso._"
         
         debug_tracker.log_step("3.2 REFERENCE_DESCRIPTION_BUILT", {
             "descripcion": descripcion[:50],
