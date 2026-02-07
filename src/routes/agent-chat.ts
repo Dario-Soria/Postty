@@ -4,6 +4,8 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { sendMessageToAgent, ensureAgentRunning } from '../services/productShowcaseAgent';
 import { uploadLocalImage } from '../services/imageUploader';
+import { saveReferenceImageAsync } from '../services/referenceLibrarySqlite';
+import { getSignedGetObjectUrl } from '../services/s3Client';
 
 interface AgentChatBody {
   agentType: string;
@@ -36,7 +38,7 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
         }
       }
 
-      const { agentType, message, conversationHistory, userId } = fields;
+      const { agentType, message, conversationHistory, userId, isReferenceUpload, selectedReferenceId, selectedReferenceUrl } = fields;
 
       if (!agentType) {
         return reply.status(400).send({
@@ -51,6 +53,45 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
           status: 'error',
           message: 'Missing required field: message (or provide an image)',
         });
+      }
+
+      // Handle user-uploaded reference image
+      let uploadedReferenceData: { id: string; url: string } | null = null;
+      if (isReferenceUpload === 'true' && imageFile) {
+        logger.info(`[Agent Chat] Processing user-uploaded reference image: ${imageFile.filename}`);
+        try {
+          // Read the uploaded file
+          const buffer = await fs.readFile(imageFile.path);
+          const mime = imageFile.filename.toLowerCase().endsWith('.png') ? 'image/png' 
+            : imageFile.filename.toLowerCase().endsWith('.webp') ? 'image/webp' 
+            : 'image/jpeg';
+          
+          // Save to S3 and DB (async indexing happens in background)
+          const savedRef = await saveReferenceImageAsync({
+            buffer,
+            originalFilename: imageFile.filename,
+            mime,
+            ownerUid: typeof userId === 'string' ? userId : undefined,
+          });
+          
+          if (savedRef) {
+            // Get signed URL for the uploaded reference
+            const signedUrl = await getSignedGetObjectUrl({
+              bucket: savedRef.s3_bucket,
+              key: savedRef.s3_key,
+              expiresSeconds: 60 * 60, // 1 hour
+            });
+            
+            uploadedReferenceData = {
+              id: savedRef.id,
+              url: signedUrl,
+            };
+            logger.info(`[Agent Chat] User reference uploaded successfully: id=${savedRef.id}`);
+          }
+        } catch (err) {
+          logger.error(`[Agent Chat] Failed to upload user reference:`, err);
+          // Continue without the reference - let agent handle gracefully
+        }
       }
 
       // Only support product-showcase for now
@@ -80,12 +121,35 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
       logger.info(`[Agent Chat] Ensuring agent is running...`);
       await ensureAgentRunning();
 
-      // If message is empty but image is provided, use a placeholder
-      const messageToSend = message || (imageFile ? "" : "");
+      // Build message to send to agent
+      let messageToSend = message || (imageFile ? "" : "");
+      
+      // If user uploaded a reference, modify the message to include reference data
+      if (uploadedReferenceData) {
+        // Don't send the image file to agent (it's not a product image)
+        // Instead, send a special message with the reference data
+        messageToSend = `[User uploaded reference: ${uploadedReferenceData.id}]`;
+        logger.info(`[Agent Chat] Sending uploaded reference to agent: id=${uploadedReferenceData.id}`);
+      }
+      
+      // Handle reference selection from DB (when user clicks on a reference card)
+      if (selectedReferenceId && selectedReferenceUrl) {
+        messageToSend = `[User selected reference: ${selectedReferenceId}]`;
+        logger.info(`[Agent Chat] User selected reference: ${selectedReferenceId}`);
+      }
 
       // Send message to Python agent with image path and session ID
-      logger.info(`[Agent Chat] Sending message: "${messageToSend}", image: ${imageFile?.path || 'none'}`);
-      const result = await sendMessageToAgent(messageToSend, imageFile?.path, sessionId, userUid);
+      // Don't send image path if it's a reference upload (not a product)
+      const imagePath = uploadedReferenceData ? undefined : imageFile?.path;
+      logger.info(`[Agent Chat] Sending message: "${messageToSend}", image: ${imagePath || 'none'}`);
+      const result = await sendMessageToAgent(
+        messageToSend, 
+        imagePath, 
+        sessionId, 
+        userUid, 
+        uploadedReferenceData || undefined, 
+        selectedReferenceId && selectedReferenceUrl ? { id: selectedReferenceId, url: selectedReferenceUrl } : undefined
+      );
       logger.info(`[Agent Chat] Received result type: ${result.type}`);
 
       // Handle different response types

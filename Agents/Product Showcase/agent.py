@@ -309,6 +309,7 @@ class NanoBananaAgent:
         self.text_analysis = None  # Store text analysis from selected reference
         self.reference_analysis = None  # V5: Store real-time Gemini Vision analysis of reference
         self.last_smart_suggestions = None  # V2: Store smart suggestions for when user accepts them
+        self.pending_text_edit = None  # V3: Store pending text edit proposal awaiting confirmation
         self.product_name = None  # Store analyzed product name
         self.product_industry = None  # Store analyzed product industry
         self.product_category = None  # Store analyzed product category (cream, serum, lipstick, etc.)
@@ -316,7 +317,9 @@ class NanoBananaAgent:
         self.last_generated_image = None  # Store path to last generated image for edit mode
         self.generation_count = 0  # Track number of generations (0=first, >0=edits)
 
-    def chat(self, user_message: str, image_path: Optional[str] = None) -> Dict[str, Any]:
+    def chat(self, user_message: str, image_path: Optional[str] = None, 
+             uploaded_reference: Optional[Dict[str, str]] = None,
+             selected_reference: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """
         Returns structured JSON for the frontend:
           { "type": "text", "text": "...", "readyToGenerate": bool }
@@ -326,7 +329,16 @@ class NanoBananaAgent:
           { "type": "reference_options", "text": "...", "references": [...] }
         or
           { "type": "image", "imageUrl": "...", "text": "..." }
+        
+        New parameters:
+        - uploaded_reference: User-uploaded reference image {id, url} - treated as custom reference
+        - selected_reference: DB reference selected {id, url} - used when user clicks a reference card
         """
+        # Handle user-uploaded reference image FIRST (before product image handling)
+        if uploaded_reference:
+            print(f"[DEBUG] User uploaded reference image: id={uploaded_reference.get('id', 'N/A')}")
+            return self._handle_user_uploaded_reference(uploaded_reference)
+        
         # Store product image path if provided
         if image_path:
             self.product_image_path = image_path
@@ -355,6 +367,10 @@ class NanoBananaAgent:
         # ================================================================================
         if self.current_step == 7 and self.last_generated_image:
             print(f"[DEBUG] Step 7 (edit mode) active, processing: {user_message[:50]}...")
+            
+            # V3: Check if there's a pending text edit awaiting confirmation
+            if self.pending_text_edit:
+                return self._handle_pending_text_confirmation(user_message)
             
             # Check if user clicked "Generar" - apply pending edits
             if user_msg_lower in ['generar', 'generate']:
@@ -1423,23 +1439,40 @@ FORMATO: Mantener 4:5 (1080x1350px)
     def _handle_edit_feedback(self, user_feedback: str) -> Dict[str, Any]:
         """
         ================================================================================
-        VERSION 2 (STABLE) - Edit Feedback Handler
-        DO NOT MODIFY without explicit permission from the user.
-        
-        Previous Version 1: Simple concatenation of user feedback
-        Version 2: Uses LLM to interpret feedback and generate coherent confirmation
+        VERSION 3 - Edit Feedback Handler (CONTEXTUAL)
         ================================================================================
         
         Handle user feedback after image generation.
-        Confirms the changes and shows Generate button - does NOT auto-generate.
-        User must click Generate to apply changes.
+        
+        V3 Changes:
+        - Detects if the change is about TEXT (achicar, acortar, cambiar texto, etc.)
+        - If text change: proposes a concrete new text and waits for confirmation
+        - If design change: confirms and shows Generate button
+        - User must confirm text changes before generating
+        ================================================================================
         """
         debug_tracker.log_step("7.0 EDIT_FEEDBACK_RECEIVED", {
             "feedback": user_feedback[:100],
             "previous_changes": self.design_changes[:50] if self.design_changes else None
         })
         
-        # Accumulate changes (append new feedback to existing)
+        feedback_lower = user_feedback.lower()
+        
+        # V3: Detect if this is a TEXT-related change
+        text_change_keywords = [
+            'texto', 'titulo', 'título', 'subtitulo', 'subtítulo', 'cta', 'call to action',
+            'achicar', 'acortar', 'más corto', 'mas corto', 'más chico', 'mas chico',
+            'cambiar el texto', 'modificar el texto', 'otro texto', 'diferente texto',
+            'eslogan', 'slogan', 'headline', 'frase', 'palabras', 'letras'
+        ]
+        
+        is_text_change = any(keyword in feedback_lower for keyword in text_change_keywords)
+        
+        if is_text_change and self.text_content:
+            # V3: Handle text change contextually - propose a concrete new text
+            return self._handle_text_edit_contextual(user_feedback)
+        
+        # Design change (not text) - original flow
         if self.design_changes:
             self.design_changes = f"{self.design_changes}. Además: {user_feedback}"
         else:
@@ -1447,8 +1480,7 @@ FORMATO: Mantener 4:5 (1080x1350px)
         
         print(f"[DEBUG] Accumulated edit changes: {self.design_changes[:100]}...")
         
-        # Use LLM to interpret the user feedback and generate a COHERENT confirmation
-        # This fixes the "Voy a pero no tiene las flores azules" bug
+        # Use LLM to interpret the user feedback
         try:
             interpretation_prompt = f"""Sos un asistente que resume pedidos de edición de imágenes.
 
@@ -1462,12 +1494,6 @@ REGLAS:
 3. Usa verbos en infinitivo: "adaptar", "cambiar", "agregar", "ajustar"
 4. Si pide varias cosas, resúmelas brevemente
 
-EJEMPLOS:
-- "pero no tiene las flores azules" → "agregar las flores azules"
-- "el fondo debería ser más claro" → "aclarar el fondo"  
-- "pero no tiene nada que ver, adaptar el fondo a los colores de mi producto y poner el producto con el mismo angulo" → "adaptar el fondo a tus colores y ajustar el ángulo del producto"
-- "quiero que el producto esté más centrado y con más luz" → "centrar el producto y agregar más luz"
-
 Tu respuesta (SOLO el resumen, sin comillas ni explicaciones):"""
             
             interpretation_response = self.client.models.generate_content(
@@ -1475,21 +1501,15 @@ Tu respuesta (SOLO el resumen, sin comillas ni explicaciones):"""
                 contents=[interpretation_prompt]
             )
             action_text = interpretation_response.text.strip().lower()
-            # Remove any leading "voy a" if the LLM added it
             if action_text.startswith("voy a "):
                 action_text = action_text[6:]
             print(f"[DEBUG] LLM interpreted action: {action_text}")
         except Exception as e:
             print(f"[DEBUG] Failed to interpret feedback with LLM: {e}")
-            # Fallback: use the original feedback but clean it up
             action_text = user_feedback.lower().strip()
             if action_text.startswith("pero "):
                 action_text = action_text[5:]
-            if action_text.startswith("no tiene "):
-                action_text = "agregar " + action_text[9:]
         
-        # Return confirmation message with Generate button (single line break, not double)
-        # User must click Generate to apply the changes
         confirmation_msg = f"¡Entendido! Voy a {action_text}.\n¿Hay algo más que quieras cambiar? Si no, presioná **Generar** para aplicar los cambios."
         
         self.history.append({"role": "assistant", "content": confirmation_msg})
@@ -1497,6 +1517,207 @@ Tu respuesta (SOLO el resumen, sin comillas ni explicaciones):"""
         return {
             "type": "text",
             "text": confirmation_msg,
+            "readyToGenerate": True
+        }
+    
+    def _handle_text_edit_contextual(self, user_feedback: str) -> Dict[str, Any]:
+        """
+        ================================================================================
+        VERSION 1 - Contextual Text Edit Handler
+        ================================================================================
+        
+        When user asks to change text (achicar, acortar, etc.), this function:
+        1. Identifies which text element they're referring to
+        2. Proposes a concrete new text
+        3. Waits for user confirmation before allowing generation
+        ================================================================================
+        """
+        print(f"[DEBUG] Text edit detected, handling contextually: {user_feedback[:50]}...")
+        
+        # Build context about current texts
+        current_texts_desc = []
+        text_keys = []
+        for key, value in self.text_content.items():
+            if isinstance(value, dict):
+                etiqueta = value.get('etiqueta', key)
+                sugerencia = value.get('sugerencia', '')
+                current_texts_desc.append(f"- {etiqueta}: \"{sugerencia}\"")
+                text_keys.append(key)
+            elif isinstance(value, str):
+                current_texts_desc.append(f"- {key}: \"{value}\"")
+                text_keys.append(key)
+        
+        current_texts_str = "\n".join(current_texts_desc)
+        
+        # Use LLM to understand the change and propose a new text
+        try:
+            prompt = f"""Sos un asistente de copywriting. El usuario quiere modificar un texto de su diseño.
+
+TEXTOS ACTUALES:
+{current_texts_str}
+
+PEDIDO DEL USUARIO: "{user_feedback}"
+
+TU TAREA:
+1. Identifica A QUÉ TEXTO se refiere el usuario (CTA, título, etc.)
+2. Entiende QUÉ QUIERE (más corto, diferente, etc.)
+3. Propone UN NUEVO TEXTO concreto que cumpla con su pedido
+
+Responde en JSON:
+{{
+    "texto_afectado": "nombre del texto que quiere cambiar (ej: CTA, Título principal, etc.)",
+    "texto_original": "el texto actual que va a cambiar",
+    "texto_propuesto": "tu propuesta de nuevo texto",
+    "explicacion": "breve explicación de por qué este texto es mejor (1 línea)"
+}}
+
+IMPORTANTE: Si pide "achicar" o "más corto", propone un texto con MENOS palabras pero que mantenga el mensaje.
+"""
+            
+            response = self.client.models.generate_content(
+                model=self.config.text_model,
+                contents=[prompt]
+            )
+            result_text = response.text.strip()
+            print(f"[DEBUG] Text edit LLM response: {result_text[:200]}...", file=sys.stderr)
+            
+            # Parse JSON
+            if '{' in result_text:
+                json_str = result_text[result_text.find('{'):result_text.rfind('}')+1]
+                proposal = json.loads(json_str)
+                
+                texto_afectado = proposal.get('texto_afectado', 'texto')
+                texto_original = proposal.get('texto_original', '')
+                texto_propuesto = proposal.get('texto_propuesto', '')
+                explicacion = proposal.get('explicacion', '')
+                
+                # Store the proposal for later confirmation
+                self.pending_text_edit = {
+                    'texto_afectado': texto_afectado,
+                    'texto_original': texto_original,
+                    'texto_propuesto': texto_propuesto,
+                    'user_feedback': user_feedback
+                }
+                
+                # Build response showing the proposal
+                response_text = f"Entiendo que querés modificar el **{texto_afectado}**.\n\n"
+                response_text += f"**Texto actual:** \"{texto_original}\"\n"
+                response_text += f"**Propuesta:** \"{texto_propuesto}\"\n"
+                if explicacion:
+                    response_text += f"\n_{explicacion}_\n"
+                response_text += "\n¿Te parece bien este cambio? Podés decirme **sí** para confirmarlo o proponerme otro texto."
+                
+                self.history.append({"role": "assistant", "content": response_text})
+                
+                return {
+                    "type": "text",
+                    "text": response_text,
+                    "readyToGenerate": False  # Don't show Generate yet - wait for confirmation
+                }
+            else:
+                raise ValueError("No JSON in response")
+                
+        except Exception as e:
+            print(f"[DEBUG] Text edit LLM failed: {e}", file=sys.stderr)
+            # Fallback: just confirm the change generically
+            self.design_changes = user_feedback if not self.design_changes else f"{self.design_changes}. Además: {user_feedback}"
+            return {
+                "type": "text",
+                "text": f"Entendido, voy a {user_feedback}.\n¿Hay algo más que quieras cambiar? Si no, presioná **Generar**.",
+                "readyToGenerate": True
+            }
+    
+    def _handle_pending_text_confirmation(self, user_message: str) -> Dict[str, Any]:
+        """
+        ================================================================================
+        VERSION 1 - Handle user response to pending text edit proposal
+        ================================================================================
+        
+        When user responds to a text edit proposal:
+        - If "sí", "ok", "dale", etc. -> Apply the proposed text and allow generation
+        - If they propose alternative text -> Update with their text
+        - If "no", "cancelar" -> Cancel the pending edit
+        ================================================================================
+        """
+        print(f"[DEBUG] Handling pending text confirmation: {user_message[:50]}...")
+        
+        user_msg_lower = user_message.lower().strip()
+        pending = self.pending_text_edit
+        
+        # Confirmation words
+        confirm_words = ['sí', 'si', 'ok', 'dale', 'perfecto', 'me gusta', 'está bien', 'esta bien', 
+                        'yes', 'confirmo', 'confirmar', 'genial', 'bueno', 'listo']
+        
+        # Rejection words
+        reject_words = ['no', 'cancelar', 'cancel', 'nope', 'mejor no', 'dejalo', 'déjalo']
+        
+        is_confirmation = any(word in user_msg_lower for word in confirm_words)
+        is_rejection = any(word in user_msg_lower for word in reject_words)
+        
+        if is_rejection:
+            # Cancel the pending edit
+            self.pending_text_edit = None
+            return {
+                "type": "text",
+                "text": "Entendido, no hago cambios en el texto. ¿Hay algo más que quieras ajustar?",
+                "readyToGenerate": True
+            }
+        
+        # Determine the new text to use
+        new_text = pending['texto_propuesto'] if is_confirmation else user_message
+        
+        if not is_confirmation:
+            # User proposed their own text - use it directly
+            print(f"[DEBUG] User proposed alternative text: {new_text[:50]}...")
+        
+        # Find and update the matching text in text_content
+        texto_afectado_lower = pending['texto_afectado'].lower()
+        updated = False
+        
+        for key, value in self.text_content.items():
+            if isinstance(value, dict):
+                etiqueta = value.get('etiqueta', '').lower()
+                # Match by keywords in the etiqueta
+                if (texto_afectado_lower in etiqueta or 
+                    ('cta' in texto_afectado_lower and 'cta' in etiqueta) or
+                    ('título' in texto_afectado_lower and 'título' in etiqueta) or
+                    ('titulo' in texto_afectado_lower and 'titulo' in etiqueta) or
+                    ('llamada' in texto_afectado_lower and 'llamada' in etiqueta)):
+                    old_text = value.get('sugerencia', '')
+                    value['sugerencia'] = new_text
+                    print(f"[DEBUG] Updated text_content[{key}]: '{old_text[:30]}...' -> '{new_text[:30]}...'")
+                    updated = True
+                    break
+            elif isinstance(value, str):
+                if texto_afectado_lower in key.lower():
+                    self.text_content[key] = new_text
+                    updated = True
+                    break
+        
+        if not updated:
+            # Fallback: try to find by original text
+            for key, value in self.text_content.items():
+                if isinstance(value, dict):
+                    if value.get('sugerencia', '') == pending['texto_original']:
+                        value['sugerencia'] = new_text
+                        updated = True
+                        break
+        
+        # Clear pending edit
+        self.pending_text_edit = None
+        
+        if updated:
+            response_text = f"¡Listo! Actualicé el texto a: **\"{new_text}\"**\n\n¿Hay algo más que quieras cambiar? Si no, presioná **Generar** para aplicar los cambios."
+        else:
+            # Couldn't find the text to update - add as design change instead
+            self.design_changes = f"Cambiar texto a: {new_text}" if not self.design_changes else f"{self.design_changes}. Cambiar texto a: {new_text}"
+            response_text = f"Entendido, voy a usar el texto: **\"{new_text}\"**\n\n¿Hay algo más? Si no, presioná **Generar**."
+        
+        self.history.append({"role": "assistant", "content": response_text})
+        
+        return {
+            "type": "text",
+            "text": response_text,
             "readyToGenerate": True
         }
     
@@ -2021,16 +2242,19 @@ Tu respuesta (SOLO el resumen, sin comillas ni explicaciones):"""
     def _analyze_reference_realtime(self, reference_image_url: str) -> dict:
         """
         =======================================================================
-        ANALYZE REFERENCE IN REALTIME - VERSION 1
+        ANALYZE REFERENCE IN REALTIME - VERSION 2
         =======================================================================
         Analyzes the reference image with Gemini Vision in real-time.
-        Gemini describes what it SEES using natural language and the ELEMENTS
-        of the image. No hardcoded categories.
+        
+        V2 Changes:
+        - contenido_principal is now MAX 15-20 words (brief summary)
+        - IGNORES text printed ON the product/packaging (brand, product name)
+        - Only detects text that is PART OF THE AD DESIGN (titles, CTAs, benefits)
         
         Returns dict with:
-        - contenido_principal: description of what's in the image
+        - contenido_principal: BRIEF description (max 20 words)
         - elementos_clave: key elements found
-        - textos: list of text elements with ubicacion, tipo, contenido, palabras_aprox
+        - textos: list of AD text elements (NOT product packaging text)
         - estilo: brief style description
         =======================================================================
         """
@@ -2038,51 +2262,46 @@ Tu respuesta (SOLO el resumen, sin comillas ni explicaciones):"""
         
         prompt = """Analiza esta imagen de referencia para Instagram.
 
-DESCRIBE LO QUE VES:
+1. CONTENIDO PRINCIPAL (MÁXIMO 15-20 PALABRAS):
+   Resume en UNA FRASE CORTA qué hay en la imagen.
+   Ejemplos correctos:
+   - "Tres frascos de crema apilados con sección de ingredientes"
+   - "Mujer aplicándose crema con producto flotando al lado"
+   - "Caja abierta mostrando dos frascos sobre fondo azul"
 
-1. CONTENIDO PRINCIPAL: Qué elementos hay en la imagen? Describe de forma simple.
-   Ejemplos: "una caja de producto abierta mostrando dos frascos", 
-   "una mujer aplicándose crema en el rostro", "un frasco sobre fondo degradado rosa"
+2. TEXTOS DEL DISEÑO (IGNORAR TEXTO DEL PRODUCTO):
+   
+   ⚠️ IMPORTANTE: IGNORAR completamente el texto impreso EN el producto/packaging:
+   - NO incluir: nombre de marca en el envase, nombre del producto, "made in...", ingredientes del packaging
+   - SOLO incluir: títulos, subtítulos, CTAs, frases de beneficios que son PARTE DEL DISEÑO DEL AD
+   
+   Para cada texto DEL DISEÑO (no del producto):
+   a) UBICACIÓN: Dónde está en la imagen (ej: "parte superior", "junto al producto")
+   b) TIPO: Qué función cumple (título, subtítulo, CTA, descripción de beneficio)
+   c) CONTENIDO: El texto literal
+   d) PALABRAS: Cantidad aproximada
 
-2. TEXTOS VISIBLES: Para CADA texto que veas:
-   
-   a) DONDE ESTÁ: Describe la ubicación usando los ELEMENTOS de la imagen.
-      - Si hay una caja: "en la tapa interior de la caja", "en el lateral de la caja"
-      - Si hay una persona: "junto al rostro", "sobre el hombro"
-      - Si hay un producto: "arriba del producto", "al lado del frasco"
-      - Usa los elementos reales, no solo "arriba/abajo/izquierda"
-   
-   b) QUÉ TIPO DE TEXTO ES: Describe su función según lo que ves.
-      - "un título grande tipo pregunta que llama la atención"
-      - "el nombre de la marca en letra pequeña"
-      - "un slogan corto"
-      - "texto descriptivo sobre ingredientes"
-      - "una frase motivacional"
-   
-   c) QUÉ DICE: El contenido literal del texto
-   
-   d) LARGO: Cuántas palabras tiene aproximadamente
-
-3. ESTILO VISUAL: Describe brevemente (elegante, minimalista, fresco, etc.)
+3. ESTILO: Una frase corta (ej: "elegante y minimalista", "fresco y moderno")
 
 Responde en JSON:
 {
-  "contenido_principal": "descripción de los elementos de la imagen",
-  "elementos_clave": ["elemento1", "elemento2", "elemento3"],
+  "contenido_principal": "frase corta de máximo 20 palabras",
+  "elementos_clave": ["elemento1", "elemento2"],
   "textos": [
     {
-      "ubicacion": "dónde está usando los elementos (ej: en la tapa de la caja)",
-      "tipo": "qué tipo de texto es (ej: título grande tipo pregunta)",
+      "ubicacion": "dónde está",
+      "tipo": "función del texto",
       "contenido": "texto literal",
       "palabras_aprox": numero
     }
   ],
-  "estilo": "descripción breve"
+  "estilo": "descripción breve del estilo"
 }
 
-IMPORTANTE: Usa los ELEMENTOS de la imagen para describir dónde está cada texto.
-No digas solo "arriba" - di "en la tapa de la caja" o "sobre el producto".
-Si no hay texto visible, devuelve "textos": []
+RECORDATORIO:
+- contenido_principal: MÁXIMO 20 palabras, una sola frase
+- textos: SOLO texto del diseño del ad, NO texto impreso en el producto/envase
+- Si no hay texto de diseño (solo texto del producto), devuelve "textos": []
 """
         
         try:
@@ -2104,17 +2323,20 @@ Si no hay texto visible, devuelve "textos": []
             )
             
             result_text = response.text.strip()
-            print(f"[DEBUG] Reference analysis raw response: {result_text[:500]}...")
+            # Only print a short summary to avoid multiline JSON confusing the Node.js parser
+            print(f"[DEBUG] Reference analysis received, length={len(result_text)}", file=sys.stderr)
             
             # Parse JSON response
             if '{' in result_text:
                 json_str = result_text[result_text.find('{'):result_text.rfind('}')+1]
                 analysis = json.loads(json_str)
                 
-                print(f"[DEBUG] Reference analysis parsed: contenido={analysis.get('contenido_principal', '')[:50]}, textos={len(analysis.get('textos', []))}")
+                # Safe single-line log
+                contenido_short = analysis.get('contenido_principal', '')[:50].replace('\n', ' ')
+                print(f"[DEBUG] Reference analysis parsed: contenido={contenido_short}, textos={len(analysis.get('textos', []))}", file=sys.stderr)
                 return analysis
             else:
-                print(f"[DEBUG] No JSON found in reference analysis response")
+                print(f"[DEBUG] No JSON found in reference analysis response", file=sys.stderr)
                 return {
                     "contenido_principal": "un diseño profesional",
                     "elementos_clave": [],
@@ -2130,6 +2352,108 @@ Si no hay texto visible, devuelve "textos": []
                 "textos": [],
                 "estilo": "profesional"
             }
+    
+    def _handle_user_uploaded_reference(self, uploaded_reference: Dict[str, str]) -> Dict[str, Any]:
+        """
+        =======================================================================
+        Handle user-uploaded reference image
+        VERSION 1: Same flow as selected reference, but only real-time analysis
+        =======================================================================
+        When user uploads their own reference (instead of selecting from DB),
+        we process it the same way but:
+        1. No DB guidelines (the reference is new, not indexed yet)
+        2. Only real-time analysis via Gemini Vision
+        3. The image is already saved to S3/DB by the backend (async indexing)
+        
+        Flow: Same as _handle_reference_selected but without design_guidelines
+        =======================================================================
+        """
+        print(f"[DEBUG] Processing user-uploaded reference: id={uploaded_reference.get('id', 'N/A')}")
+        
+        # Check if we're in the right step (should have product and post type)
+        if not self.product_image_path:
+            return {
+                "type": "text",
+                "text": "Primero necesito que subas la imagen de tu producto antes de seleccionar una referencia.",
+                "readyToGenerate": False
+            }
+        
+        if not self.selected_post_type:
+            return {
+                "type": "text",
+                "text": "Primero necesito saber qué tipo de post quieres crear. Por favor, selecciona un tipo de post.",
+                "readyToGenerate": False
+            }
+        
+        debug_tracker.log_step("3.0 USER_UPLOADED_REFERENCE", {
+            "reference_id": uploaded_reference.get('id', 'unknown'),
+            "has_url": bool(uploaded_reference.get('url'))
+        })
+        
+        # Build a minimal reference object (similar to DB reference but without guidelines)
+        reference_url = uploaded_reference.get('url', '')
+        reference_id = uploaded_reference.get('id', '')
+        
+        # Create reference object matching DB structure (minimal)
+        reference = {
+            'id': reference_id,
+            'url': reference_url,
+            'imageUrl': reference_url,
+            'design_guidelines': {},  # No guidelines for user-uploaded references
+            'text_analysis': None,
+            'text_in_image': None,
+            'tags': [],
+            'industry': '',
+            'aesthetic': '',
+            'mood': '',
+            'scope': 'user',  # User-uploaded references are user scope
+        }
+        
+        # 1. Store reference (no DB guidelines)
+        self.selected_reference = reference
+        self.design_guidelines = {}  # No guidelines for user-uploaded
+        self.text_analysis = None
+        self.current_step = 3
+        
+        # 2. REAL-TIME ANALYSIS: Call Gemini Vision to analyze the uploaded reference
+        print(f"[DEBUG] Starting real-time analysis for uploaded reference: {reference_url[:80] if reference_url else 'NO URL'}...")
+        
+        self.reference_analysis = self._analyze_reference_realtime(reference_url)
+        
+        debug_tracker.log_step("3.1 UPLOADED_REF_ANALYSIS_COMPLETE", {
+            "contenido_principal": self.reference_analysis.get('contenido_principal', '')[:100],
+            "elementos_clave": self.reference_analysis.get('elementos_clave', []),
+            "num_textos": len(self.reference_analysis.get('textos', [])),
+            "estilo": self.reference_analysis.get('estilo', '')
+        })
+        
+        # 3. Build description using what Gemini SAW
+        descripcion = self.reference_analysis.get('contenido_principal', 'un diseño profesional')
+        textos = self.reference_analysis.get('textos', [])
+        estilo = self.reference_analysis.get('estilo', '')
+        
+        # Build response message (similar to _handle_reference_selected)
+        text = f"¡Excelente referencia! Veo que muestra **{descripcion}**."
+        
+        if estilo:
+            text += f"\n\nEl estilo es **{estilo}**."
+        
+        # NOTE: Text elements are NOT shown here - they will be shown in Step 4 (text suggestions)
+        # This step is only for DESIGN changes (layout, colors, composition)
+        
+        text += "\n\n**¿Te gustaría mantener el diseño actual o modificar algún elemento?** (colores, composición, estilo)"
+        
+        debug_tracker.log_step("3.2 UPLOADED_REF_DESCRIPTION_BUILT", {
+            "descripcion": descripcion[:50] if descripcion else '',
+            "num_textos": len(textos),
+            "response_length": len(text)
+        })
+        
+        return {
+            "type": "text",
+            "text": text,
+            "readyToGenerate": False
+        }
     
     def _handle_reference_selected(self, reference: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -2180,19 +2504,10 @@ Si no hay texto visible, devuelve "textos": []
         if estilo:
             text += f"\n\nEl estilo es **{estilo}**."
         
-        # Add text info if there are text elements
-        if textos:
-            text += f"\n\nTiene **{len(textos)} elemento(s) de texto**:"
-            for i, t in enumerate(textos, 1):
-                ubicacion = t.get('ubicacion', '')
-                tipo = t.get('tipo', '')
-                # Create a brief description combining location and type
-                if ubicacion and tipo:
-                    text += f"\n- {tipo.capitalize()} ({ubicacion})"
-                elif tipo:
-                    text += f"\n- {tipo.capitalize()}"
+        # NOTE: Text elements are NOT shown here - they will be shown in Step 4 (text suggestions)
+        # This step is only for DESIGN changes (layout, colors, composition)
         
-        text += "\n\n**¿Te gustaría mantener el diseño actual o modificar algún elemento?**"
+        text += "\n\n**¿Te gustaría mantener el diseño actual o modificar algún elemento?** (colores, composición, estilo)"
         
         debug_tracker.log_step("3.2 REFERENCE_DESCRIPTION_BUILT", {
             "descripcion": descripcion[:50],

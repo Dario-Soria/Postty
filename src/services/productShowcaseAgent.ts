@@ -13,6 +13,8 @@ let messageQueue: Array<{
   imagePath?: string;
   sessionId: string;
   userId?: string;
+  uploadedReference?: { id: string; url: string };
+  selectedReference?: { id: string; url: string };
   resolve: (value: any) => void;
   reject: (error: Error) => void;
 }> = [];
@@ -167,13 +169,24 @@ function processQueue(): void {
 
   currentRequest = { resolve: item.resolve, reject: item.reject };
   
-  // Send message to agent via stdin with optional image_path and session_id
-  const request = { 
+  // Send message to agent via stdin with optional image_path, session_id, and reference data
+  const request: any = { 
     message: item.message,
     image_path: item.imagePath,
     session_id: item.sessionId,
     user_id: item.userId,
   };
+  
+  // Include uploaded reference data if present
+  if (item.uploadedReference) {
+    request.uploaded_reference = item.uploadedReference;
+  }
+  
+  // Include selected reference data if present
+  if (item.selectedReference) {
+    request.selected_reference = item.selectedReference;
+  }
+  
   const requestJson = JSON.stringify(request) + '\n';
   
   logger.info(`[Agent Request] Sending: ${JSON.stringify(request)}`);
@@ -207,12 +220,21 @@ export async function ensureAgentRunning(): Promise<void> {
 
 /**
  * Send a message to the agent and get a response
+ * 
+ * @param message - The message to send
+ * @param imagePath - Optional path to product image
+ * @param sessionId - Session ID for conversation tracking
+ * @param userId - User ID for ownership
+ * @param uploadedReference - Reference image uploaded by user (id + url)
+ * @param selectedReference - Reference image selected from DB (id + url)
  */
 export async function sendMessageToAgent(
   message: string,
   imagePath?: string,
   sessionId: string = 'default',
-  userId?: string
+  userId?: string,
+  uploadedReference?: { id: string; url: string },
+  selectedReference?: { id: string; url: string }
 ): Promise<{ 
   type: 'text' | 'image' | 'reference_options' | 'post_type_options'; 
   text: string; 
@@ -234,6 +256,8 @@ export async function sendMessageToAgent(
       imagePath,
       sessionId,
       userId,
+      uploadedReference,
+      selectedReference,
       resolve,
       reject,
     });

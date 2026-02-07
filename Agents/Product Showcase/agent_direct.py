@@ -91,9 +91,15 @@ def main():
             image_path = request.get('image_path')  # Optional product image path
             session_id = request.get('session_id', 'default')  # Session ID for multi-user support
             user_id = request.get('user_id')  # Optional Firebase uid (used for post attribution)
+            uploaded_reference = request.get('uploaded_reference')  # User-uploaded reference {id, url}
+            selected_reference = request.get('selected_reference')  # DB reference selected {id, url}
             
             print(f"[DEBUG] Session: {session_id[:12]}..., Message: {message[:50] if message else 'None'}, Image: {image_path}", 
                   file=sys.stderr, flush=True)
+            if uploaded_reference:
+                print(f"[DEBUG] Uploaded reference: id={uploaded_reference.get('id', 'N/A')[:8]}...", file=sys.stderr, flush=True)
+            if selected_reference:
+                print(f"[DEBUG] Selected reference: id={selected_reference.get('id', 'N/A')[:8]}...", file=sys.stderr, flush=True)
             
             # Get or create agent for this specific session
             agent = get_or_create_agent(session_id, PROJECT_ID, config)
@@ -106,18 +112,28 @@ def main():
             except Exception:
                 pass
             
-            # Allow empty message if image is provided
-            if not message and not image_path:
+            # Allow empty message if image or reference is provided
+            if not message and not image_path and not uploaded_reference and not selected_reference:
                 response = {"status": "error", "message": "No message or image provided"}
             else:
-                # If only image provided, use a placeholder message
-                if not message and image_path:
+                # If only image provided (and not a reference), use a placeholder message
+                if not message and image_path and not uploaded_reference:
                     message = "[User uploaded product image]"
                     print(f"[DEBUG] Using placeholder message for image", file=sys.stderr, flush=True)
                 
-                # Call session-specific agent with optional image path
+                # If user uploaded a reference, use a placeholder message
+                if uploaded_reference:
+                    message = f"[User uploaded reference image]"
+                    print(f"[DEBUG] User uploaded reference: {uploaded_reference.get('id', 'N/A')}", file=sys.stderr, flush=True)
+                
+                # Call session-specific agent with optional image path and reference data
                 print(f"[DEBUG] Calling agent.chat() for session {session_id[:8]}...", file=sys.stderr, flush=True)
-                result = agent.chat(message, image_path=image_path)
+                result = agent.chat(
+                    message, 
+                    image_path=image_path,
+                    uploaded_reference=uploaded_reference,
+                    selected_reference=selected_reference
+                )
                 print(f"[DEBUG] Agent returned type: {result.get('type', 'unknown')}", file=sys.stderr, flush=True)
                 response = {"status": "success", "result": result}
             
