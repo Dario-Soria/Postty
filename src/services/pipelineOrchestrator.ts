@@ -31,6 +31,8 @@ import {
 export interface PipelineInput {
   productImagePath: string;
   referenceImagePath?: string;
+  /** V6: Second reference image for edit mode with original reference */
+  referenceImage2Path?: string;
   textPrompt: string;
   style?: string;
   useCase?: string;
@@ -39,7 +41,7 @@ export interface PipelineInput {
     subheadline?: string;
     cta?: string;
   };
-  textFormat?: string; // User's description of how they want text formatted
+  textFormat?: string; // User's description of how they wants text formatted
   language?: 'es' | 'en';
   aspectRatio?: '1:1' | '9:16' | '16:9' | '4:3' | '3:4' | '4:5';
   skipText?: boolean;
@@ -158,6 +160,8 @@ export async function executePipeline(input: PipelineInput): Promise<PipelineOut
     nanoBananaResult = await generateBaseImage({
       referenceImagePath,
       productImagePath: input.productImagePath,
+      // V6: Pass second reference for edit mode with original reference
+      referenceImage2Path: input.referenceImage2Path,
       userIntent,
       aspectRatio: input.aspectRatio,
       // NEW: Pass text generation params if provided

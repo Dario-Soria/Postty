@@ -26,6 +26,8 @@ export interface NanoBananaInput {
   referenceImagePath: string;
   /** Path to product image (from user upload) */
   productImagePath: string;
+  /** V6: Path to second reference image (for edit mode with original reference) */
+  referenceImage2Path?: string;
   /** User's intent/description for the generation */
   userIntent?: string;
   /** Output aspect ratio */
@@ -267,6 +269,9 @@ export async function generateBaseImage(input: NanoBananaInput): Promise<NanoBan
   logger.info('🍌 NANO BANANA - Generating Base Image');
   logger.info('═══════════════════════════════════════════════════════════════');
   logger.info(`📷 Reference: ${input.referenceImagePath}`);
+  if (input.referenceImage2Path) {
+    logger.info(`📷 Reference 2 (current output): ${input.referenceImage2Path}`);
+  }
   logger.info(`📦 Product: ${input.productImagePath}`);
   logger.info(`📐 Aspect Ratio: ${aspectRatio}`);
   logger.info(`💬 User Intent: ${input.userIntent || '(none)'}`);
@@ -276,6 +281,15 @@ export async function generateBaseImage(input: NanoBananaInput): Promise<NanoBan
   const productBase64 = imageToBase64(input.productImagePath);
   const referenceMime = guessMimeType(input.referenceImagePath);
   const productMime = guessMimeType(input.productImagePath);
+
+  // V6: Prepare second reference if provided (for edit with original reference mode)
+  let reference2Base64: string | undefined;
+  let reference2Mime: string | undefined;
+  if (input.referenceImage2Path && fs.existsSync(input.referenceImage2Path)) {
+    reference2Base64 = imageToBase64(input.referenceImage2Path);
+    reference2Mime = guessMimeType(input.referenceImage2Path);
+    logger.info(`📷 Reference 2 prepared for edit mode`);
+  }
 
   // Build prompt (with optional text parameters)
   const prompt = buildGenerationPrompt({
@@ -287,7 +301,7 @@ export async function generateBaseImage(input: NanoBananaInput): Promise<NanoBan
   });
 
   // Build parts for generation
-  const parts = [
+  const parts: any[] = [
     { text: prompt },
     { 
       inlineData: { 
@@ -295,13 +309,25 @@ export async function generateBaseImage(input: NanoBananaInput): Promise<NanoBan
         data: referenceBase64 
       } 
     },
-    { 
-      inlineData: { 
-        mimeType: productMime, 
-        data: productBase64 
-      } 
-    },
   ];
+  
+  // V6: Add second reference image if provided (for edit with original reference)
+  if (reference2Base64 && reference2Mime) {
+    parts.push({
+      inlineData: {
+        mimeType: reference2Mime,
+        data: reference2Base64
+      }
+    });
+  }
+  
+  // Add product image last
+  parts.push({ 
+    inlineData: { 
+      mimeType: productMime, 
+      data: productBase64 
+    } 
+  });
 
   try {
     // Dynamic import of @google/generative-ai

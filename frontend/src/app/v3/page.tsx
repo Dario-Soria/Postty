@@ -948,7 +948,7 @@ export default function V3Page() {
                     />
                   </div>
                   <h2 className="text-base sm:text-lg font-medium text-gray-900 mb-1">
-                    {isFirstPost ? "¡Bienvenid@ a tu primer post!" : "¡Creemos tu nuevo post!"}
+                    {isFirstPost === true ? "¡Bienvenid@ a tu primer post!" : "¡Creemos tu nuevo post!"}
                   </h2>
                   <p className="text-xs sm:text-sm text-gray-500">
                     {isFirstPost 

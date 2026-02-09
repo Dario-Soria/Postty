@@ -173,13 +173,28 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
       }
       
       if (result.type === 'image' && result.file) {
-        // Image was generated locally on this instance; upload to S3 so it works in ECS/multi-instance.
-        const uploadedUrl = await uploadLocalImage(result.file);
+        // V2: Return local URL immediately, upload to S3 in background
+        // This improves UX by showing the image faster
+        const filename = path.basename(result.file);
+        // Use full backend URL so frontend can load it (frontend is on different port)
+        const backendPort = process.env.PORT || '8080';
+        const localUrl = `http://localhost:${backendPort}/generated-images/${filename}`;
+        
+        logger.info(`Serving image locally first: ${localUrl}`);
+        
+        // Upload to S3 in background (don't await)
+        uploadLocalImage(result.file)
+          .then((s3Url) => {
+            logger.info(`Background S3 upload completed: ${s3Url}`);
+          })
+          .catch((err) => {
+            logger.error(`Background S3 upload failed: ${err}`);
+          });
         
         const response: any = {
           type: 'image',
           text: result.text,
-          imageUrl: uploadedUrl,
+          imageUrl: localUrl,  // Local URL for immediate display
         };
         
         // Include textLayout if present

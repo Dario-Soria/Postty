@@ -279,6 +279,16 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
         }
       }
 
+      // V6: Resolve referenceImage2 (for edit mode with original reference)
+      let referenceImage2Path: string | undefined;
+      if (formData.referenceImage2) {
+        // Support absolute paths (for edit mode with previously generated images)
+        if (formData.referenceImage2.startsWith('/') && fs.existsSync(formData.referenceImage2)) {
+          referenceImage2Path = formData.referenceImage2;
+          logger.info(`📁 Using absolute path reference2: ${formData.referenceImage2}`);
+        }
+      }
+
       // Parse textContent if provided as JSON string
       let textContent: { headline?: string; subheadline?: string; cta?: string } | undefined;
       if (formData.textContent) {
@@ -328,6 +338,7 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
       const pipelineInput: PipelineInput = {
         productImagePath,
         referenceImagePath,
+        referenceImage2Path,  // V6: For edit mode with original reference
         textPrompt: formData.textPrompt,
         language: (formData.language as 'es' | 'en') || 'es',
         aspectRatio: (formData.aspectRatio as '1:1' | '9:16' | '16:9' | '4:3' | '3:4' | '4:5') || '4:5',
@@ -427,6 +438,7 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
         textPrompt?: string;
         referenceImage?: string;
         referenceImageUrl?: string; // signed S3 URL for DB-backed references
+        referenceImage2?: string; // V6: Second reference for edit mode with original reference
         productName?: string;
         language?: 'es' | 'en';
         aspectRatio?: '1:1' | '9:16' | '16:9' | '4:3' | '3:4' | '4:5';
@@ -518,10 +530,21 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
         }
       }
 
+      // V6: Resolve referenceImage2 (for edit mode with original reference)
+      let referenceImage2Path: string | undefined;
+      if (body.referenceImage2) {
+        // Support absolute paths (for edit mode with previously generated images)
+        if (body.referenceImage2.startsWith('/') && fs.existsSync(body.referenceImage2)) {
+          referenceImage2Path = body.referenceImage2;
+          logger.info(`📁 Using absolute path reference2: ${body.referenceImage2}`);
+        }
+      }
+
       // Build pipeline input
       const pipelineInput: PipelineInput = {
         productImagePath,
         referenceImagePath,
+        referenceImage2Path,  // V6: For edit mode with original reference
         textPrompt: body.textPrompt,
         language: body.language || 'es',
         aspectRatio: body.aspectRatio || '4:5',

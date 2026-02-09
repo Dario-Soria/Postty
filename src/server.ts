@@ -41,6 +41,7 @@ import postsAnalyticsRoutes from './routes/posts-analytics';
 import instagramAuthRoutes from './routes/instagram-auth';
 import userFirstPostRoute from './routes/user-first-post';
 import getPostTypesRoute from './routes/get-post-types';
+import serveGeneratedImageRoute from './routes/serve-generated-image';
 import * as logger from './utils/logger';
 
 // Configuration
@@ -135,6 +136,7 @@ async function start(): Promise<void> {
     await fastify.register(applyReferenceJsonRoute);
     await fastify.register(applyDesignGuidelinesTextRoute);
     await fastify.register(incrementReferenceRankingRoute);
+    await fastify.register(serveGeneratedImageRoute);
     await fastify.register(testEnvRoute);
 
     // Health check endpoint

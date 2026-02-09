@@ -293,6 +293,7 @@ class NanoBananaAgent:
         # Additional state for tool handlers
         self.backend_url = os.environ.get('BACKEND_URL', 'http://localhost:8080')
         self.selected_reference = None  # Store user's reference selection
+        self.uses_original_reference = False  # Flag for edit mode: user wants changes based on original reference
         self.product_image_path = None  # Store uploaded product image path
         self.text_content = None  # Store user's text specifications for overlay
         self.awaiting_text_input = False  # Flag to track if we're waiting for text input
@@ -1317,6 +1318,89 @@ IMPORTANTE: Las etiquetas deben ser DESCRIPTIVAS usando la ubicación y el tipo 
         
         return None
     
+    def _process_conversation_for_generation(self) -> Dict[str, Any]:
+        """
+        =======================================================================
+        PROCESS CONVERSATION FOR GENERATION - VERSION 1
+        =======================================================================
+        Before generating, process the ENTIRE conversation to extract:
+        - Final design changes the user wants
+        - Final text content (including what to KEEP and what to REMOVE)
+        
+        This is more robust than accumulating message-by-message.
+        =======================================================================
+        """
+        print(f"[DEBUG] _process_conversation_for_generation: Processing {len(self.history)} messages", file=sys.stderr, flush=True)
+        
+        # Build conversation transcript
+        conversation_transcript = ""
+        for m in self.history:
+            role = "Usuario" if m["role"] == "user" else "Asistente"
+            conversation_transcript += f"{role}: {m['content']}\n\n"
+        
+        # Get current suggestions context
+        suggestions_context = ""
+        if self.last_smart_suggestions:
+            suggestions_context = json.dumps(self.last_smart_suggestions, ensure_ascii=False, indent=2)
+        
+        prompt = f"""Analizá esta conversación entre un usuario y un asistente de diseño para Instagram.
+
+SUGERENCIAS DE TEXTO QUE SE LE MOSTRARON AL USUARIO:
+{suggestions_context if suggestions_context else "(sin sugerencias de texto)"}
+
+CONVERSACIÓN COMPLETA:
+{conversation_transcript}
+
+TU TAREA: Extraer exactamente qué quiere el usuario para la generación final.
+
+Analizá la conversación y determiná:
+1. CAMBIOS DE DISEÑO: ¿Qué cambios de diseño pidió? (poses, elementos, colores, etc.)
+2. TEXTOS FINALES: De las sugerencias mostradas, ¿cuáles quiere MANTENER y cuáles quiere ELIMINAR?
+
+REGLAS:
+- Si el usuario pidió eliminar algún texto, NO lo incluyas en textos_finales
+- Si el usuario confirmó que el resto está bien, incluí los textos que NO pidió eliminar
+- Si no hubo cambios de texto, incluí todas las sugerencias originales
+- Para cambios de diseño, resumí todo lo que pidió en una frase clara
+
+Respondé SOLO en JSON:
+{{
+  "cambios_diseno": "descripción de cambios de diseño o 'mantener diseño original'",
+  "textos_finales": {{
+    "text_1": {{"etiqueta": "...", "sugerencia": "..."}} o null si se eliminó,
+    "text_2": {{"etiqueta": "...", "sugerencia": "..."}} o null si se eliminó,
+    ...
+  }},
+  "resumen": "breve resumen de lo que el usuario quiere"
+}}
+"""
+        
+        try:
+            response = self.client.models.generate_content(
+                model=self.config.text_model,
+                contents=[{"role": "user", "parts": [{"text": prompt}]}]
+            )
+            result_text = response.text.strip()
+            print(f"[DEBUG] _process_conversation_for_generation: LLM response length={len(result_text)}", file=sys.stderr, flush=True)
+            
+            # Parse JSON
+            import re
+            json_match = re.search(r'\{[\s\S]*\}', result_text)
+            if json_match:
+                result = json.loads(json_match.group())
+                print(f"[DEBUG] _process_conversation_for_generation: Parsed result={result.get('resumen', 'no summary')}", file=sys.stderr, flush=True)
+                return result
+            
+        except Exception as e:
+            print(f"[ERROR] _process_conversation_for_generation: {e}", file=sys.stderr, flush=True)
+        
+        # Fallback: return current values
+        return {
+            "cambios_diseno": self.design_changes or "mantener diseño original",
+            "textos_finales": self.text_content or self.last_smart_suggestions,
+            "resumen": "fallback - usando valores actuales"
+        }
+    
     def _build_nanobanana_prompt(self) -> str:
         """
         =======================================================================
@@ -1367,6 +1451,7 @@ INSTRUCCIONES PRINCIPALES:
 1. REPLICAR la referencia EXACTAMENTE
 2. REEMPLAZAR el producto de la referencia con MI PRODUCTO
 3. ADAPTAR colores de fondo para que armonicen con mi producto
+4. MANTENER todos los elementos visuales (personas, poses, fondos, objetos) exactamente igual a la referencia a menos que se especifique un cambio abajo
 
 CAMBIOS SOLICITADOS POR EL USUARIO:
 {changes}
@@ -1429,6 +1514,46 @@ REGLAS DE EDICIÓN:
 FORMATO: Mantener 4:5 (1080x1350px)
 """
         return prompt
+    
+    def _build_nanobanana_edit_with_reference_prompt(self, user_feedback: str) -> str:
+        """
+        =======================================================================
+        BUILD NANOBANANA EDIT WITH REFERENCE PROMPT - VERSION 1
+        =======================================================================
+        Edit prompt when user wants changes based on ORIGINAL reference.
+        This is used when the user mentions the original reference image.
+        
+        In this case, NanoBanana receives 3 images:
+        1. Original reference (what the user selected at the beginning)
+        2. Current output (the generated image to modify)
+        3. Product image (must remain untouched)
+        =======================================================================
+        """
+        user_changes = user_feedback.strip() if user_feedback else "No se especificaron cambios"
+        
+        return f"""TAREA: Modificar la imagen generada usando la REFERENCIA ORIGINAL como guía.
+
+CONTEXTO:
+- IMAGEN 1 (referencia original): La imagen de referencia que el usuario eligió al principio
+- IMAGEN 2 (output actual): La imagen que generamos y que el usuario quiere modificar
+- IMAGEN 3 (producto): El producto del usuario que debe mantenerse
+
+⚠️ REGLA ABSOLUTA - PRODUCTO INTOCABLE ⚠️
+El producto del usuario NO se modifica BAJO NINGUNA CIRCUNSTANCIA:
+- NO cambiar: etiquetas, texto del envase, forma, colores, textura del producto
+- El producto debe verse 100% IDÉNTICO al de la imagen actual
+
+CAMBIOS SOLICITADOS (basados en la referencia original):
+{user_changes}
+
+INSTRUCCIONES:
+1. Mirá la REFERENCIA ORIGINAL para entender qué elemento el usuario quiere recuperar
+2. Aplicá ese elemento al OUTPUT ACTUAL
+3. Mantener TODO lo demás exactamente igual al output actual
+4. NO reinterpretar - solo aplicar el cambio específico
+
+FORMATO: Mantener 4:5 (1080x1350px)
+"""
     
     def _handle_design_mode_contextual(self, user_message: str) -> Dict[str, Any]:
         """
@@ -1500,18 +1625,20 @@ TU TAREA: Entender qué quiere el usuario respecto al DISEÑO y responder de for
 
 ANALIZA EL INTENT:
 1. ¿Quiere mantener el diseño como está? → Confirmar y preguntar si está listo para pasar al texto
-2. ¿Quiere agregar un elemento (ej: "agregar planta")? → PROPONER algo CONCRETO (ej: "Perfecto, ¿te gustaría una planta tropical a la derecha del producto o prefieres algo más sutil como hojas decorativas?")
-3. ¿Quiere cambiar algo específico (colores, layout)? → Confirmar lo que entendiste y preguntar si quiere más cambios
+2. ¿Quiere agregar/cambiar un elemento (ej: "agregar planta", "cambiar pose")? → SUGERIR 2-3 opciones concretas PRIMERO, luego preguntar cuál prefiere
+3. ¿Confirma una opción que le sugeriste? → Confirmar el cambio y preguntar si quiere más cambios
 4. ¿Hace una pregunta? → Responderla en contexto del diseño
 5. ¿Confirma que está listo con los cambios de diseño? → Proceder al texto
 6. ¿No está claro? → Preguntar amablemente qué necesita
 
 REGLAS IMPORTANTES:
 - Respondé en español argentino, casual pero profesional
-- Si el usuario quiere AGREGAR algo, SIEMPRE proponé opciones CONCRETAS basadas en el producto y contexto
+- SIEMPRE que el usuario pida agregar o cambiar algo, PRIMERO sugerí 2-3 opciones CONCRETAS y específicas, luego preguntá cuál prefiere
+- Ejemplo CORRECTO: "Dale, para la pose de la mujer te sugiero: 1) Aplicándose la crema frente al espejo con expresión relajada, 2) Mostrando el producto cerca del rostro con sonrisa natural, o 3) Con las manos en el rostro en gesto de cuidado. ¿Cuál te gusta más?"
+- Ejemplo INCORRECTO: "¿Tenés alguna pose en mente o querés que te sugiera opciones?" (NO preguntar si quiere sugerencias, DARLAS directamente)
 - NO asumas que el usuario está listo hasta que lo confirme explícitamente
 - MIRÁ EL HISTORIAL: No repitas preguntas ya hechas, recordá lo que el usuario dijo antes
-- Sé conciso (máximo 2-3 oraciones)
+- Sé conciso pero incluí las sugerencias concretas
 - Cuando confirmes un cambio, mencioná que si está conforme puede hacer clic en **Generar**
 - NO menciones los textos todavía, eso viene después
 
@@ -1521,7 +1648,8 @@ Responde SOLO en JSON válido:
   "respuesta": "tu respuesta natural al usuario",
   "elemento_propuesto": null,
   "cambio_acumulado": null,
-  "ready_for_text_step": false
+  "ready_for_text_step": false,
+  "ready_to_generate": false
 }}
 
 SOBRE LOS CAMPOS:
@@ -1530,6 +1658,7 @@ SOBRE LOS CAMPOS:
 - elemento_propuesto: Si el usuario quiere agregar algo, describí el elemento concreto que proponés (ej: "planta tropical a la derecha")
 - cambio_acumulado: Si confirmaste un cambio, resumilo brevemente para acumular (ej: "agregar planta tropical")
 - ready_for_text_step: true SOLO si el usuario confirmó que está listo con el diseño (dijo "listo", "mantener", "ok vamos", etc.)
+- ready_to_generate: true SOLO si: 1) Hay cambios confirmados Y 2) La referencia NO tiene textos. Si la referencia tiene textos, SIEMPRE false (el texto se define después)
 """
         
         try:
@@ -1561,6 +1690,7 @@ SOBRE LOS CAMPOS:
             debug_tracker.log_step("3.5.1 DESIGN_CONTEXTUAL_RESPONSE", {
                 "intent": result.get("intent"),
                 "ready_for_text_step": result.get("ready_for_text_step"),
+                "ready_to_generate": result.get("ready_to_generate"),
                 "elemento_propuesto": result.get("elemento_propuesto"),
                 "cambio_acumulado": result.get("cambio_acumulado")
             })
@@ -1584,13 +1714,13 @@ SOBRE LOS CAMPOS:
                 return self._handle_design_changes(self.design_changes)
             
             # Otherwise, keep in design mode and return conversational response
-            # Show Generate button if there's an accumulated change
-            has_accumulated_change = bool(result.get("cambio_acumulado") or self.design_changes)
-            print(f"[DEBUG] _handle_design_mode_contextual: Staying in design mode, readyToGenerate={has_accumulated_change}", file=sys.stderr, flush=True)
+            # LLM decides if ready to generate (only true if no text in reference and changes confirmed)
+            ready_to_generate = bool(result.get("ready_to_generate", False))
+            print(f"[DEBUG] _handle_design_mode_contextual: Staying in design mode, readyToGenerate={ready_to_generate} (LLM decided)", file=sys.stderr, flush=True)
             return {
                 "type": "text",
                 "text": result.get("respuesta", "¿Qué cambios te gustaría hacer al diseño?"),
-                "readyToGenerate": has_accumulated_change
+                "readyToGenerate": ready_to_generate
             }
             
         except Exception as e:
@@ -1637,17 +1767,27 @@ SOBRE LOS CAMPOS:
                 content = m["content"][:200] + "..." if len(m["content"]) > 200 else m["content"]
                 conversation_context += f"{role}: {content}\n"
         
-        # Build context about current state
+        # =======================================================================
+        # ⚠️ DO NOT MODIFY - TEXT CONTEXT BUILDER (Working correctly as of v6)
+        # This section builds the text context for edit mode conversations.
+        # It correctly formats texts with numbers for easy user reference.
+        # =======================================================================
         text_context = ""
         if self.text_content:
             text_items = []
+            i = 1
             for key, val in self.text_content.items():
                 if isinstance(val, dict) and 'sugerencia' in val:
-                    text_items.append(f"- {val.get('etiqueta', key)}: \"{val['sugerencia']}\"")
+                    text_items.append(f"{i}. {val.get('etiqueta', key)}: \"{val['sugerencia']}\"")
+                    i += 1
             if text_items:
                 text_context = "\n".join(text_items[:5])  # Limit to 5 for brevity
                 if len(text_items) > 5:
                     text_context += f"\n... y {len(text_items) - 5} textos más"
+                text_context += "\n(El usuario puede referirse a los textos por número o nombre)"
+        # =======================================================================
+        # END DO NOT MODIFY SECTION
+        # =======================================================================
         
         prompt = f"""Sos un asistente de diseño de posts para Instagram. El usuario acaba de recibir una imagen generada.
 
@@ -1679,6 +1819,7 @@ REGLAS:
 - Sé conciso (máximo 2-3 oraciones)
 - MIRÁ EL HISTORIAL: No repitas preguntas ya hechas ni ignores lo que el usuario dijo antes
 - Si el usuario ya mencionó algo específico (ej: "una planta"), usa eso, no inventes alternativas
+- DETECTA si el usuario menciona la referencia ORIGINAL (ej: "como en la referencia", "la modelo de la referencia original", "igual a la primera imagen", "como estaba antes"). Si la menciona, uses_original_reference = true
 
 Responde SOLO en JSON válido:
 {{
@@ -1686,12 +1827,17 @@ Responde SOLO en JSON válido:
   "respuesta": "tu respuesta natural al usuario",
   "texto_propuesto": null,
   "texto_afectado": null,
-  "ready_to_generate": false
+  "ready_to_generate": false,
+  "uses_original_reference": false
 }}
 
 IMPORTANTE sobre ready_to_generate:
 - true SOLO si el usuario pidió un cambio de DISEÑO y confirmaste que lo vas a aplicar
 - false para satisfacción, preguntas, o si propones un texto nuevo (debe confirmar primero)
+
+IMPORTANTE sobre uses_original_reference:
+- true si el usuario quiere un cambio basado en la referencia ORIGINAL (no la imagen generada)
+- Ejemplos: "usá la modelo de la referencia", "como estaba en la original", "igual a la primera imagen"
 """
         
         try:
@@ -1721,14 +1867,19 @@ IMPORTANTE sobre ready_to_generate:
                 texto_propuesto = parsed.get('texto_propuesto')
                 texto_afectado = parsed.get('texto_afectado')
                 
+                # V6: Save flag for using original reference in edit
+                self.uses_original_reference = parsed.get('uses_original_reference', False)
+                
                 debug_tracker.log_step("7.1 INTENT_DETECTED", {
                     "intent": intent,
                     "ready_to_generate": ready,
-                    "has_texto_propuesto": bool(texto_propuesto)
+                    "has_texto_propuesto": bool(texto_propuesto),
+                    "uses_original_reference": self.uses_original_reference
                 })
                 
                 # Handle based on intent
                 if intent == 'satisfecho':
+                    self.history.append({"role": "assistant", "content": respuesta})
                     return {
                         "type": "text",
                         "text": respuesta,
@@ -1736,6 +1887,7 @@ IMPORTANTE sobre ready_to_generate:
                     }
                 
                 elif intent == 'pregunta':
+                    self.history.append({"role": "assistant", "content": respuesta})
                     return {
                         "type": "text",
                         "text": respuesta,
@@ -1750,6 +1902,7 @@ IMPORTANTE sobre ready_to_generate:
                             "texto_propuesto": texto_propuesto,
                             "original_feedback": user_message
                         }
+                        self.history.append({"role": "assistant", "content": respuesta})
                         return {
                             "type": "text",
                             "text": respuesta,
@@ -1757,6 +1910,7 @@ IMPORTANTE sobre ready_to_generate:
                         }
                     else:
                         # LLM detected text change intent but didn't propose - ask for clarification
+                        self.history.append({"role": "assistant", "content": respuesta})
                         return {
                             "type": "text",
                             "text": respuesta,
@@ -1770,6 +1924,7 @@ IMPORTANTE sobre ready_to_generate:
                     else:
                         self.design_changes = user_message
                     
+                    self.history.append({"role": "assistant", "content": respuesta})
                     return {
                         "type": "text",
                         "text": respuesta,
@@ -1779,12 +1934,15 @@ IMPORTANTE sobre ready_to_generate:
                 elif intent == 'nuevo_producto':
                     self.last_generated_image = None
                     self.current_step = 0
+                    response_text = respuesta or "¡Perfecto! Para crear algo nuevo, subí la foto de tu producto usando el botón (+)."
+                    self.history.append({"role": "assistant", "content": response_text})
                     return {
                         "type": "text",
-                        "text": respuesta or "¡Perfecto! Para crear algo nuevo, subí la foto de tu producto usando el botón (+)."
+                        "text": response_text
                     }
                 
                 else:  # clarificar or unknown
+                    self.history.append({"role": "assistant", "content": respuesta})
                     return {
                         "type": "text",
                         "text": respuesta,
@@ -1796,9 +1954,11 @@ IMPORTANTE sobre ready_to_generate:
             import traceback
             print(f"[ERROR] Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
             # Fallback to simple response
+            fallback_msg = "No entendí bien tu mensaje. ¿Querés hacer algún cambio en la imagen? Contame qué te gustaría modificar."
+            self.history.append({"role": "assistant", "content": fallback_msg})
             return {
                 "type": "text",
-                "text": "No entendí bien tu mensaje. ¿Querés hacer algún cambio en la imagen? Contame qué te gustaría modificar.",
+                "text": fallback_msg,
                 "readyToGenerate": False
             }
     
@@ -2125,29 +2285,71 @@ IMPORTANTE: Si pide "achicar" o "más corto", propone un texto con MENOS palabra
             import requests
             import json
             
+            # =======================================================================
+            # V3: Process conversation to extract edit changes
+            # This ensures we capture all user requests correctly
+            # =======================================================================
+            if self.history and len(self.history) > 0:
+                print(f"[DEBUG] _handle_edit_regenerate: Processing conversation for edit...", file=sys.stderr, flush=True)
+                processed = self._process_conversation_for_generation()
+                
+                # For edits, we mainly care about design changes
+                if processed.get("cambios_diseno") and processed["cambios_diseno"] != "mantener diseño original":
+                    self.design_changes = processed["cambios_diseno"]
+                    print(f"[DEBUG] _handle_edit_regenerate: Updated design_changes from conversation={self.design_changes}", file=sys.stderr, flush=True)
+                
+                debug_tracker.log_step("7.1.1 EDIT_CONVERSATION_PROCESSED", {
+                    "design_changes": self.design_changes,
+                    "summary": processed.get("resumen", "")
+                })
+            
             # V2: Summarize accumulated changes before sending to NanoBanana
             raw_changes = self.design_changes or "mantener igual"
             summarized_changes = self._summarize_changes_for_nanobanana(raw_changes)
             print(f"[DEBUG] Raw changes: {raw_changes[:100]}...")
             print(f"[DEBUG] Summarized changes for NanoBanana: {summarized_changes}")
             
-            # Build EDIT prompt with SUMMARIZED changes (not raw)
-            prompt = self._build_nanobanana_edit_prompt(summarized_changes)
-            print(f"[DEBUG] Built EDIT prompt ({len(prompt)} chars)")
-            print(f"[DEBUG] Using last_generated_image as reference: {self.last_generated_image}", file=sys.stderr)
-            
             has_text = self.text_content is not None and len(self.text_content) > 0
             
+            # =======================================================================
+            # V6: Check if user wants changes based on original reference
+            # =======================================================================
+            if self.uses_original_reference and self.selected_reference:
+                # Modo B: User wants changes based on original reference
+                prompt = self._build_nanobanana_edit_with_reference_prompt(summarized_changes)
+                print(f"[DEBUG] Using EDIT WITH REFERENCE prompt ({len(prompt)} chars)", file=sys.stderr)
+                print(f"[DEBUG] Original reference: {self.selected_reference.get('url', 'N/A')[:50]}...", file=sys.stderr)
+                print(f"[DEBUG] Current output: {self.last_generated_image}", file=sys.stderr)
+                
+                reference_url = self.selected_reference.get('url', '')
+                reference_image_for_request = reference_url  # Original reference
+                reference_image_2 = self.last_generated_image  # Current output to edit
+                
+                # Reset flag after use
+                self.uses_original_reference = False
+            else:
+                # Modo A: Normal edit (current behavior)
+                prompt = self._build_nanobanana_edit_prompt(summarized_changes)
+                print(f"[DEBUG] Built EDIT prompt ({len(prompt)} chars)")
+                print(f"[DEBUG] Using last_generated_image as reference: {self.last_generated_image}", file=sys.stderr)
+                
+                reference_image_for_request = self.last_generated_image
+                reference_image_2 = None
+            
+            # Single with block for the request
             with open(self.product_image_path, 'rb') as product_file:
                 files = {'productImage': product_file}
-                # V2: Use the previously generated image as reference (absolute path)
                 data = {
                     'textPrompt': prompt,
-                    'referenceImage': self.last_generated_image,  # V2: Send absolute path of generated image
+                    'referenceImage': reference_image_for_request,
                     'skipText': 'false' if has_text else 'true',
                     'language': 'es',
                     'aspectRatio': '4:5',
                 }
+                
+                # V6: Add second reference image if using original reference mode
+                if reference_image_2:
+                    data['referenceImage2'] = reference_image_2
                 
                 if has_text:
                     # V4: Support dynamic text keys (text_1, text_2, etc.) AND legacy for backward compatibility
@@ -2798,6 +3000,10 @@ RECORDATORIO:
         textos = self.reference_analysis.get('textos', [])
         estilo = self.reference_analysis.get('estilo', '')
         
+        # Clean trailing punctuation to avoid double dots
+        descripcion = descripcion.rstrip('.')
+        estilo = estilo.rstrip('.') if estilo else ''
+        
         # Build response message (similar to _handle_reference_selected)
         text = f"¡Excelente referencia! Veo que muestra **{descripcion}**."
         
@@ -2863,6 +3069,10 @@ RECORDATORIO:
         textos = self.reference_analysis.get('textos', [])
         estilo = self.reference_analysis.get('estilo', '')
         
+        # Clean trailing punctuation to avoid double dots
+        descripcion = descripcion.rstrip('.')
+        estilo = estilo.rstrip('.') if estilo else ''
+        
         # Build response message
         text = f"¡Buena elección! Veo que tu referencia muestra **{descripcion}**."
         
@@ -2874,7 +3084,7 @@ RECORDATORIO:
         # This step is only for DESIGN changes (layout, colors, composition)
         
         text += "\n\n**¿Te gustaría mantener el diseño actual o modificar algún elemento?** (colores, composición, estilo)"
-        text += "\n\n_El contenido de los textos lo vamos a definir en el siguiente paso._"
+        text += "\n\nEl contenido de los textos lo vamos a definir en el siguiente paso."
         
         debug_tracker.log_step("3.2 REFERENCE_DESCRIPTION_BUILT", {
             "descripcion": descripcion[:50],
@@ -3044,12 +3254,28 @@ Tu respuesta (SOLO el formato de salida, sin explicaciones ni texto adicional):"
         
         self.design_changes = user_message
         
-        # Summarize what the user wants to change using Gemini
-        self.changes_summary = self._summarize_user_changes(user_message)
+        # V2: If user_message is already a summary from accumulated changes (from contextual handler),
+        # use it directly instead of re-summarizing (which would truncate it)
+        # Heuristic: if it starts with a verb infinitive and is < 100 chars, it's already summarized
+        already_summarized = (
+            len(user_message) < 150 and 
+            any(user_message.lower().startswith(verb) for verb in 
+                ['cambiar', 'agregar', 'ajustar', 'mantener', 'modificar', 'reemplazar', 'quitar', 'añadir', 'usar', 'poner'])
+        )
+        
+        if already_summarized:
+            # Use directly - it's already a clean summary from _handle_design_mode_contextual
+            self.changes_summary = user_message
+            print(f"[DEBUG] _handle_design_changes: Using message directly as summary (already summarized)", file=sys.stderr, flush=True)
+        else:
+            # Summarize raw user input using Gemini
+            self.changes_summary = self._summarize_user_changes(user_message)
+            print(f"[DEBUG] _handle_design_changes: Summarized via Gemini", file=sys.stderr, flush=True)
         
         debug_tracker.log_step("4.0.1 CHANGES_SUMMARIZED", {
             "original": user_message[:100],
-            "summary": self.changes_summary
+            "summary": self.changes_summary,
+            "already_summarized": already_summarized
         })
         
         # Check if reference has text - must have BOTH text_in_image == 'yes' AND actual text_elements
@@ -3133,28 +3359,28 @@ Tu respuesta (SOLO el formato de salida, sin explicaciones ni texto adicional):"
                             sugerencia = suggestion_data.get('sugerencia', '')
                             
                             if sugerencia and '[' not in sugerencia and ']' not in sugerencia:
-                                text_suggestions.append(f"**{etiqueta}:** {sugerencia}")
+                                text_suggestions.append(f"{i}. **{etiqueta}:** {sugerencia}")
                             else:
                                 # Fallback with contextual label
-                                text_suggestions.append(f"**{etiqueta}:** {original_text or product_name}")
+                                text_suggestions.append(f"{i}. **{etiqueta}:** {original_text or product_name}")
                         elif isinstance(suggestion_data, str):
                             # Old format backwards compatibility
                             friendly_label = f"{tipo.capitalize()} ({ubicacion})" if ubicacion else tipo.capitalize()
                             if suggestion_data and '[' not in suggestion_data and ']' not in suggestion_data:
-                                text_suggestions.append(f"**{friendly_label}:** {suggestion_data}")
+                                text_suggestions.append(f"{i}. **{friendly_label}:** {suggestion_data}")
                             else:
-                                text_suggestions.append(f"**{friendly_label}:** {original_text or product_name}")
+                                text_suggestions.append(f"{i}. **{friendly_label}:** {original_text or product_name}")
                         else:
                             # No suggestion for this text
                             friendly_label = f"{tipo.capitalize()} ({ubicacion})" if ubicacion else tipo.capitalize()
-                            text_suggestions.append(f"**{friendly_label}:** {original_text or product_name}")
+                            text_suggestions.append(f"{i}. **{friendly_label}:** {original_text or product_name}")
                     else:
                         # Fallback when no smart suggestions
                         friendly_label = f"{tipo.capitalize()} ({ubicacion})" if ubicacion else tipo.capitalize()
                         if original_text:
-                            text_suggestions.append(f"**{friendly_label}:** [Adaptar: \"{original_text}\"]")
+                            text_suggestions.append(f"{i}. **{friendly_label}:** [Adaptar: \"{original_text}\"]")
                         else:
-                            text_suggestions.append(f"**{friendly_label}:** Tu texto aquí")
+                            text_suggestions.append(f"{i}. **{friendly_label}:** Tu texto aquí")
             
             debug_tracker.log_step("4.3 TEXT_SUGGESTIONS_GENERATED", {
                 "suggestions_count": len(text_suggestions),
@@ -3185,7 +3411,7 @@ Tu respuesta (SOLO el formato de salida, sin explicaciones ni texto adicional):"
     def _handle_conversational_text_flow(self, user_message: str) -> Dict[str, Any]:
         """
         =======================================================================
-        CONVERSATIONAL TEXT FLOW - VERSION 2
+        CONVERSATIONAL TEXT FLOW - VERSION 3
         =======================================================================
         Let the LLM control the conversation after Step 3.
         
@@ -3194,60 +3420,32 @@ Tu respuesta (SOLO el formato de salida, sin explicaciones ni texto adicional):"
         - If user requests changes → Show new suggestions, wait for confirmation
         - If user confirms → Set readyToGenerate: true
         
-        V2 Changes:
-        - Added FAST confirmation detection to avoid LLM misinterpretation
-        - "mantener", "ok", "sí" etc. now bypass LLM and confirm directly
+        V3 Changes:
+        - Added detection of "Generar" command to bypass LLM and trigger pipeline
         
         This replaces the hardcoded _handle_text_confirmed() flow.
         =======================================================================
         """
+        # =======================================================================
+        # V3: Detect "Generar" command and bypass conversational flow
+        # This prevents the LLM from interpreting "Generar" as text content
+        # =======================================================================
+        if user_message.lower().strip() in ['generar', 'generate']:
+            print(f"[DEBUG] _handle_conversational_text_flow: Detected 'Generar' command, bypassing to pipeline", file=sys.stderr)
+            self.awaiting_text_input = False
+            self.current_step = 6
+            if self.last_smart_suggestions:
+                self.text_content = self.last_smart_suggestions.copy()
+            return self._handle_generate_pipeline("[TRIGGER_GENERATE_PIPELINE]")
+        
         debug_tracker.log_step("CONVERSATIONAL_FLOW_START", {
             "user_message": user_message[:100],
             "current_suggestions": self.last_smart_suggestions
         })
         
-        user_msg_lower = user_message.lower().strip()
-        
         # =========================================================================
-        # FAST CONFIRMATION DETECTION - Bypass LLM for clear confirmations
-        # This fixes the "mantener" being misinterpreted as a question bug
-        # =========================================================================
-        confirmation_words = [
-            'mantener', 'ok', 'okey', 'okay', 'sí', 'si', 'perfecto', 'dale', 
-            'vamos', 'me gusta', 'me gustan', 'está bien', 'esta bien', 'genial',
-            'excelente', 'bueno', 'listo', 'de acuerdo', 'acepto', 'confirmo',
-            'los dos', 'ambos', 'todos', 'esos'
-        ]
-        
-        # Check if message is a simple confirmation (no question marks, short message)
-        is_simple_confirmation = (
-            any(word in user_msg_lower for word in confirmation_words) and
-            '?' not in user_message and
-            len(user_message) < 100 and
-            not any(change_word in user_msg_lower for change_word in ['cambiar', 'cambio', 'otro', 'otra', 'sin', 'quiero', 'prefiero', 'mejor'])
-        )
-        
-        if is_simple_confirmation and self.last_smart_suggestions:
-            debug_tracker.log_step("CONVERSATIONAL_FLOW_FAST_CONFIRM", {
-                "detected_as": "simple_confirmation",
-                "user_message": user_message
-            })
-            
-            # Store the suggestions as text_content
-            self.text_content = self.last_smart_suggestions.copy()
-            self.awaiting_text_input = False
-            self.current_step = 5
-            
-            print(f"[DEBUG] Fast confirmation detected: '{user_message}' -> readyToGenerate")
-            
-            return {
-                "type": "text",
-                "text": "¡Genial! Cuando estés listo, hacé click en **Generar** para crear tu post.",
-                "readyToGenerate": True
-            }
-        
-        # =========================================================================
-        # LLM-based conversational flow for complex interactions
+        # LLM-based conversational flow - Let the LLM understand intent naturally
+        # V3: Removed hardcoded Fast Confirmation - LLM handles all cases
         # =========================================================================
         
         # Build context for the LLM
@@ -3261,7 +3459,7 @@ Tu respuesta (SOLO el formato de salida, sin explicaciones ni texto adicional):"
             if blueprint:
                 text_analysis_context = f"\nBLUEPRINT DE LA REFERENCIA:\n{blueprint}\n"
         
-        prompt = f"""Eres un asistente de diseño ayudando a crear un post de Instagram para "{product_name}".
+        prompt = f"""Sos un asistente de diseño ayudando a crear un post de Instagram para "{product_name}".
 
 CONTEXTO ACTUAL:
 - El usuario ya seleccionó una referencia con texto
@@ -3271,42 +3469,41 @@ CONTEXTO ACTUAL:
 MENSAJE DEL USUARIO:
 "{user_message}"
 
-TU TAREA: Analiza el mensaje del usuario y responde de forma conversacional.
+TU TAREA: Entender qué quiere el usuario y responder naturalmente.
 
-REGLAS CRÍTICAS:
+Usá tu inteligencia para detectar el intent del usuario. NO busques palabras específicas, entendé el significado:
 
-1. Si el usuario hace una PREGUNTA (contiene "?", "por qué", "cómo", "qué significa"):
-   - Responde la pregunta de forma clara y útil
-   - NO avances al siguiente paso
-   - Pregunta si quiere cambiar algo o si está conforme
+1. PREGUNTA → El usuario quiere saber algo
+   - Respondé la pregunta
    - readyToGenerate: false
 
-2. Si el usuario pide CAMBIOS ("quiero", "prefiero", "cambia", "sin", "mejor", "otra"):
-   - Genera NUEVAS sugerencias aplicando los cambios pedidos
-   - Muestra las nuevas sugerencias claramente formateadas
-   - Pregunta si le gustan los cambios
-   - readyToGenerate: false
-   - IMPORTANTE: Incluye un campo "new_suggestions" con el JSON de las nuevas sugerencias
+2. CAMBIOS → El usuario quiere modificar, eliminar, o agregar textos
+   - Aplicá los cambios a las sugerencias actuales
+   - Incluí el resultado en "new_suggestions" (JSON con la misma estructura que las sugerencias actuales, pero con los cambios aplicados)
+   - Si el usuario TAMBIÉN indicó que el resto está bien → readyToGenerate: true
+   - Si solo pidió cambios sin confirmar → preguntá si necesita algo más, readyToGenerate: false
 
-3. Si el usuario CONFIRMA ("ok", "sí", "me gusta", "perfecto", "dale", "está bien", "vamos"):
-   - Confirma brevemente
-   - Indica que puede hacer click en Generar
+3. CONFIRMACIÓN → El usuario está conforme y quiere avanzar
+   - Confirmá brevemente (1 oración máximo)
+   - Decile que puede hacer click en Generar
    - readyToGenerate: true
 
-4. Si el usuario proporciona TEXTO ESPECÍFICO que quiere usar:
-   - Confirma que usarás ese texto exacto
+4. TEXTO PERSONALIZADO → El usuario proporciona texto específico
+   - Guardalo en "custom_text"
    - readyToGenerate: true
-   - Incluye "custom_text" con el texto que proporcionó
+
+IMPORTANTE: Un mensaje puede combinar intents. 
+Ejemplo: "eliminar el título, el resto está bien" = CAMBIOS + CONFIRMACIÓN → aplicar cambio Y readyToGenerate: true
 
 FORMATO DE RESPUESTA (JSON estricto):
 {{
-  "text": "Tu respuesta conversacional aquí",
+  "text": "Tu respuesta conversacional aquí (breve, máximo 2 oraciones)",
   "readyToGenerate": true/false,
-  "new_suggestions": {{}},  // Solo si generaste nuevas sugerencias
+  "new_suggestions": {{}},  // Solo si hay cambios - misma estructura que sugerencias actuales
   "custom_text": null       // Solo si el usuario dio texto específico
 }}
 
-Responde SOLO con el JSON, sin explicaciones adicionales.
+Responde SOLO con el JSON.
 """
         
         try:
@@ -3356,9 +3553,13 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                 else:
                     self.awaiting_text_input = False
                 
+                # V4: Save assistant response to history for _process_conversation_for_generation
+                response_text = llm_response.get('text', 'Entendido. ¿Listo para generar?')
+                self.history.append({"role": "assistant", "content": response_text})
+                
                 return {
                     "type": "text",
-                    "text": llm_response.get('text', 'Entendido. ¿Listo para generar?'),
+                    "text": response_text,
                     "readyToGenerate": llm_response.get('readyToGenerate', False)
                 }
                 
@@ -3370,9 +3571,14 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
         self.awaiting_text_input = False
         if self.last_smart_suggestions:
             self.text_content = self.last_smart_suggestions.copy()
+        
+        # V4: Save fallback response to history
+        fallback_text = "Genial! Cuando estés listo, haz click en **Generar** para crear tu post."
+        self.history.append({"role": "assistant", "content": fallback_text})
+        
         return {
             "type": "text",
-            "text": "Genial! Cuando estés listo, haz click en **Generar** para crear tu post.",
+            "text": fallback_text,
             "readyToGenerate": True
         }
 
@@ -3702,6 +3908,41 @@ Responde SOLO con JSON valido con las sugerencias modificadas:
             "has_text_content": bool(self.text_content),
             "has_design_changes": bool(self.design_changes)
         })
+        
+        # =======================================================================
+        # V2: Process ENTIRE conversation to get final design changes and texts
+        # This is more robust than accumulating message-by-message
+        # =======================================================================
+        if self.history and len(self.history) > 0:
+            print(f"[DEBUG] _handle_generate_pipeline: Processing conversation before generation...", file=sys.stderr, flush=True)
+            processed = self._process_conversation_for_generation()
+            
+            # Update design_changes from processed conversation
+            if processed.get("cambios_diseno"):
+                self.design_changes = processed["cambios_diseno"]
+                print(f"[DEBUG] _handle_generate_pipeline: Updated design_changes={self.design_changes}", file=sys.stderr, flush=True)
+            
+            # Update text_content from processed conversation
+            if processed.get("textos_finales"):
+                # Filter out null values (texts that were eliminated)
+                filtered_texts = {}
+                for key, value in processed["textos_finales"].items():
+                    if value is not None:
+                        filtered_texts[key] = value
+                
+                if filtered_texts:
+                    self.text_content = filtered_texts
+                    print(f"[DEBUG] _handle_generate_pipeline: Updated text_content with {len(filtered_texts)} texts", file=sys.stderr, flush=True)
+                else:
+                    # All texts were eliminated
+                    self.text_content = None
+                    print(f"[DEBUG] _handle_generate_pipeline: All texts eliminated, text_content=None", file=sys.stderr, flush=True)
+            
+            debug_tracker.log_step("6.0.1 CONVERSATION_PROCESSED", {
+                "design_changes": self.design_changes,
+                "text_content_count": len(self.text_content) if self.text_content else 0,
+                "summary": processed.get("resumen", "")
+            })
         
         # Extract parameters - use stored product image path
         product_image = self.product_image_path
