@@ -38,10 +38,12 @@ import videoPublishRoutes from './routes/video-publish';
 import videoDiscardRoutes from './routes/video-discard';
 import postsRoutes from './routes/posts';
 import postsAnalyticsRoutes from './routes/posts-analytics';
+import postsImageRoutes from './routes/posts-image';
 import instagramAuthRoutes from './routes/instagram-auth';
 import userFirstPostRoute from './routes/user-first-post';
 import getPostTypesRoute from './routes/get-post-types';
 import serveGeneratedImageRoute from './routes/serve-generated-image';
+import feedbackRoutes from './routes/feedback';
 import * as logger from './utils/logger';
 
 // Configuration
@@ -118,6 +120,7 @@ async function start(): Promise<void> {
     await fastify.register(videoDiscardRoutes);
     await fastify.register(postsRoutes);
     await fastify.register(postsAnalyticsRoutes);
+    await fastify.register(postsImageRoutes);
     await fastify.register(instagramAuthRoutes);
     await fastify.register(userFirstPostRoute);
     await fastify.register(getPostTypesRoute);
@@ -138,6 +141,7 @@ async function start(): Promise<void> {
     await fastify.register(incrementReferenceRankingRoute);
     await fastify.register(serveGeneratedImageRoute);
     await fastify.register(testEnvRoute);
+    await fastify.register(feedbackRoutes);
 
     // Health check endpoint
     fastify.get('/health', async (request, reply) => {

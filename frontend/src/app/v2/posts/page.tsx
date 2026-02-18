@@ -56,6 +56,7 @@ export default function MisPostsPage() {
   const { user, loading } = useAuth();
   const [items, setItems] = React.useState<UserPost[]>([]);
   const [busyId, setBusyId] = React.useState<string | null>(null);
+  const [shareBusyId, setShareBusyId] = React.useState<string | null>(null);
   const [selected, setSelected] = React.useState<UserPost | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [captionByPostId, setCaptionByPostId] = React.useState<Record<string, string>>({});
@@ -63,6 +64,99 @@ export default function MisPostsPage() {
   const [analyticsByMediaId, setAnalyticsByMediaId] = React.useState<Record<string, PostAnalytics>>(
     {}
   );
+
+  const [isMobile, setIsMobile] = React.useState(false);
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(pointer:coarse) and (max-width: 640px)");
+    const update = () => setIsMobile(!!mq.matches);
+    update();
+    // Safari < 14 uses addListener/removeListener.
+    if (typeof mq.addEventListener === "function") {
+      mq.addEventListener("change", update);
+      return () => mq.removeEventListener("change", update);
+    }
+    // eslint-disable-next-line deprecation/deprecation
+    mq.addListener(update);
+    // eslint-disable-next-line deprecation/deprecation
+    return () => mq.removeListener(update);
+  }, []);
+
+  const extFromContentType = React.useCallback((ct: string | null): string => {
+    const v = (ct || "").toLowerCase();
+    if (v.includes("image/png")) return ".png";
+    if (v.includes("image/webp")) return ".webp";
+    if (v.includes("image/gif")) return ".gif";
+    if (v.includes("image/jpeg") || v.includes("image/jpg")) return ".jpg";
+    return ".png";
+  }, []);
+
+  const fetchImageAsFile = React.useCallback(
+    async (imageUrl: string, postId: string): Promise<File> => {
+      const attempt = async (url: string) => {
+        const res = await fetch(url, { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        const ext = extFromContentType(blob.type || res.headers.get("content-type"));
+        const filename = `postty-${postId}${ext}`;
+        return new File([blob], filename, { type: blob.type || "application/octet-stream" });
+      };
+
+      try {
+        return await attempt(imageUrl);
+      } catch {
+        const proxyUrl = `/api/posts/share-image?url=${encodeURIComponent(imageUrl)}`;
+        return await attempt(proxyUrl);
+      }
+    },
+    [extFromContentType]
+  );
+
+  const handleShare = React.useCallback(
+    async (p: UserPost) => {
+      if (!p.mediaUrl || p.kind !== "image") return;
+      setError(null);
+      setShareBusyId(p.id);
+      try {
+        if (typeof navigator === "undefined" || typeof (navigator as any).share !== "function") {
+          throw new Error("Tu navegador no soporta compartir desde la web.");
+        }
+
+        const file = await fetchImageAsFile(p.mediaUrl, p.id);
+        const canShare = typeof (navigator as any).canShare === "function"
+          ? (navigator as any).canShare({ files: [file] })
+          : true;
+        if (!canShare) {
+          throw new Error("Tu navegador no permite compartir archivos (solo links).");
+        }
+
+        await (navigator as any).share({
+          files: [file],
+          title: "Postty",
+        });
+      } catch (e: any) {
+        // User cancelled the share sheet.
+        if (e && (e.name === "AbortError" || e.name === "NotAllowedError")) return;
+        const msg =
+          e instanceof Error
+            ? e.message
+            : "No se pudo compartir la imagen. Probá de nuevo o descargala.";
+        setError(msg);
+      } finally {
+        setShareBusyId(null);
+      }
+    },
+    [fetchImageAsFile]
+  );
+
+  const openPost = React.useCallback((p: UserPost) => {
+    const isPublished = p.status === "published" && !!p.instagramPermalink;
+    if (isPublished) {
+      window.open(p.instagramPermalink!, "_blank");
+      return;
+    }
+    setSelected(p);
+  }, []);
 
   const load = React.useCallback(async (): Promise<UserPost[]> => {
     if (!user) return [];
@@ -317,16 +411,19 @@ export default function MisPostsPage() {
                   : "—";
 
               return (
-                <button
+                <div
                   key={p.id}
-                  type="button"
                   onClick={() => {
-                    if (isPublished) {
-                      window.open(p.instagramPermalink!, "_blank");
-                      return;
-                    }
-                    setSelected(p);
+                    openPost(p);
                   }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      openPost(p);
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
                   className="group relative rounded-[18px] overflow-hidden bg-white/35 border border-white/60 backdrop-blur-xl shadow-[0_14px_40px_rgba(0,0,0,0.10)] transition-all duration-300 hover:shadow-[0_20px_50px_rgba(0,0,0,0.12)] hover:-translate-y-1"
                 >
                   <div className="aspect-[9/16] w-full bg-slate-200/40">
@@ -360,6 +457,23 @@ export default function MisPostsPage() {
                   <div className="absolute left-2 top-2 px-2 py-1 rounded-full bg-white/75 border border-white/80 text-[11px] font-bold text-slate-800">
                     {formatStatusLabel(p.status)}
                   </div>
+
+                  {isMobile && p.kind === "image" && !!p.mediaUrl ? (
+                    <button
+                      type="button"
+                      aria-label="Compartir"
+                      title="Compartir"
+                      disabled={shareBusyId === p.id}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleShare(p).catch(() => null);
+                      }}
+                      className="absolute right-2 top-2 h-9 w-9 rounded-full bg-white/80 border border-white/80 backdrop-blur-xl shadow-sm grid place-items-center text-slate-900 hover:bg-white disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      <IconShare className="h-4 w-4" />
+                    </button>
+                  ) : null}
 
                   {p.kind === "video" && p.status === "generating" ? (
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -402,7 +516,7 @@ export default function MisPostsPage() {
                       </div>
                     </div>
                   ) : null}
-                </button>
+                </div>
               );
             })}
           </div>

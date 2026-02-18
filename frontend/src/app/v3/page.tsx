@@ -4,6 +4,7 @@ import * as React from "react";
 import { Spinner } from "@nextui-org/react";
 import { useAuth } from "@/contexts/AuthContext";
 import LoginScreen from "@/app/components/LoginScreen";
+import { uuid } from "@/lib/uuid";
 
 type PostTypeOption = {
   type: string;
@@ -34,12 +35,38 @@ type Message = {
   readyToGenerate?: boolean;
 };
 
+type UserPost = {
+  id: string;
+  uid: string;
+  kind: "image" | "video";
+  status: "ready_to_upload" | "publishing" | "published" | "discarded" | "failed" | "generating" | string;
+  createdAt: number;
+  updatedAt: number;
+  prompt: string;
+  caption?: string | null;
+  mediaUrl?: string | null;
+  previewUrl?: string | null;
+  instagramMediaId?: string | null;
+  instagramPermalink?: string | null;
+  error?: string | null;
+};
+
 export default function V3Page() {
   const { user, loading, signOut } = useAuth();
+  const [isMobileBrowser, setIsMobileBrowser] = React.useState(false);
+  const [showMobileImageChooser, setShowMobileImageChooser] = React.useState(false);
+  const [mobileToast, setMobileToast] = React.useState<string | null>(null);
+  const postTypeCarouselRef = React.useRef<HTMLDivElement | null>(null);
+  const [postTypeCarouselVisible, setPostTypeCarouselVisible] = React.useState(false);
+  const [postTypeCarouselSwiped, setPostTypeCarouselSwiped] = React.useState(false);
   const [activeLeftMenu, setActiveLeftMenu] = React.useState<'home' | 'posts' | 'reels'>('home');
   const [activeRightMenu, setActiveRightMenu] = React.useState<'feedback' | 'notifications' | 'profile' | null>(null);
   const [showProfileDropdown, setShowProfileDropdown] = React.useState(false);
   const [connectingInstagram, setConnectingInstagram] = React.useState(false);
+  const [igConnected, setIgConnected] = React.useState<boolean>(false);
+  const [igLabel, setIgLabel] = React.useState<string | null>(null);
+  const [igLoading, setIgLoading] = React.useState(false);
+  const [igToast, setIgToast] = React.useState<{ msg: string; kind?: "error" | "info" } | null>(null);
   const [showFeedbackModal, setShowFeedbackModal] = React.useState(false);
   const [showFeedbackBlur, setShowFeedbackBlur] = React.useState(false);
   const [showFeedbackSuccess, setShowFeedbackSuccess] = React.useState(false);
@@ -50,6 +77,147 @@ export default function V3Page() {
   const [hoverRating2, setHoverRating2] = React.useState(0);
   const profileDropdownRef = React.useRef<HTMLDivElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const cameraInputRef = React.useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = React.useState(false);
+  const dragCounterRef = React.useRef(0);
+
+  // Mobile-only UI tweaks should apply to mobile browsers (not merely narrow desktop windows).
+  React.useEffect(() => {
+    try {
+      const nav: any = typeof navigator !== "undefined" ? navigator : null;
+      const uadMobile = Boolean(nav?.userAgentData?.mobile);
+      if (uadMobile) {
+        setIsMobileBrowser(true);
+        return;
+      }
+      const ua = String(nav?.userAgent || "");
+      const isMobileUa = /Android|iPhone|iPad|iPod|IEMobile|Mobile|CriOS/i.test(ua);
+      setIsMobileBrowser(isMobileUa);
+    } catch {
+      setIsMobileBrowser(false);
+    }
+  }, []);
+
+  const bubbleMaxWidth = isMobileBrowser ? "max-w-[92%]" : "max-w-[40%]";
+
+  const showMobileToast = React.useCallback((msg: string) => {
+    if (!isMobileBrowser) return;
+    setMobileToast(msg);
+    window.setTimeout(() => setMobileToast(null), 2400);
+  }, [isMobileBrowser]);
+
+  const shareImage = React.useCallback(
+    async (url: string, filename = "postty.png") => {
+      if (typeof window === "undefined") return;
+      const nav: any = navigator as any;
+
+      // Prefer the native share sheet when available.
+      if (nav?.share) {
+        // Enhancement: try sharing as a real File (can fail due to CORS, opaque responses, etc.).
+        try {
+          const res = await fetch(url, { cache: "no-store" });
+          const blob = await res.blob();
+          const type = blob.type || "image/png";
+          const file = new File([blob], filename, { type });
+
+          if (typeof nav.canShare === "function" && nav.canShare({ files: [file] })) {
+            await nav.share({ files: [file], title: "Postty" });
+            return;
+          }
+        } catch {
+          // ignore and fall back to URL sharing below
+        }
+
+        // Always attempt URL share even if file fetch failed.
+        try {
+          await nav.share({ url, title: "Postty" });
+          return;
+        } catch {
+          // fall through to last-resort fallback below
+        }
+      }
+
+      // Fallback: open the image so the user can long-press and share.
+      try {
+        window.open(url, "_blank", "noopener,noreferrer");
+      } catch {
+        // ignore
+      }
+      showMobileToast("Abrí la imagen y mantené apretado para compartir.");
+    },
+    [showMobileToast]
+  );
+
+  const showIgToast = React.useCallback((msg: string, kind?: "error" | "info") => {
+    setIgToast({ msg, kind });
+    window.setTimeout(() => setIgToast(null), 2600);
+  }, []);
+
+  const refreshIgStatus = React.useCallback(async () => {
+    if (!user) return;
+    setIgLoading(true);
+    try {
+      const token = await user.getIdToken();
+      const res = await fetch("/api/instagram/accounts", {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+      const data = await res.json();
+      if (!res.ok || data?.status !== "success") return;
+
+      const connected = Boolean(data.connected);
+      setIgConnected(connected);
+      try {
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem(`postty:v3:${user.uid}:igConnected:v1`, JSON.stringify(connected));
+        }
+      } catch {
+        // ignore
+      }
+
+      const activeAccountId = typeof data.activeAccountId === "string" ? data.activeAccountId : null;
+      const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+
+      let label: string | null = null;
+      if (activeAccountId?.startsWith("acc:")) {
+        const id = activeAccountId.slice("acc:".length);
+        const found = accounts.find((a: any) => a?.accountId === id);
+        if (found && typeof found.label === "string") label = found.label;
+      }
+      setIgLabel(label);
+    } catch {
+      // silent
+    } finally {
+      setIgLoading(false);
+    }
+  }, [user]);
+
+  const handleDisconnectInstagram = React.useCallback(async () => {
+    if (!user) return;
+    setIgLoading(true);
+    try {
+      const token = await user.getIdToken();
+      const res = await fetch("/api/instagram/disconnect", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok || data?.status !== "success") throw new Error(data?.message || "Failed to disconnect");
+      setIgConnected(false);
+      setIgLabel(null);
+      showIgToast("Instagram desconectado", "info");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Unknown error";
+      showIgToast(msg, "error");
+    } finally {
+      setIgLoading(false);
+    }
+  }, [showIgToast, user]);
 
   // Handle Instagram connection
   const handleConnectInstagram = async () => {
@@ -81,6 +249,58 @@ export default function V3Page() {
       setConnectingInstagram(false);
     }
   };
+
+  // Refresh IG status when opening dropdown
+  React.useEffect(() => {
+    if (!showProfileDropdown) return;
+    refreshIgStatus();
+  }, [refreshIgStatus, showProfileDropdown]);
+
+  // Refresh IG status behind the scenes on load / user change.
+  React.useEffect(() => {
+    if (!user) return;
+    // Best-effort optimistic restore (prevents “grayed out until profile click”).
+    try {
+      if (typeof window !== "undefined") {
+        const raw = window.localStorage.getItem(`postty:v3:${user.uid}:igConnected:v1`);
+        if (raw) setIgConnected(Boolean(JSON.parse(raw)));
+      }
+    } catch {
+      // ignore
+    }
+    refreshIgStatus();
+  }, [refreshIgStatus, user]);
+
+  // Periodic IG status refresh so it stays accurate.
+  React.useEffect(() => {
+    if (!user) return;
+    const intervalMs = 90_000;
+    const id = window.setInterval(() => {
+      refreshIgStatus();
+    }, intervalMs);
+    return () => window.clearInterval(id);
+  }, [refreshIgStatus, user]);
+
+  // After OAuth redirect, refresh IG status and show feedback
+  React.useEffect(() => {
+    if (!user) return;
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    const ig = url.searchParams.get("ig");
+    const message = url.searchParams.get("message");
+    if (!ig) return;
+
+    if (ig === "connected") {
+      refreshIgStatus();
+      showIgToast("Instagram conectado", "info");
+    } else if (ig === "error") {
+      showIgToast(message ? `Instagram: ${message}` : "No se pudo conectar Instagram", "error");
+    }
+
+    url.searchParams.delete("ig");
+    url.searchParams.delete("message");
+    window.history.replaceState({}, "", url.toString());
+  }, [refreshIgStatus, showIgToast, user]);
   
   // Chat state
   const [messages, setMessages] = React.useState<Message[]>([]);
@@ -93,23 +313,91 @@ export default function V3Page() {
   const [productThumbnail, setProductThumbnail] = React.useState<string | null>(null);
   const [readyToGenerate, setReadyToGenerate] = React.useState(false);
   const [isGenerating, setIsGenerating] = React.useState(false);
+  
+  // Save / Post (caption + background publish) state
+  const [showCaptionModal, setShowCaptionModal] = React.useState(false);
+  const [captionInput, setCaptionInput] = React.useState("");
+  const [publishingImageUrl, setPublishingImageUrl] = React.useState<string | null>(null);
+  const [publishingPostId, setPublishingPostId] = React.useState<string | null>(null);
+  const publishingPostBasePromptRef = React.useRef<string | null>(null);
+  const [isPublishing, setIsPublishing] = React.useState(false);
+  const [isCaptionGenerating, setIsCaptionGenerating] = React.useState(false);
+  const [isSavingToPosts, setIsSavingToPosts] = React.useState(false);
+  const captionGenSeqRef = React.useRef(0);
+  const lastUploadedProductImageRef = React.useRef<File | null>(null);
+  const lastUserPromptForCaptionRef = React.useRef<string>("");
+  const lastAssistantPromptForCaptionRef = React.useRef<string>("");
+  const lastSelectedPostTypeLabelRef = React.useRef<string>("");
+  const lastProductSummaryForCaptionRef = React.useRef<string>("");
+  const pendingPublishIdsRef = React.useRef<Set<string>>(new Set());
+
+  // My Posts panel state
+  const [myPosts, setMyPosts] = React.useState<UserPost[]>([]);
+  const [myPostsLoading, setMyPostsLoading] = React.useState(false);
+  const [myPostsError, setMyPostsError] = React.useState<string | null>(null);
+  const [brokenPostMediaIds, setBrokenPostMediaIds] = React.useState<Record<string, true>>({});
+
   const [loadingMessageIndex, setLoadingMessageIndex] = React.useState(0);
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
+  const restoredForUidRef = React.useRef<string | null>(null);
+
+  const chatScrollRef = React.useRef<HTMLDivElement | null>(null);
+
+  const scrollChatToBottom = React.useCallback(
+    (behavior: ScrollBehavior) => {
+      const el = chatScrollRef.current;
+      if (!el) return;
+      // Only auto-scroll the chat frame (not the Posts panel).
+      if (activeLeftMenu !== "home") return;
+      el.scrollTo({ top: el.scrollHeight, behavior });
+    },
+    [activeLeftMenu]
+  );
   
-  // Microphone / Audio Recording state
-  const [isRecording, setIsRecording] = React.useState(false);
-  const [isTranscribing, setIsTranscribing] = React.useState(false);
-  const [audioLevels, setAudioLevels] = React.useState<number[]>([0, 0, 0, 0, 0]); // 5 EQ bars
-  const [micError, setMicError] = React.useState<string | null>(null);
-  
-  // Audio recording refs
-  const mediaRecorderRef = React.useRef<MediaRecorder | null>(null);
-  const audioChunksRef = React.useRef<BlobPart[]>([]);
-  const audioStreamRef = React.useRef<MediaStream | null>(null);
-  const audioContextRef = React.useRef<AudioContext | null>(null);
-  const analyserRef = React.useRef<AnalyserNode | null>(null);
-  const animationFrameRef = React.useRef<number | null>(null);
-  
+  // Mobile-only: show swipe hint until user actually swipes the post-type carousel.
+  React.useEffect(() => {
+    if (!isMobileBrowser) return;
+    if (typeof window === "undefined") return;
+    const uidOrAnon = user?.uid ? user.uid : "anon";
+    const key = `postty:v3:postTypeCarouselSwiped:v1:${uidOrAnon}`;
+    try {
+      setPostTypeCarouselSwiped(window.localStorage.getItem(key) === "1");
+    } catch {
+      setPostTypeCarouselSwiped(false);
+    }
+  }, [isMobileBrowser, user?.uid]);
+
+  React.useEffect(() => {
+    if (!isMobileBrowser) return;
+    const el = postTypeCarouselRef.current;
+    if (!el) return;
+
+    const obs = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        setPostTypeCarouselVisible(Boolean(entry?.isIntersecting));
+      },
+      { root: null, threshold: 0.25 }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [isMobileBrowser, messages.length]);
+
+  const markCarouselSwiped = React.useCallback(() => {
+    if (!isMobileBrowser) return;
+    if (postTypeCarouselSwiped) return;
+    setPostTypeCarouselSwiped(true);
+    const uidOrAnon = user?.uid ? user.uid : "anon";
+    const key = `postty:v3:postTypeCarouselSwiped:v1:${uidOrAnon}`;
+    try {
+      window.localStorage.setItem(key, "1");
+    } catch {
+      // ignore
+    }
+  }, [isMobileBrowser, postTypeCarouselSwiped, user?.uid]);
+
+  // Microphone functionality intentionally removed from /v3 (will return in a future version).
+
   // Determine current loading stage based on conversation state
   type LoadingStage = 'analyzing_product' | 'searching_references' | 'applying_changes';
   
@@ -163,9 +451,9 @@ export default function V3Page() {
   };
 
   const loadingMessages = loadingMessagesByStage[loadingStage];
-  const inputRef = React.useRef<HTMLInputElement>(null);
+  const inputRef = React.useRef<HTMLTextAreaElement>(null);
   const previousUserIdRef = React.useRef<string | null>(null);
-  const referenceInputRef = React.useRef<HTMLInputElement>(null);
+  // Reference uploads intentionally disabled in v3 (will return in a future version).
 
   // Track previous loading stage to reset index when stage changes
   const prevLoadingStageRef = React.useRef<LoadingStage>(loadingStage);
@@ -194,7 +482,7 @@ export default function V3Page() {
   // Generate session ID
   const makeFreshSessionId = React.useCallback(() => {
     const base = user?.uid ? `uid-${user.uid}` : "anon";
-    return `${base}-${crypto.randomUUID()}`;
+    return `${base}-${uuid()}`;
   }, [user?.uid]);
 
   // Reset chat when user changes (login/logout)
@@ -216,6 +504,8 @@ export default function V3Page() {
       setProductThumbnail(null);
       setReadyToGenerate(false);
       setIsGenerating(false);
+      // Allow restoring when a user logs back in (or switches accounts).
+      restoredForUidRef.current = null;
     }
     
     previousUserIdRef.current = currentUserId;
@@ -263,18 +553,86 @@ export default function V3Page() {
 
   // Scroll to bottom when messages change
   React.useEffect(() => {
+    if (isMobileBrowser) {
+      // Mobile: avoid smooth scrolling + keyboard jank; always stick to bottom.
+      requestAnimationFrame(() => scrollChatToBottom("auto"));
+      return;
+    }
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [isMobileBrowser, messages, scrollChatToBottom]);
+
+  // Persist / restore v3 state across reloads (per-user).
+  React.useEffect(() => {
+    if (!user) return;
+    if (typeof window === "undefined") return;
+    if (restoredForUidRef.current === user.uid) return;
+
+    const key = `postty:v3:${user.uid}:state:v1`;
+    try {
+      const raw = window.localStorage.getItem(key);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        if (Array.isArray(parsed.messages)) setMessages(parsed.messages as Message[]);
+        if (typeof parsed.clientSessionId === "string") setClientSessionId(parsed.clientSessionId);
+        if (parsed.clientSessionId === null) setClientSessionId(null);
+        // Note: "reels" is intentionally not restorable. The button is "coming soon"
+        // and should not activate any transitions or state changes.
+        if (parsed.activeLeftMenu === "home" || parsed.activeLeftMenu === "posts") {
+          setActiveLeftMenu(parsed.activeLeftMenu);
+        }
+        if (typeof parsed.productThumbnail === "string" || parsed.productThumbnail === null) {
+          setProductThumbnail(parsed.productThumbnail);
+        }
+      }
+    } catch {
+      // ignore
+    } finally {
+      restoredForUidRef.current = user.uid;
+      // Mobile: after restoring state, ensure the chat is anchored to bottom.
+      if (isMobileBrowser) requestAnimationFrame(() => scrollChatToBottom("auto"));
+    }
+  }, [user, isMobileBrowser, scrollChatToBottom]);
+
+  React.useEffect(() => {
+    if (!user) return;
+    if (typeof window === "undefined") return;
+    if (restoredForUidRef.current !== user.uid) return;
+    const key = `postty:v3:${user.uid}:state:v1`;
+    try {
+      const payload = {
+        messages,
+        clientSessionId,
+        activeLeftMenu,
+        productThumbnail,
+      };
+      window.localStorage.setItem(key, JSON.stringify(payload));
+    } catch {
+      // ignore quota / serialization issues
+    }
+  }, [activeLeftMenu, clientSessionId, messages, productThumbnail, user]);
+
+  // Auto-grow chat textarea (up to a max height)
+  React.useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const next = Math.min(el.scrollHeight, 160); // ~8-9 lines depending on font
+    el.style.height = `${next}px`;
+  }, [inputValue]);
 
   // Add assistant message with typing delay
   const addAssistantMessage = (content: string, imageUrl?: string) => {
     setIsTyping(true);
     const delay = 600 + Math.random() * 300;
     setTimeout(() => {
+      // Keep assistant prompt as a fallback, but v2-parity prefers user intent + structured context.
+      const c = (content || "").trim();
+      if (c.length >= 20 && !c.toLowerCase().includes("subí la foto")) lastAssistantPromptForCaptionRef.current = c;
       setMessages((prev) => [
         ...prev,
         {
-          id: crypto.randomUUID(),
+          id: uuid(),
           role: "assistant",
           content,
           imageUrl,
@@ -289,7 +647,7 @@ export default function V3Page() {
     setMessages((prev) => [
       ...prev,
       {
-        id: crypto.randomUUID(),
+        id: uuid(),
         role: "user",
         content,
         imageUrl,
@@ -298,26 +656,44 @@ export default function V3Page() {
   };
 
   // Handle sending message to agent
-  const handleSendMessage = async (text?: string, uploadedFile?: File, isReferenceUpload?: boolean) => {
+  const handleSendMessage = async (
+    text?: string,
+    uploadedFile?: File,
+    _isReferenceUpload?: boolean,
+    opts?: { selectedPostType?: string }
+  ) => {
     const messageText = text || inputValue.trim();
     if (!messageText && !uploadedFile) return;
     if (isSending || isTyping) return;
 
     setInputValue("");
 
+    // Track last user intent + product image for caption autofill.
+    const msgNorm = (messageText || "").trim();
+    const msgLower = msgNorm.toLowerCase();
+    const isControl =
+      msgLower === "generar" ||
+      msgLower === "generate" ||
+      msgLower.includes("generar otra") ||
+      msgLower.includes("otra imagen") ||
+      msgLower.includes("empezar de nuevo");
+    const isUploadMarker = msgLower === "[user uploaded product image]" || msgNorm === "📸 Imagen subida";
+    if (msgNorm && !isControl && !isUploadMarker) {
+      lastUserPromptForCaptionRef.current = msgNorm;
+    }
+    if (uploadedFile) {
+      lastUploadedProductImageRef.current = uploadedFile;
+    }
+
     // Add user message to chat
     const uiMessage = uploadedFile && !messageText ? "📸 Imagen subida" : messageText;
     const backendMessage = uploadedFile && (!messageText || messageText === "📸 Imagen subida")
-      ? isReferenceUpload ? "[User uploaded reference image]" : "[User uploaded product image]"
+      ? "[User uploaded product image]"
       : messageText;
 
     if (uploadedFile) {
       const imageUrl = URL.createObjectURL(uploadedFile);
       addUserMessage(uiMessage, imageUrl);
-      // Save product thumbnail for context display
-      if (!isReferenceUpload && !productThumbnail) {
-        setProductThumbnail(imageUrl);
-      }
     } else {
       addUserMessage(uiMessage);
     }
@@ -328,15 +704,13 @@ export default function V3Page() {
       const formData = new FormData();
       formData.append("agentType", "product-showcase");
       formData.append("message", backendMessage);
+      if (opts?.selectedPostType) formData.append("selectedPostType", opts.selectedPostType);
       formData.append("conversationHistory", JSON.stringify(
         messages.map((m) => ({ role: m.role, content: m.content }))
       ));
       if (clientSessionId) formData.append("sessionId", clientSessionId);
       if (uploadedFile) {
         formData.append("image", uploadedFile);
-        if (isReferenceUpload) {
-          formData.append("isReferenceUpload", "true");
-        }
       }
       if (user?.uid) {
         formData.append("userId", user.uid);
@@ -348,13 +722,29 @@ export default function V3Page() {
       });
 
       if (!response.ok) {
-        throw new Error("Failed to get response from agent");
+        let details = "";
+        try {
+          const data = await response.json();
+          const msg = typeof data?.message === "string" ? data.message : "";
+          const det = typeof data?.details === "string" ? data.details : "";
+          details = [msg, det].filter(Boolean).join("\n");
+        } catch {
+          try {
+            details = await response.text();
+          } catch {
+            details = "";
+          }
+        }
+        const fallback = `Agent request failed (HTTP ${response.status})`;
+        throw new Error(details || fallback);
       }
 
       const result = await response.json();
 
       // Handle different response types
       if (result.type === "text") {
+        // Any response ends the generating lock, including failures.
+        setIsGenerating(false);
         // Check if ready to generate flag is set
         if (result.readyToGenerate) {
           setReadyToGenerate(true);
@@ -365,9 +755,12 @@ export default function V3Page() {
         setIsGenerating(false);
         addAssistantMessage(result.text || "¡Listo! Acá está tu imagen", result.imageUrl);
       } else if (result.type === "post_type_options") {
+        setIsGenerating(false);
         // Step 1: Show post type options with images
+        const t = typeof result.text === "string" ? result.text.trim() : "";
+        if (t) lastProductSummaryForCaptionRef.current = t;
         const msg: Message = {
-          id: crypto.randomUUID(),
+          id: uuid(),
           role: "assistant",
           content: result.text || "",
           postTypeOptions: result.postTypes,
@@ -375,9 +768,10 @@ export default function V3Page() {
         };
         setMessages((prev) => [...prev, msg]);
       } else if (result.type === "reference_options") {
+        setIsGenerating(false);
         // Step 3: Show reference options carousel
         const msg: Message = {
-          id: crypto.randomUUID(),
+          id: uuid(),
           role: "assistant",
           content: result.text || "",
           referenceOptions: result.references,
@@ -386,7 +780,12 @@ export default function V3Page() {
       }
     } catch (error) {
       console.error("Error sending message:", error);
-      addAssistantMessage("Perdón, tuve un problema. ¿Podés intentar de nuevo?");
+      setIsGenerating(false);
+      const msg =
+        error instanceof Error && error.message
+          ? error.message
+          : "Perdón, tuve un problema. ¿Podés intentar de nuevo?";
+      addAssistantMessage(msg);
     } finally {
       setIsSending(false);
     }
@@ -394,7 +793,9 @@ export default function V3Page() {
 
   // Handle post type selection
   const handlePostTypeSelect = (postType: PostTypeOption) => {
-    handleSendMessage(postType.label);
+    lastSelectedPostTypeLabelRef.current = postType.label;
+    // Send canonical post type for deterministic backend routing (keeps chat-visible label as-is).
+    handleSendMessage(postType.label, undefined, undefined, { selectedPostType: postType.type });
   };
 
   // Handle reference selection
@@ -424,7 +825,21 @@ export default function V3Page() {
       });
 
       if (!response.ok) {
-        throw new Error("Failed to get response from agent");
+        let details = "";
+        try {
+          const data = await response.json();
+          const msg = typeof data?.message === "string" ? data.message : "";
+          const det = typeof data?.details === "string" ? data.details : "";
+          details = [msg, det].filter(Boolean).join("\n");
+        } catch {
+          try {
+            details = await response.text();
+          } catch {
+            details = "";
+          }
+        }
+        const fallback = `Agent request failed (HTTP ${response.status})`;
+        throw new Error(details || fallback);
       }
 
       const result = await response.json();
@@ -437,252 +852,19 @@ export default function V3Page() {
       }
     } catch (error) {
       console.error("Error:", error);
-      addAssistantMessage("Lo siento, hubo un error. Por favor intenta de nuevo.");
+      const msg =
+        error instanceof Error && error.message
+          ? error.message
+          : "Lo siento, hubo un error. Por favor intenta de nuevo.";
+      addAssistantMessage(msg);
     } finally {
       setIsSending(false);
     }
   };
 
-  // Handle custom reference upload
-  const handleReferenceUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      if (!file.type.startsWith("image/")) {
-        alert("Por favor subí un archivo de imagen");
-        return;
-      }
-      if (file.size > 10 * 1024 * 1024) {
-        alert("La imagen es muy grande. Máximo 10MB");
-        return;
-      }
-      // Create a custom reference from uploaded file
-      const imageUrl = URL.createObjectURL(file);
-      const customRef: ReferenceOption = {
-        id: `custom-${Date.now()}`,
-        url: imageUrl,
-        description: "Referencia personalizada",
-      };
-      setSelectedReference(customRef);
-      handleSendMessage("", file, true);
-    }
-  };
+  // (Reference upload handler removed.)
 
-  // ============ MICROPHONE / AUDIO FUNCTIONS ============
-  
-  // Cleanup audio resources
-  const cleanupAudio = React.useCallback(() => {
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
-    }
-    if (audioContextRef.current) {
-      audioContextRef.current.close().catch(() => {});
-      audioContextRef.current = null;
-    }
-    if (audioStreamRef.current) {
-      audioStreamRef.current.getTracks().forEach(track => track.stop());
-      audioStreamRef.current = null;
-    }
-    analyserRef.current = null;
-    mediaRecorderRef.current = null;
-    setAudioLevels([0, 0, 0, 0, 0]);
-  }, []);
-
-  // Update EQ levels from analyser - runs continuously while recording
-  const updateAudioLevels = React.useCallback(() => {
-    const analyser = analyserRef.current;
-    if (!analyser) {
-      return;
-    }
-    
-    const bufferLength = analyser.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-    analyser.getByteFrequencyData(dataArray);
-    
-    // Get overall volume from lower frequencies where voice is (0-40% of spectrum)
-    const voiceRange = Math.floor(bufferLength * 0.4);
-    let totalEnergy = 0;
-    for (let i = 0; i < voiceRange; i++) {
-      totalEnergy += dataArray[i];
-    }
-    const avgEnergy = totalEnergy / voiceRange;
-    const normalizedVolume = Math.min(1, avgEnergy / 100);
-    
-    // Create 5 bars with slight variation based on different frequency sub-ranges
-    // This makes all bars move while still reflecting the audio
-    const levels: number[] = [];
-    const subRangeSize = Math.floor(voiceRange / 5);
-    
-    for (let i = 0; i < 5; i++) {
-      const start = i * subRangeSize;
-      const end = start + subRangeSize;
-      let sum = 0;
-      for (let j = start; j < end; j++) {
-        sum += dataArray[j];
-      }
-      const bandAvg = sum / subRangeSize;
-      // Mix band-specific level with overall volume for more uniform movement
-      const bandLevel = Math.min(1, bandAvg / 100);
-      const mixedLevel = (bandLevel * 0.4) + (normalizedVolume * 0.6);
-      // Add slight random variation for visual interest
-      const variation = 0.9 + Math.random() * 0.2;
-      levels.push(Math.min(1, mixedLevel * variation));
-    }
-    
-    setAudioLevels(levels);
-    animationFrameRef.current = requestAnimationFrame(updateAudioLevels);
-  }, []);
-
-  // Start microphone capture
-  const startMicCapture = async () => {
-    try {
-      if (!navigator?.mediaDevices?.getUserMedia) {
-        throw new Error("Micrófono no soportado en este navegador");
-      }
-      
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      audioStreamRef.current = stream;
-      
-      // Setup AudioContext and Analyser for EQ visualization
-      const audioContext = new AudioContext();
-      audioContextRef.current = audioContext;
-      const source = audioContext.createMediaStreamSource(stream);
-      const analyser = audioContext.createAnalyser();
-      analyser.fftSize = 256;
-      analyser.smoothingTimeConstant = 0.7;
-      source.connect(analyser);
-      analyserRef.current = analyser;
-      
-      // Setup MediaRecorder
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
-        ? 'audio/webm;codecs=opus' 
-        : MediaRecorder.isTypeSupported('audio/webm') 
-          ? 'audio/webm' 
-          : 'audio/mp4';
-      
-      audioChunksRef.current = [];
-      const recorder = new MediaRecorder(stream, { mimeType });
-      mediaRecorderRef.current = recorder;
-      
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          audioChunksRef.current.push(e.data);
-        }
-      };
-      
-      recorder.start();
-      
-      // Start EQ animation
-      animationFrameRef.current = requestAnimationFrame(updateAudioLevels);
-      
-    } catch (err) {
-      cleanupAudio();
-      throw err;
-    }
-  };
-
-  // Stop capture and return audio blob
-  const stopMicCapture = async (): Promise<Blob | null> => {
-    return new Promise((resolve) => {
-      const recorder = mediaRecorderRef.current;
-      
-      if (!recorder || recorder.state === 'inactive') {
-        cleanupAudio();
-        resolve(null);
-        return;
-      }
-      
-      recorder.onstop = () => {
-        const mimeType = recorder.mimeType || 'audio/webm';
-        const blob = new Blob(audioChunksRef.current, { type: mimeType });
-        audioChunksRef.current = [];
-        cleanupAudio();
-        resolve(blob.size > 0 ? blob : null);
-      };
-      
-      recorder.stop();
-    });
-  };
-
-  // Transcribe audio blob
-  const transcribeAudio = async (blob: Blob) => {
-    setIsTranscribing(true);
-    try {
-      const form = new FormData();
-      const ext = blob.type.includes('wav') ? 'wav' 
-        : blob.type.includes('mp4') ? 'mp4' 
-        : blob.type.includes('ogg') ? 'ogg' 
-        : 'webm';
-      form.set('audio', blob, `voice.${ext}`);
-      
-      const res = await fetch('/api/transcribe', { method: 'POST', body: form });
-      const data = await res.json();
-      
-      if (data?.status !== 'success') {
-        throw new Error(data?.message || 'Error en la transcripción');
-      }
-      
-      const transcript = typeof data?.text === 'string' ? data.text.trim() : '';
-      if (transcript) {
-        setInputValue(prev => prev ? `${prev} ${transcript}` : transcript);
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Error al transcribir';
-      setMicError(msg);
-      setTimeout(() => setMicError(null), 3000);
-    } finally {
-      setIsTranscribing(false);
-    }
-  };
-
-  // Mic button handlers - Click to start, click again to stop
-  const handleMicClick = async () => {
-    if (isRecording) {
-      // Stop recording
-      setIsRecording(false);
-      
-      try {
-        const blob = await stopMicCapture();
-        const MIN_AUDIO_BYTES = 2048;
-        
-        if (!blob || blob.size < MIN_AUDIO_BYTES) {
-          setMicError('Audio muy corto, intentá de nuevo');
-          setTimeout(() => setMicError(null), 3000);
-          return;
-        }
-        
-        await transcribeAudio(blob);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Error al procesar audio';
-        setMicError(msg);
-        setTimeout(() => setMicError(null), 3000);
-      }
-    } else {
-      // Start recording
-      if (isBusy || !hasMessages) return;
-      
-      setMicError(null);
-      
-      try {
-        await startMicCapture();
-        setIsRecording(true);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : 'No se pudo iniciar el micrófono';
-        setMicError(msg);
-        setTimeout(() => setMicError(null), 3000);
-        cleanupAudio();
-      }
-    }
-  };
-
-  // Cleanup on unmount
-  React.useEffect(() => {
-    return () => {
-      cleanupAudio();
-    };
-  }, [cleanupAudio]);
-
-  // ============ END MICROPHONE FUNCTIONS ============
+  // (Microphone cleanup removed.)
 
   // Handle generate button click
   const handleGenerate = async () => {
@@ -691,9 +873,368 @@ export default function V3Page() {
     handleSendMessage("Generar");
   };
 
+  const fileToDataUrl = React.useCallback((file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("Failed to read file"));
+      reader.readAsDataURL(file);
+    });
+  }, []);
+
+  const getCaptionBasePrompt = React.useCallback(() => {
+    // v2-parity: prefer the last meaningful USER intent, not assistant UI/status text.
+    const u = (lastUserPromptForCaptionRef.current || "").trim();
+    const postType = (lastSelectedPostTypeLabelRef.current || "").trim();
+    const productSummary = (lastProductSummaryForCaptionRef.current || "").trim();
+    const a = (lastAssistantPromptForCaptionRef.current || "").trim();
+
+    const parts = [
+      u,
+      postType ? `Tipo de post: ${postType}` : "",
+      productSummary ? `Contexto del producto:\n${productSummary}` : "",
+      // Last resort fallback (helps if user never typed a meaningful prompt)
+      !u && a ? a : "",
+    ].filter((x) => typeof x === "string" && x.trim().length > 0);
+
+    return parts.join("\n\n").trim();
+  }, []);
+
+  const handleOpenCaptionModal = React.useCallback(
+    (imageUrl: string) => {
+      setPublishingImageUrl(imageUrl);
+      setPublishingPostId(null);
+      publishingPostBasePromptRef.current = null;
+      setCaptionInput("");
+      setShowCaptionModal(true);
+
+      // Auto-generate caption on open (non-blocking).
+      const seq = ++captionGenSeqRef.current;
+      setIsCaptionGenerating(true);
+      (async () => {
+        try {
+          const basePrompt = getCaptionBasePrompt();
+          if (!basePrompt) return;
+
+          const postType = (lastSelectedPostTypeLabelRef.current || "").trim();
+          const body: any = {
+            base_prompt: basePrompt,
+            instruction: postType ? `Caption para un post de Instagram tipo ${postType}.` : undefined,
+          };
+          const file = lastUploadedProductImageRef.current;
+          if (file) {
+            body.product_image_base64 = await fileToDataUrl(file);
+          }
+
+          const res = await fetch("/api/caption", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          const nextCaption = typeof data?.caption?.text === "string" ? data.caption.text : "";
+
+          if (captionGenSeqRef.current !== seq) return;
+          if (!nextCaption.trim()) return;
+          setCaptionInput(nextCaption);
+        } catch {
+          // Silent failure: user can still type manually.
+        } finally {
+          if (captionGenSeqRef.current === seq) setIsCaptionGenerating(false);
+        }
+      })();
+    },
+    [fileToDataUrl, getCaptionBasePrompt]
+  );
+
+  const handleTryOpenCaptionModal = React.useCallback(
+    (imageUrl: string) => {
+      if (!igConnected) {
+        if (isMobileBrowser) showMobileToast("Necesitás conectar Instagram para publicar.");
+        return;
+      }
+      handleOpenCaptionModal(imageUrl);
+    },
+    [handleOpenCaptionModal, igConnected, isMobileBrowser, showMobileToast]
+  );
+
+  const handleOpenCaptionModalForSavedPost = React.useCallback((post: UserPost) => {
+    const url = post.mediaUrl || post.previewUrl || "";
+    if (!url) return;
+
+    setPublishingImageUrl(url);
+    setPublishingPostId(post.id);
+
+    const basePrompt = (post.prompt || post.caption || "").toString().trim();
+    publishingPostBasePromptRef.current = basePrompt || null;
+
+    const existingCaption = (post.caption || "").toString();
+    setCaptionInput(existingCaption);
+    setShowCaptionModal(true);
+
+    // Auto-generate only if there's no existing caption to avoid overwriting.
+    if (existingCaption.trim()) return;
+
+    const seq = ++captionGenSeqRef.current;
+    setIsCaptionGenerating(true);
+    (async () => {
+      try {
+        if (!basePrompt) return;
+        const body: any = {
+          base_prompt: basePrompt,
+          instruction: "Caption para un post de Instagram.",
+        };
+        const res = await fetch("/api/caption", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        const nextCaption = typeof data?.caption?.text === "string" ? data.caption.text : "";
+
+        if (captionGenSeqRef.current !== seq) return;
+        if (!nextCaption.trim()) return;
+        setCaptionInput(nextCaption);
+
+        // Persist caption draft so My Posts shows it and we don't regenerate next time.
+        try {
+          if (!user) return;
+          const token = await user.getIdToken();
+          await fetch("/api/posts/update-caption", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ postId: post.id, caption: nextCaption }),
+          });
+          // Optimistic local update (avoid depending on refreshMyPosts ordering).
+          setMyPosts((prev) =>
+            prev.map((p) => (p.id === post.id ? { ...p, caption: nextCaption } : p))
+          );
+        } catch {
+          // ignore (draft saving is best-effort)
+        }
+      } catch {
+        // Silent failure: user can still type manually.
+      } finally {
+        if (captionGenSeqRef.current === seq) setIsCaptionGenerating(false);
+      }
+    })();
+  }, [user]);
+
+  const handleTryOpenCaptionModalForSavedPost = React.useCallback(
+    (post: UserPost) => {
+      if (!igConnected) {
+        if (isMobileBrowser) showMobileToast("Necesitás conectar Instagram para publicar.");
+        return;
+      }
+      handleOpenCaptionModalForSavedPost(post);
+    },
+    [handleOpenCaptionModalForSavedPost, igConnected, isMobileBrowser, showMobileToast]
+  );
+
+  const handleCloseCaptionModal = React.useCallback(() => {
+    setShowCaptionModal(false);
+    setPublishingImageUrl(null);
+    setPublishingPostId(null);
+    publishingPostBasePromptRef.current = null;
+    setCaptionInput("");
+    setIsCaptionGenerating(false);
+  }, []);
+
+  const refreshMyPosts = React.useCallback(async () => {
+    if (!user) return;
+    setMyPostsLoading(true);
+    setMyPostsError(null);
+    try {
+      const token = await user.getIdToken();
+      const res = await fetch("/api/posts?limit=120", {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+      const data = await res.json();
+      if (!res.ok || data?.status !== "success") {
+        throw new Error(data?.message || "Failed to load posts");
+      }
+      const posts = Array.isArray(data?.posts) ? (data.posts as UserPost[]) : [];
+      setMyPosts(posts);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Failed to load posts";
+      setMyPostsError(msg);
+    } finally {
+      setMyPostsLoading(false);
+    }
+  }, [user]);
+
+  React.useEffect(() => {
+    if (!user) return;
+    if (activeLeftMenu !== "posts") return;
+    refreshMyPosts();
+  }, [activeLeftMenu, refreshMyPosts, user]);
+
+  const startPublishPolling = React.useCallback(
+    async (postId: string) => {
+      if (!user) return;
+      if (!postId || typeof postId !== "string") return;
+      if (pendingPublishIdsRef.current.has(postId)) return;
+      pendingPublishIdsRef.current.add(postId);
+
+      // Persist pending ids so a reload can resume.
+      try {
+        if (typeof window !== "undefined") {
+          const key = `postty:v3:${user.uid}:pendingPublishes:v1`;
+          const raw = window.localStorage.getItem(key);
+          const arr = raw ? (JSON.parse(raw) as any[]) : [];
+          const next = Array.from(new Set([...(Array.isArray(arr) ? arr : []), postId]));
+          window.localStorage.setItem(key, JSON.stringify(next));
+        }
+      } catch {
+        // ignore
+      }
+
+      const startedAt = Date.now();
+      const timeoutMs = 3 * 60 * 1000; // 3 minutes
+      const intervalMs = 2500;
+
+      const pollOnce = async (): Promise<void> => {
+        if (!user) return;
+        if (Date.now() - startedAt > timeoutMs) return;
+        try {
+          const token = await user.getIdToken();
+          const res = await fetch("/api/posts?limit=160", {
+            headers: { Authorization: `Bearer ${token}` },
+            cache: "no-store",
+          });
+          const data = await res.json();
+          if (!res.ok || data?.status !== "success") {
+            window.setTimeout(pollOnce, intervalMs);
+            return;
+          }
+
+          const posts = Array.isArray(data.posts) ? (data.posts as any[]) : [];
+          const found = posts.find((p) => p && p.id === postId);
+          const status = found?.status;
+
+          if (status === "published") {
+            const permalink =
+              typeof found?.instagramPermalink === "string" && found.instagramPermalink.trim().length > 0
+                ? found.instagramPermalink.trim()
+                : null;
+            addAssistantMessage(permalink ? `Publicado en Instagram.\n${permalink}` : "Publicado en Instagram.");
+            return;
+          }
+          if (status === "failed") {
+            const err =
+              typeof found?.error === "string" && found.error.trim().length > 0 ? found.error.trim() : "Error desconocido";
+            addAssistantMessage(`Falló la publicación en Instagram: ${err}`);
+            return;
+          }
+
+          window.setTimeout(pollOnce, intervalMs);
+        } catch {
+          window.setTimeout(pollOnce, intervalMs);
+        }
+      };
+
+      window.setTimeout(pollOnce, 800);
+    },
+    [addAssistantMessage, user]
+  );
+
+  // Resume polling after reload (if any publish jobs were pending).
+  React.useEffect(() => {
+    if (!user) return;
+    if (typeof window === "undefined") return;
+    try {
+      const key = `postty:v3:${user.uid}:pendingPublishes:v1`;
+      const raw = window.localStorage.getItem(key);
+      const arr = raw ? JSON.parse(raw) : [];
+      const ids = Array.isArray(arr) ? arr.filter((x) => typeof x === "string") : [];
+      ids.forEach((id) => void startPublishPolling(id));
+    } catch {
+      // ignore
+    }
+  }, [startPublishPolling, user]);
+
+  const handleSaveImageToMyPosts = React.useCallback(
+    async (imageUrl: string) => {
+      if (!user) throw new Error("Tenés que iniciar sesión para guardar.");
+      const token = await user.getIdToken();
+      const basePrompt = getCaptionBasePrompt();
+
+      setIsSavingToPosts(true);
+      try {
+        const res = await fetch("/api/posts/save-image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ imageUrl, prompt: basePrompt }),
+        });
+        const data = await res.json();
+        if (!res.ok || data?.status !== "success") {
+          throw new Error(data?.message || "Failed to save image");
+        }
+        // Refresh My Posts in background
+        refreshMyPosts();
+        return data;
+      } finally {
+        setIsSavingToPosts(false);
+      }
+    },
+    [getCaptionBasePrompt, refreshMyPosts, user]
+  );
+
+  const handlePublishImageToInstagram = React.useCallback(async () => {
+    if (!publishingImageUrl) return;
+    if (!captionInput.trim()) return;
+    if (!user) throw new Error("Tenés que iniciar sesión para publicar.");
+
+    setIsPublishing(true);
+    try {
+      const token = await user.getIdToken();
+      const basePrompt = publishingPostBasePromptRef.current || getCaptionBasePrompt();
+
+      const res = await fetch("/api/posts/publish-image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          postId: publishingPostId || undefined,
+          imageUrl: publishingImageUrl,
+          caption: captionInput.trim(),
+          prompt: basePrompt,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !(data?.status === "accepted" || data?.status === "success")) {
+        throw new Error(data?.message || "Failed to publish");
+      }
+      const postId = typeof data?.postId === "string" ? data.postId : null;
+
+      // Non-blocking UX: let it finish in the background.
+      addAssistantMessage("Uploading to Instagram...");
+      if (postId) void startPublishPolling(postId);
+      refreshMyPosts();
+      handleCloseCaptionModal();
+    } catch (e) {
+      const m = e instanceof Error ? e.message : "Failed to publish";
+      addAssistantMessage(m);
+    } finally {
+      setIsPublishing(false);
+    }
+  }, [
+    addAssistantMessage,
+    captionInput,
+    getCaptionBasePrompt,
+    handleCloseCaptionModal,
+    publishingImageUrl,
+    refreshMyPosts,
+    startPublishPolling,
+    user,
+    publishingPostId,
+  ]);
+
   // Handle file selection - now sends to agent
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
+    // Allow re-selecting the same file by always clearing the input value.
+    event.target.value = "";
     if (file) {
       // Validate file type
       if (!file.type.startsWith("image/")) {
@@ -706,6 +1247,17 @@ export default function V3Page() {
         return;
       }
       
+      // Persistable product thumbnail (data URL) for reload + panel switching.
+      fileToDataUrl(file)
+        .then((dataUrl) => {
+          if (typeof dataUrl === "string" && dataUrl.startsWith("data:image/")) {
+            setProductThumbnail(dataUrl);
+          }
+        })
+        .catch(() => {
+          // ignore
+        });
+
       // Send the image to the agent
       handleSendMessage("", file);
     }
@@ -713,6 +1265,10 @@ export default function V3Page() {
 
   // Trigger file input click
   const handleAttachClick = () => {
+    if (isMobileBrowser) {
+      setShowMobileImageChooser(true);
+      return;
+    }
     fileInputRef.current?.click();
   };
 
@@ -721,6 +1277,8 @@ export default function V3Page() {
     e?.preventDefault();
     if (inputValue.trim()) {
       handleSendMessage(inputValue.trim());
+      // Keep typing without extra clicks
+      queueMicrotask(() => inputRef.current?.focus());
     }
   };
 
@@ -732,8 +1290,101 @@ export default function V3Page() {
     }
   };
 
-  const isBusy = isSending || isTyping || isGenerating || isRecording || isTranscribing;
+  const isBusy = isSending || isTyping || isGenerating;
   const hasMessages = messages.length > 0;
+
+  // Restore focus to chat input after requests finish
+  React.useEffect(() => {
+    if (isBusy) return;
+    if (!hasMessages) return;
+    // Avoid fighting the user when a modal is open
+    if (showFeedbackModal || showCaptionModal) return;
+    // If we're still waiting for the user to upload the product picture,
+    // do NOT auto-focus (mobile keyboard should not pop).
+    if (!productThumbnail) return;
+    const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+    const presentingOptions =
+      Boolean(lastAssistant && ((lastAssistant.postTypeOptions?.length || 0) > 0 || (lastAssistant.referenceOptions?.length || 0) > 0));
+    const presentingGeneratedImage = Boolean(lastAssistant && lastAssistant.imageUrl);
+
+    // Only focus when we expect typing (not when user must tap/swipe/press buttons).
+    if (presentingOptions) return;
+    if (presentingGeneratedImage) return;
+    if (readyToGenerate) return;
+
+    inputRef.current?.focus();
+  }, [isBusy, hasMessages, messages, productThumbnail, readyToGenerate, showCaptionModal, showFeedbackModal]);
+
+  // Prevent the browser from navigating away when dropping a file near edges.
+  // Only active on the empty (welcome) state, per spec.
+  React.useEffect(() => {
+    if (hasMessages) return;
+    const prevent = (e: DragEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener("dragover", prevent);
+    window.addEventListener("drop", prevent);
+    return () => {
+      window.removeEventListener("dragover", prevent);
+      window.removeEventListener("drop", prevent);
+    };
+  }, [hasMessages]);
+
+  const isFileDragEvent = React.useCallback((e: React.DragEvent) => {
+    const types = e.dataTransfer?.types;
+    if (!types) return false;
+    return Array.from(types).includes("Files");
+  }, []);
+
+  const handleDragEnter = React.useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (hasMessages) return;
+    if (!isFileDragEvent(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current += 1;
+    setDragOver(true);
+  }, [hasMessages, isFileDragEvent]);
+
+  const handleDragOver = React.useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (hasMessages) return;
+    if (!isFileDragEvent(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "copy";
+    setDragOver(true);
+  }, [hasMessages, isFileDragEvent]);
+
+  const handleDragLeave = React.useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (hasMessages) return;
+    if (!isFileDragEvent(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+    if (dragCounterRef.current === 0) setDragOver(false);
+  }, [hasMessages, isFileDragEvent]);
+
+  const handleDrop = React.useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (hasMessages) return;
+    if (!isFileDragEvent(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setDragOver(false);
+
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      alert("Por favor subí un archivo de imagen");
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      alert("La imagen es muy grande. Máximo 10MB");
+      return;
+    }
+
+    void handleSendMessage("", file);
+  }, [hasMessages, isFileDragEvent, handleSendMessage]);
 
   // Close dropdown when clicking outside
   React.useEffect(() => {
@@ -771,14 +1422,74 @@ export default function V3Page() {
         accept="image/*"
         className="hidden"
       />
-      {/* Hidden File Input for Reference */}
+      {/* Hidden File Input for Product (Camera) - mobile-only trigger */}
       <input
         type="file"
-        ref={referenceInputRef}
-        onChange={handleReferenceUpload}
+        ref={cameraInputRef}
+        onChange={handleFileSelect}
         accept="image/*"
+        capture="environment"
         className="hidden"
       />
+      {/* Hidden File Input for Reference */}
+      {/* Reference uploads disabled in v3 */}
+
+      {/* Mobile-only: choose camera vs library */}
+      {isMobileBrowser && showMobileImageChooser ? (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40"
+          onClick={() => setShowMobileImageChooser(false)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="w-full sm:max-w-sm bg-white rounded-t-2xl sm:rounded-2xl shadow-lg p-4 sm:p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-sm font-semibold text-gray-900">Agregar foto del producto</div>
+            <div className="mt-1 text-xs text-gray-500">Elegí una opción</div>
+
+            <div className="mt-4 grid gap-2">
+              <button
+                type="button"
+                className="w-full py-3 rounded-xl border border-gray-200 text-sm font-medium hover:bg-gray-50 transition-colors"
+                onClick={() => {
+                  setShowMobileImageChooser(false);
+                  queueMicrotask(() => cameraInputRef.current?.click());
+                }}
+              >
+                Sacar foto
+              </button>
+              <button
+                type="button"
+                className="w-full py-3 rounded-xl border border-gray-200 text-sm font-medium hover:bg-gray-50 transition-colors"
+                onClick={() => {
+                  setShowMobileImageChooser(false);
+                  queueMicrotask(() => fileInputRef.current?.click());
+                }}
+              >
+                Elegir de la galería
+              </button>
+              <button
+                type="button"
+                className="w-full py-3 rounded-xl bg-gray-900 text-white text-sm font-semibold hover:bg-gray-800 transition-colors"
+                onClick={() => setShowMobileImageChooser(false)}
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Mobile toast */}
+      {isMobileBrowser && mobileToast ? (
+        <div className="fixed z-[60] left-1/2 -translate-x-1/2 bottom-24 px-4 pointer-events-none">
+          <div className="bg-gray-900 text-white text-xs font-semibold px-4 py-2 rounded-full shadow-lg max-w-[92vw] text-center">
+            {mobileToast}
+          </div>
+        </div>
+      ) : null}
       {/* Logo - Top Left */}
       <div className="fixed top-4 left-4 sm:top-5 sm:left-8 z-40">
         <h1 
@@ -796,11 +1507,7 @@ export default function V3Page() {
 
       {/* Left Sidebar Pill - Home, Posts, Reels */}
       {/* Desktop: left side vertical | Mobile: bottom center horizontal */}
-      <div className="fixed z-40 
-        bottom-6 left-1/2 -translate-x-1/2 flex-row
-        sm:bottom-auto sm:left-6 sm:top-1/2 sm:-translate-y-1/2 sm:translate-x-0 sm:flex-col
-        flex gap-1.5 sm:gap-2 p-1.5 sm:p-2 rounded-full bg-[#f5f5f5]"
-      >
+      <div className="fixed z-40 bottom-6 left-1/2 -translate-x-1/2 flex-row sm:bottom-auto sm:left-6 sm:top-1/2 sm:-translate-y-1/2 sm:translate-x-0 sm:flex-col flex gap-1.5 sm:gap-2 p-1.5 sm:p-2 rounded-full bg-[#f5f5f5]">
         <button 
           className={`p-2 rounded-full transition-all group cursor-pointer ${activeLeftMenu === 'home' ? 'bg-white' : ''}`}
           title="Home"
@@ -823,15 +1530,20 @@ export default function V3Page() {
             className={`w-4 h-4 sm:w-[18px] sm:h-[18px] transition-opacity ${activeLeftMenu === 'posts' ? 'opacity-100' : 'opacity-40 group-hover:opacity-100'}`}
           />
         </button>
-        <button 
-          className={`p-2 rounded-full transition-all group cursor-pointer ${activeLeftMenu === 'reels' ? 'bg-white' : ''}`}
-          title="Reels"
-          onClick={() => setActiveLeftMenu('reels')}
+        <button
+          type="button"
+          aria-disabled="true"
+          className="p-2 rounded-full transition-all group cursor-help"
+          title="Reels (Coming soon)"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
         >
           <img 
             src="/icons/video-recorder.svg" 
             alt="Reels" 
-            className={`w-4 h-4 sm:w-[18px] sm:h-[18px] transition-opacity ${activeLeftMenu === 'reels' ? 'opacity-100' : 'opacity-40 group-hover:opacity-100'}`}
+            className="w-4 h-4 sm:w-[18px] sm:h-[18px] transition-opacity opacity-40 group-hover:opacity-100"
           />
         </button>
       </div>
@@ -889,23 +1601,64 @@ export default function V3Page() {
         {/* Profile Dropdown */}
         {showProfileDropdown && (
           <div className="absolute top-full right-0 mt-2 flex flex-col p-1.5 rounded-xl bg-white border border-gray-200 shadow-sm">
-            <button
-              onClick={() => {
-                handleConnectInstagram();
-                setShowProfileDropdown(false);
-              }}
-              disabled={connectingInstagram}
-              className="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-[#f5f5f5] transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
-            >
-              <img 
-                src="/icons/link-04.svg" 
-                alt="Connect" 
-                className="w-4 h-4 opacity-50 flex-shrink-0"
-              />
-              <span className="text-sm text-gray-600">
-                {connectingInstagram ? "Conectando..." : "Conectar Instagram"}
-              </span>
-            </button>
+            <div className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <img
+                  src="/icons/link-04.svg"
+                  alt="Instagram"
+                  className="w-4 h-4 opacity-50 flex-shrink-0"
+                />
+                <div className="min-w-0">
+                  <div className="text-sm text-gray-700 font-medium truncate">
+                    Instagram
+                  </div>
+                  <div className={`text-xs truncate ${igConnected ? "text-emerald-600" : "text-gray-500"}`}>
+                    {igLoading ? "Verificando..." : igConnected ? `Conectado${igLabel ? ` (${igLabel})` : ""}` : "No conectado"}
+                  </div>
+                </div>
+              </div>
+
+              {igConnected ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleDisconnectInstagram();
+                    setShowProfileDropdown(false);
+                  }}
+                  disabled={igLoading}
+                  className="px-2.5 py-1.5 rounded-full text-xs font-medium border border-gray-200 hover:bg-[#f5f5f5] transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                >
+                  Desconectar
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleConnectInstagram();
+                    setShowProfileDropdown(false);
+                  }}
+                  disabled={connectingInstagram || igLoading}
+                  className="px-2.5 py-1.5 rounded-full text-xs font-medium border border-gray-200 hover:bg-[#f5f5f5] transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                >
+                  {connectingInstagram ? "Conectando..." : "Conectar"}
+                </button>
+              )}
+            </div>
+
+            {igToast ? (
+              <div className="px-3 pb-1">
+                <div
+                  className={`px-2.5 py-2 rounded-lg text-xs font-semibold border ${
+                    igToast.kind === "error"
+                      ? "bg-rose-50 text-rose-800 border-rose-100"
+                      : "bg-white text-gray-800 border-gray-100"
+                  }`}
+                >
+                  {igToast.msg}
+                </div>
+              </div>
+            ) : null}
+
             <button
               onClick={() => {
                 signOut();
@@ -928,17 +1681,35 @@ export default function V3Page() {
       {/* Chatbox starts below top pill, same spacing on all sides relative to pills */}
       <div className="fixed top-[88px] bottom-8 left-4 right-4 sm:left-[96px] sm:right-8 flex flex-col pb-16 sm:pb-0">
         {/* Main Chat Container */}
-        <div className="w-full h-full flex flex-col rounded-[32px] border border-gray-200 bg-white overflow-hidden">
+        <div
+          onDragEnter={handleDragEnter}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={[
+            "w-full h-full flex flex-col rounded-[32px] border overflow-hidden transition-colors",
+            !hasMessages && dragOver ? "border-gray-300 bg-gray-50/40" : "border-gray-200 bg-white",
+          ].join(" ")}
+        >
           
           {/* Chat Content Area */}
           <div className="flex-1 relative overflow-hidden">
-            <div className="h-full overflow-y-auto p-5 sm:px-8 sm:py-6 scrollbar-hide">
+            <div
+              className="absolute inset-0 flex w-[200%] transition-transform duration-300 ease-in-out"
+              style={{ transform: activeLeftMenu === "posts" ? "translateX(-50%)" : "translateX(0%)" }}
+            >
+              {/* Chat frame */}
+              <div className="w-1/2 h-full shrink-0 flex flex-col">
+                <div ref={chatScrollRef} className="flex-1 overflow-y-auto p-5 sm:px-8 sm:py-6 scrollbar-hide">
             {!hasMessages ? (
               /* Welcome Box - Dashed border, hover effect, clickable to upload */
               <div className="h-full flex items-center justify-center">
                 <div 
                   onClick={handleAttachClick}
-                  className="w-full max-w-2xl p-12 sm:p-16 rounded-[24px] border border-dashed border-gray-200 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-gray-50 transition-colors"
+                  className={[
+                    "w-full max-w-2xl p-12 sm:p-16 rounded-[24px] border border-dashed flex flex-col items-center justify-center text-center cursor-pointer transition-colors",
+                    dragOver ? "border-gray-300 bg-gray-50" : "border-gray-200 hover:bg-gray-50",
+                  ].join(" ")}
                 >
                   <div className="mb-3">
                     <img 
@@ -970,7 +1741,7 @@ export default function V3Page() {
                     {msg.role === "assistant" && (
                       <div className="w-full">
                         {/* Top row: Avatar + Product thumbnail + Text - limited to 40% */}
-                        <div className="flex items-start gap-2 max-w-[40%]">
+                        <div className={["flex items-start gap-2", bubbleMaxWidth].join(" ")}>
                           {/* Avatar P - Postty brand with ITC Benguiat font */}
                           <div className="w-5 h-5 rounded-full bg-gray-900 flex items-center justify-center shrink-0">
                             <span 
@@ -1010,31 +1781,89 @@ export default function V3Page() {
                           {/* 🚨 PROTECTED: Post Type Carousel - horizontal scroll, no scrollbar visible, extends to chatbox edge */}
                           {/* Post Type Options - Step 1 */}
                           {msg.postTypeOptions && msg.postTypeOptions.length > 0 && (
-                            <div className="flex gap-4 overflow-x-auto scrollbar-hide pb-2 mt-4">
-                              {msg.postTypeOptions.map((option) => (
-                                <button
-                                  key={option.type}
-                                  onClick={() => handlePostTypeSelect(option)}
-                                  disabled={isBusy}
-                                  className="relative flex-shrink-0 w-64 h-96 rounded overflow-hidden border-2 border-gray-100 hover:border-gray-300 transition-all cursor-pointer group disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  <img 
-                                    src={option.exampleImage.url} 
-                                    alt={option.label}
-                                    className="w-full h-full object-cover"
-                                  />
-                                  {/* Label pill at top */}
-                                  <div className="absolute top-3 left-1/2 -translate-x-1/2">
-                                    <span className="bg-white/95 backdrop-blur-sm px-3 py-1.5 rounded-full text-[11px] font-medium text-gray-900 shadow-sm whitespace-nowrap">
-                                      {option.label}
-                                    </span>
+                            <div className="relative mt-4">
+                              {/* Mobile-only swipe hint overlay */}
+                              {isMobileBrowser && postTypeCarouselVisible && !postTypeCarouselSwiped ? (
+                                <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center">
+                                  <div className="posttySwipeHint motion-reduce:animate-none">
+                                    <div className="posttySwipeHintInner motion-reduce:animate-none">
+                                      <span className="posttySwipeArrow" aria-hidden="true">←</span>
+                                      <svg
+                                        width="26"
+                                        height="26"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        aria-hidden="true"
+                                      >
+                                        <path
+                                          d="M8.5 12.5v-6.3a1.2 1.2 0 0 1 2.4 0v5.1"
+                                          stroke="currentColor"
+                                          strokeWidth="1.8"
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                        />
+                                        <path
+                                          d="M10.9 11V4.9a1.2 1.2 0 0 1 2.4 0V11"
+                                          stroke="currentColor"
+                                          strokeWidth="1.8"
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                        />
+                                        <path
+                                          d="M13.3 11.3V5.8a1.2 1.2 0 0 1 2.4 0v7.1"
+                                          stroke="currentColor"
+                                          strokeWidth="1.8"
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                        />
+                                        <path
+                                          d="M15.7 12.4V7.3a1.2 1.2 0 0 1 2.4 0v7.3c0 2.9-1.8 5.4-4.5 6.2l-1 .3a6.6 6.6 0 0 1-8.3-5.1l-.3-1.6a1.1 1.1 0 0 1 1.8-1l2.7 2.2V12.5"
+                                          stroke="currentColor"
+                                          strokeWidth="1.8"
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                        />
+                                      </svg>
+                                      <span className="posttySwipeText">Deslizá</span>
+                                    </div>
                                   </div>
-                                  {/* Hover overlay */}
-                                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
-                                </button>
-                              ))}
-                              {/* Spacer for right padding in scroll */}
-                              <div className="flex-shrink-0 w-6" aria-hidden="true" />
+                                </div>
+                              ) : null}
+
+                              <div
+                                ref={postTypeCarouselRef}
+                                className="flex gap-4 overflow-x-auto scrollbar-hide pb-2"
+                                onScroll={(e) => {
+                                  const t = e.currentTarget;
+                                  if (t.scrollLeft > 16) markCarouselSwiped();
+                                }}
+                                onTouchMove={() => markCarouselSwiped()}
+                              >
+                                {msg.postTypeOptions.map((option) => (
+                                  <button
+                                    key={option.type}
+                                    onClick={() => handlePostTypeSelect(option)}
+                                    disabled={isBusy}
+                                    className="relative flex-shrink-0 w-64 h-96 rounded overflow-hidden border-2 border-gray-100 hover:border-gray-300 transition-all cursor-pointer group disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    <img 
+                                      src={option.exampleImage.url} 
+                                      alt={option.label}
+                                      className="w-full h-full object-cover"
+                                    />
+                                    {/* Label pill at top */}
+                                    <div className="absolute top-3 left-1/2 -translate-x-1/2">
+                                      <span className="bg-white/95 backdrop-blur-sm px-3 py-1.5 rounded-full text-[11px] font-medium text-gray-900 shadow-sm whitespace-nowrap">
+                                        {option.label}
+                                      </span>
+                                    </div>
+                                    {/* Hover overlay */}
+                                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
+                                  </button>
+                                ))}
+                                {/* Spacer for right padding in scroll */}
+                                <div className="flex-shrink-0 w-6" aria-hidden="true" />
+                              </div>
                             </div>
                           )}
 
@@ -1043,18 +1872,6 @@ export default function V3Page() {
                           {msg.referenceOptions && msg.referenceOptions.length > 0 && (
                             <div className="mt-6">
                               <div className="flex gap-4 overflow-x-auto scrollbar-hide pb-2">
-                                {/* Upload custom reference button */}
-                                <button
-                                  onClick={() => referenceInputRef.current?.click()}
-                                  disabled={isBusy}
-                                  className="flex-shrink-0 w-64 h-96 rounded border-2 border-dashed border-gray-200 hover:border-gray-300 hover:bg-gray-50 transition-all cursor-pointer flex flex-col items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" className="text-gray-400">
-                                    <path d="M12 5V19M5 12H19" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                                  </svg>
-                                  <span className="text-xs text-gray-500 text-center px-2">Subir referencia</span>
-                                </button>
-
                                 {/* Reference images */}
                                 {msg.referenceOptions.slice(0, 20).map((ref, idx) => (
                                   <button
@@ -1086,24 +1903,75 @@ export default function V3Page() {
                                 alt="Generated"
                                 className="w-full rounded-2xl border border-gray-100"
                               />
-                              <div className="flex gap-2 mt-3">
-                                <button
-                                  onClick={() => {
-                                    const link = document.createElement("a");
-                                    link.href = msg.imageUrl!;
-                                    link.download = `postty-${Date.now()}.png`;
-                                    link.click();
-                                  }}
-                                  className="flex-1 py-2.5 px-4 bg-gray-900 text-white text-sm font-medium rounded-xl hover:bg-gray-800 transition"
-                                >
-                                  Descargar
-                                </button>
-                                <button
-                                  className="flex-1 py-2.5 px-4 border border-gray-200 text-gray-700 text-sm font-medium rounded-xl hover:bg-gray-50 transition"
-                                >
-                                  Publicar
-                                </button>
-                              </div>
+                              {isMobileBrowser ? (
+                                <div className="flex gap-2 mt-3">
+                                  <button
+                                    onClick={async () => {
+                                      try {
+                                        await handleSaveImageToMyPosts(msg.imageUrl!);
+                                        addAssistantMessage("Guardado en **My posts**.");
+                                      } catch (e) {
+                                        const m = e instanceof Error ? e.message : "Failed to save";
+                                        addAssistantMessage(m);
+                                      }
+                                    }}
+                                    disabled={isSavingToPosts || isBusy}
+                                    className="flex-1 py-2.5 px-4 bg-gray-900 text-white text-sm font-medium rounded-xl hover:bg-gray-800 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    {isSavingToPosts ? "Saving..." : "Save"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void shareImage(msg.imageUrl!, `postty-${Date.now()}.png`)}
+                                    disabled={isBusy}
+                                    className="flex-1 py-2.5 px-4 border border-gray-200 text-gray-700 text-sm font-medium rounded-xl hover:bg-gray-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    Share
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleTryOpenCaptionModal(msg.imageUrl!)}
+                                    disabled={isBusy}
+                                    className="flex-1 py-2.5 px-4 border border-gray-200 text-gray-700 text-sm font-medium rounded-xl hover:bg-gray-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    Post
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="flex gap-2 mt-3">
+                                  <button
+                                    onClick={async () => {
+                                      try {
+                                        await handleSaveImageToMyPosts(msg.imageUrl!);
+                                        addAssistantMessage("Guardado en **My posts**.");
+                                      } catch (e) {
+                                        const m = e instanceof Error ? e.message : "Failed to save";
+                                        addAssistantMessage(m);
+                                      }
+                                    }}
+                                    disabled={isSavingToPosts || isBusy}
+                                    className="flex-1 py-2.5 px-4 bg-gray-900 text-white text-sm font-medium rounded-xl hover:bg-gray-800 transition"
+                                  >
+                                    {isSavingToPosts ? "Saving..." : "Save"}
+                                  </button>
+                                  <div className="flex-1 relative group">
+                                    <button
+                                      onClick={() => handleOpenCaptionModal(msg.imageUrl!)}
+                                      disabled={!igConnected || isBusy}
+                                      className="w-full py-2.5 px-4 border border-gray-200 text-gray-700 text-sm font-medium rounded-xl hover:bg-gray-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                      Post
+                                    </button>
+                                    {!igConnected ? (
+                                      <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 -top-2 -translate-y-full opacity-0 group-hover:opacity-100 transition-opacity">
+                                        <div className="bg-gray-900 text-white text-xs px-3 py-2 rounded-lg shadow-lg whitespace-nowrap">
+                                          please connect to Instagram to use this functionality
+                                        </div>
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
@@ -1128,7 +1996,7 @@ export default function V3Page() {
                     
                     {/* User messages - max 40% width, aligned right */}
                     {msg.role === "user" && msg.content !== "📸 Imagen subida" && (
-                      <div className="ml-auto flex items-center gap-2 max-w-[40%]">
+                      <div className={["ml-auto flex items-center gap-2", bubbleMaxWidth].join(" ")}>
                         {/* Reference selection with thumbnail */}
                         {msg.content === "📷 Referencia seleccionada" && msg.imageUrl ? (
                           <div className="flex items-center gap-2 bg-gray-100 rounded-2xl rounded-br-md px-3 py-2">
@@ -1152,7 +2020,7 @@ export default function V3Page() {
                 {/* Typing indicator */}
                 {(isTyping || isSending || isGenerating) && (
                   <div className="flex justify-start animate-in fade-in duration-200">
-                    <div className="flex items-center gap-2 max-w-[40%]">
+                    <div className={["flex items-center gap-2", bubbleMaxWidth].join(" ")}>
                       <div className="w-5 h-5 rounded-full bg-gray-900 flex items-center justify-center shrink-0">
                         <span 
                           className="text-white text-[10px]"
@@ -1178,112 +2046,296 @@ export default function V3Page() {
                 <div ref={messagesEndRef} />
               </div>
             )}
+                </div>
+
+                {/* Bottom Input Bar (Home frame only) */}
+                <div className="p-3 sm:p-4">
+                  <div className={isMobileBrowser && readyToGenerate ? "flex flex-col gap-2" : "flex items-center gap-3"}>
+                    {/* Mobile: make Generar prominent (full width row) */}
+                    {isMobileBrowser && readyToGenerate ? (
+                      <button
+                        type="button"
+                        onClick={handleGenerate}
+                        disabled={isGenerating}
+                        className="w-full py-3 rounded-xl bg-gray-900 text-white text-sm font-semibold hover:bg-gray-800 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {isGenerating ? "Generando..." : "Generar"}
+                      </button>
+                    ) : null}
+                    {/* Input form - Enter only sends text, NOT generate */}
+                    <form onSubmit={handleSubmit} className="flex-1 flex items-center gap-2 p-1.5 sm:p-2 rounded-full bg-[#f5f5f5]">
+                      {/* Plus Button - Attach files (always enabled and white background) */}
+                      <button 
+                        type="button"
+                        onClick={handleAttachClick}
+                        className="p-1.5 rounded-full bg-white transition-colors cursor-pointer group"
+                        title="Adjuntar archivo"
+                      >
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="opacity-40 group-hover:opacity-100 transition-opacity">
+                          <path d="M12 5V19M5 12H19" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      </button>
+
+                      {/* Input Field */}
+                      <textarea
+                        ref={inputRef}
+                        rows={1}
+                        value={inputValue}
+                        onChange={(e) => setInputValue(e.target.value)}
+                        onKeyDown={handleKeyPress}
+                        placeholder={hasMessages ? "Describe tu post" : "Sube una foto primero por favor"}
+                        disabled={isBusy || !hasMessages}
+                        className="flex-1 bg-transparent outline-none text-[15px] text-gray-700 placeholder-gray-400 py-1 resize-none overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed"
+                      />
+
+                      {/* Send Button - always visible */}
+                      <button 
+                        type="submit"
+                        disabled={!inputValue.trim() || isBusy || !hasMessages}
+                        className="p-1.5 rounded-full bg-white transition-colors cursor-pointer group disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="opacity-40 group-hover:opacity-100 transition-opacity">
+                          <path d="M18 15L12 9L6 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      </button>
+                    </form>
+
+                    {/* Generate Button - OUTSIDE the form, must be clicked (Enter won't trigger) */}
+                    {!isMobileBrowser && readyToGenerate && (
+                      <button 
+                        type="button"
+                        onClick={handleGenerate}
+                        disabled={isGenerating}
+                        className="px-6 py-2.5 rounded-full bg-gray-900 text-white text-sm font-medium hover:bg-gray-800 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                      >
+                        {isGenerating ? "Generando..." : "Generar"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* My posts frame */}
+              <div className="w-1/2 h-full shrink-0 border-l border-gray-200 bg-white">
+                <div className="h-full overflow-y-auto p-5 sm:px-8 sm:py-6 scrollbar-hide">
+                  <div className="flex items-start justify-between gap-4 mb-5">
+                    <div>
+                      <h2 className="text-lg font-semibold text-gray-900">My posts</h2>
+                      <p className="text-xs text-gray-500">Saved, uploading, and published posts.</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => refreshMyPosts()}
+                      disabled={myPostsLoading}
+                      className="px-3 py-2 rounded-full border border-gray-200 text-xs text-gray-700 hover:bg-gray-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {myPostsLoading ? "Loading..." : "Refresh"}
+                    </button>
+                  </div>
+
+                  {myPostsError ? <div className="text-sm text-red-600">{myPostsError}</div> : null}
+
+                  {!myPostsLoading && myPosts.length === 0 ? (
+                    <div className="text-sm text-gray-500">
+                      No posts yet. Use <strong>Save</strong> or <strong>Post</strong> on a generated image.
+                    </div>
+                  ) : null}
+
+                  {myPostsLoading ? (
+                    <div className="flex items-center gap-2 text-sm text-gray-600">
+                      <Spinner size="sm" />
+                      Loading posts…
+                    </div>
+                  ) : (
+                    <div className="space-y-10">
+                      {[
+                        {
+                          key: "ready_to_upload",
+                          title: "Saved",
+                          items: myPosts.filter((p) => p.kind === "image" && p.status === "ready_to_upload"),
+                        },
+                        {
+                          key: "publishing",
+                          title: "Uploading",
+                          items: myPosts.filter((p) => p.kind === "image" && (p.status === "publishing" || p.status === "generating")),
+                        },
+                        { key: "published", title: "Published", items: myPosts.filter((p) => p.kind === "image" && p.status === "published") },
+                        { key: "failed", title: "Failed", items: myPosts.filter((p) => p.kind === "image" && p.status === "failed") },
+                      ]
+                        .filter((row) => row.items.length > 0)
+                        .map((row) => (
+                          <div key={row.key}>
+                            <h3 className="text-sm font-semibold text-gray-900 mb-3">{row.title}</h3>
+                            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                              {row.items.map((p) => {
+                                const isBroken = !!brokenPostMediaIds[p.id];
+                                const url = isBroken ? null : p.mediaUrl || p.previewUrl || null;
+                                const canPostFromHere =
+                                  (p.status === "ready_to_upload" || p.status === "failed") && Boolean(url);
+                                return (
+                                  <div
+                                    key={p.id}
+                                    className="min-w-0 w-full h-full flex flex-col rounded-2xl border border-gray-200 bg-white overflow-hidden"
+                                  >
+                                    <div className="aspect-square bg-gray-50">
+                                      {url ? (
+                                        <img
+                                          src={url}
+                                          alt="Post"
+                                          className="w-full h-full object-cover"
+                                          loading="lazy"
+                                          onError={() => {
+                                            setBrokenPostMediaIds((prev) => ({ ...prev, [p.id]: true }));
+                                          }}
+                                        />
+                                      ) : (
+                                        <div className="w-full h-full flex flex-col items-center justify-center text-xs text-gray-400 gap-1">
+                                          <div className="font-medium">Missing media</div>
+                                          <div className="text-[11px]">
+                                            {p.mediaUrl || p.previewUrl ? "Failed to load" : "No URL"}
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                    <div className="p-3 flex flex-col flex-1">
+                                      <div className="flex items-center justify-between gap-2">
+                                        <div className="text-[11px] text-gray-500">{p.status}</div>
+                                        {p.instagramPermalink ? (
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              window.open(p.instagramPermalink!, "_blank", "noopener,noreferrer")
+                                            }
+                                            className="text-[11px] text-gray-900 underline underline-offset-2"
+                                          >
+                                            Open
+                                          </button>
+                                        ) : null}
+                                      </div>
+                                      {p.caption ? (
+                                        <div className="mt-2 text-xs text-gray-700 whitespace-pre-wrap break-words">
+                                          {p.caption}
+                                        </div>
+                                      ) : (
+                                        <div className="mt-2 text-xs text-gray-400">No caption</div>
+                                      )}
+                                      {canPostFromHere ? (
+                                        isMobileBrowser ? (
+                                          <div className="mt-auto pt-3 flex gap-2">
+                                            <button
+                                              type="button"
+                                              onClick={() => void shareImage((p.mediaUrl || p.previewUrl) as string, `postty-${p.id}.png`)}
+                                              disabled={!(p.mediaUrl || p.previewUrl)}
+                                              className="flex-1 py-2.5 px-4 border border-gray-200 text-gray-700 text-xs font-medium rounded-xl hover:bg-gray-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                            >
+                                              Share
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={() => handleTryOpenCaptionModalForSavedPost(p)}
+                                              className="flex-1 py-2.5 px-4 border border-gray-200 text-gray-700 text-xs font-medium rounded-xl hover:bg-gray-50 transition"
+                                            >
+                                              Post
+                                            </button>
+                                          </div>
+                                        ) : (
+                                          <div className="mt-3 relative group">
+                                            <button
+                                              type="button"
+                                              onClick={() => handleOpenCaptionModalForSavedPost(p)}
+                                              disabled={!igConnected}
+                                              className="w-full py-2.5 px-4 border border-gray-200 text-gray-700 text-xs font-medium rounded-xl hover:bg-gray-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                            >
+                                              Post
+                                            </button>
+                                            {!igConnected ? (
+                                              <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 -top-2 -translate-y-full opacity-0 group-hover:opacity-100 transition-opacity">
+                                                <div className="bg-gray-900 text-white text-xs px-3 py-2 rounded-lg shadow-lg whitespace-nowrap">
+                                                  please connect to Instagram to use this functionality
+                                                </div>
+                                              </div>
+                                            ) : null}
+                                          </div>
+                                        )
+                                      ) : null}
+                                      {p.error ? <div className="mt-2 text-[11px] text-red-600">{p.error}</div> : null}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
 
-          {/* Bottom Input Bar */}
-          <div className="p-3 sm:p-4">
-            <div className="flex items-center gap-3">
-              {/* Input form - Enter only sends text, NOT generate */}
-              <form onSubmit={handleSubmit} className="flex-1 flex items-center gap-2 p-1.5 sm:p-2 rounded-full bg-[#f5f5f5]">
-                {/* Plus Button - Attach files (always enabled and white background) */}
-                <button 
-                  type="button"
-                  onClick={handleAttachClick}
-                  className="p-1.5 rounded-full bg-white transition-colors cursor-pointer group"
-                  title="Adjuntar archivo"
-                >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="opacity-40 group-hover:opacity-100 transition-opacity">
-                    <path d="M12 5V19M5 12H19" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </button>
+        </div>
+      </div>
 
-                {/* Input Field */}
-                <input
-                  ref={inputRef}
-                  type="text"
-                  value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
-                  onKeyDown={handleKeyPress}
-                  placeholder={hasMessages ? "Describe tu post" : "Sube una foto primero por favor"}
-                  disabled={isBusy || !hasMessages}
-                  className="flex-1 bg-transparent outline-none text-[15px] text-gray-700 placeholder-gray-400 py-1 disabled:opacity-50 disabled:cursor-not-allowed"
-                />
+      {/* Caption Modal for Instagram Publishing */}
+      {showCaptionModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ backdropFilter: "blur(12px)", backgroundColor: "rgba(0, 0, 0, 0.6)" }}
+          onClick={handleCloseCaptionModal}
+        >
+          <div
+            className="relative bg-white rounded-2xl shadow-2xl p-6 max-w-lg w-full"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-xl font-semibold text-gray-900 mb-4">Post to Instagram</h2>
 
-                {/* Microphone Button with EQ Visualization */}
-                {isRecording ? (
-                  /* Recording: EQ Bars + Stop button */
-                  <button 
-                    type="button"
-                    onClick={handleMicClick}
-                    className="flex items-center gap-2 px-3 py-2 rounded-full bg-gray-100 hover:bg-gray-200 transition-all cursor-pointer"
-                  >
-                    {/* EQ Bars */}
-                    <div className="flex items-center gap-[3px] h-[18px]">
-                      {audioLevels.map((level, i) => (
-                        <div
-                          key={i}
-                          className="w-[3px] bg-gray-500 rounded-full"
-                          style={{ 
-                            height: `${Math.max(4, level * 18)}px`,
-                            transition: 'height 50ms ease-out'
-                          }}
-                        />
-                      ))}
-                    </div>
-                    {/* Stop icon */}
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="text-gray-600">
-                      <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>
-                    </svg>
-                  </button>
-                ) : isTranscribing ? (
-                  /* Transcribing indicator */
-                  <div className="flex items-center gap-1.5 px-3 py-1.5">
-                    <div className="w-4 h-4 border-2 border-gray-300 border-t-gray-500 rounded-full animate-spin" />
-                    <span className="text-xs text-gray-500">Transcribiendo...</span>
-                  </div>
+            <div className="mb-4">
+              <label htmlFor="caption" className="block text-sm font-medium text-gray-700 mb-2">
+                Caption
+              </label>
+              <textarea
+                id="caption"
+                value={captionInput}
+                onChange={(e) => setCaptionInput(e.target.value)}
+                placeholder="Write your caption..."
+                rows={4}
+                disabled={isPublishing || isCaptionGenerating}
+                className="w-full px-4 py-3 rounded-xl bg-white border border-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-900/10 focus:border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed text-[15px] resize-none"
+              />
+              {isCaptionGenerating ? (
+                <div className="mt-2 text-xs text-gray-500 font-medium flex items-center gap-2">
+                  <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-gray-400" />
+                  Generating caption…
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={handleCloseCaptionModal}
+                disabled={isPublishing}
+                className="flex-1 py-2.5 px-4 border border-gray-200 text-gray-700 font-medium rounded-xl text-sm hover:bg-gray-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => void handlePublishImageToInstagram()}
+                disabled={isPublishing || !captionInput.trim()}
+                className="flex-1 py-2.5 px-4 bg-gray-900 text-white font-medium rounded-xl text-sm hover:bg-gray-800 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {isPublishing ? (
+                  <>
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
+                    Uploading…
+                  </>
                 ) : (
-                  /* Normal mic button */
-                  <button 
-                    type="button"
-                    onClick={handleMicClick}
-                    disabled={(isBusy && !isRecording) || !hasMessages}
-                    title={micError || "Click para grabar"}
-                    className={`p-1.5 rounded-full hover:bg-white transition-colors cursor-pointer group disabled:opacity-40 disabled:cursor-not-allowed ${micError ? 'bg-red-50' : ''}`}
-                  >
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className={`transition-opacity ${micError ? 'text-red-500 opacity-100' : 'opacity-40 group-hover:opacity-100'}`}>
-                      <path d="M19 10V12C19 15.866 15.866 19 12 19M5 10V12C5 15.866 8.13401 19 12 19M12 19V22M8 22H16M12 15C10.3431 15 9 13.6569 9 12V5C9 3.34315 10.3431 2 12 2C13.6569 2 15 3.34315 15 5V12C15 13.6569 13.6569 15 12 15Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                    </svg>
-                  </button>
+                  "Publicar"
                 )}
-
-                {/* Send Button - always visible */}
-                <button 
-                  type="submit"
-                  disabled={!inputValue.trim() || isBusy || !hasMessages}
-                  className="p-1.5 rounded-full bg-white transition-colors cursor-pointer group disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="opacity-40 group-hover:opacity-100 transition-opacity">
-                    <path d="M18 15L12 9L6 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </button>
-              </form>
-
-              {/* Generate Button - OUTSIDE the form, must be clicked (Enter won't trigger) */}
-              {readyToGenerate && (
-                <button 
-                  type="button"
-                  onClick={handleGenerate}
-                  disabled={isGenerating}
-                  className="px-6 py-2.5 rounded-full bg-gray-900 text-white text-sm font-medium hover:bg-gray-800 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
-                >
-                  {isGenerating ? "Generando..." : "Generar"}
-                </button>
-              )}
+              </button>
             </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Feedback Blur Overlay */}
       {showFeedbackBlur && (
@@ -1416,9 +2468,14 @@ export default function V3Page() {
             <button
               onClick={async () => {
                 try {
+                  if (!user) throw new Error("Not signed in");
+                  const token = await user.getIdToken();
                   const res = await fetch("/api/feedback", {
                     method: "POST",
-                    headers: { "Content-Type": "application/json" },
+                    headers: {
+                      "Content-Type": "application/json",
+                      Authorization: `Bearer ${token}`,
+                    },
                     body: JSON.stringify({
                       email: user?.email || "unknown",
                       rating1: feedbackRating1,
@@ -1471,6 +2528,85 @@ export default function V3Page() {
           </div>
         </div>
       )}
+
+      {/* Mobile-only swipe hint animation (for post type carousel) */}
+      <style jsx global>{`
+        @keyframes posttySwipeHintFloatIn {
+          0% {
+            opacity: 0;
+            transform: translateY(-6px);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+
+        @keyframes posttySwipeHintHand {
+          0% {
+            transform: translateX(14px);
+          }
+          50% {
+            transform: translateX(-14px);
+          }
+          100% {
+            transform: translateX(14px);
+          }
+        }
+
+        @keyframes posttySwipeHintArrow {
+          0% {
+            opacity: 0.25;
+            transform: translateX(0);
+          }
+          50% {
+            opacity: 1;
+            transform: translateX(-10px);
+          }
+          100% {
+            opacity: 0.25;
+            transform: translateX(0);
+          }
+        }
+
+        .posttySwipeHint {
+          margin-top: 10px;
+          padding: 8px 10px;
+          border-radius: 9999px;
+          border: 1px solid rgba(229, 231, 235, 0.9);
+          background: rgba(255, 255, 255, 0.92);
+          box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+          backdrop-filter: blur(8px);
+          -webkit-backdrop-filter: blur(8px);
+          animation: posttySwipeHintFloatIn 180ms ease-out both;
+        }
+
+        .posttySwipeHintInner {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          color: rgba(17, 24, 39, 0.8);
+          font-size: 12px;
+          font-weight: 600;
+          letter-spacing: -0.01em;
+          animation: posttySwipeHintHand 1100ms ease-in-out infinite;
+        }
+
+        .posttySwipeArrow {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 18px;
+          height: 18px;
+          border-radius: 9999px;
+          background: rgba(243, 244, 246, 0.9);
+          animation: posttySwipeHintArrow 1100ms ease-in-out infinite;
+        }
+
+        .posttySwipeText {
+          white-space: nowrap;
+        }
+      `}</style>
     </div>
   );
 }

@@ -1,5 +1,6 @@
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, ChildProcess, spawnSync } from 'child_process';
 import * as path from 'path';
+import * as fs from 'fs';
 import * as logger from '../utils/logger';
 import * as readline from 'readline';
 
@@ -27,6 +28,88 @@ function isAgentRunning(): boolean {
   return agentProcess !== null && isReady;
 }
 
+function getAgentSetupHelpText(): string {
+  return [
+    'Product Showcase agent is not ready (missing Python environment).',
+    '',
+    'Local setup (run from repo root):',
+    '  npm run setup:agent',
+    '',
+    'Or manually:',
+    '  cd "Agents/Product Showcase"',
+    '  python3 -m venv .venv',
+    '  .venv/bin/pip install -r requirements.txt',
+    '',
+    'Production/Docker:',
+    '  Ensure the image build runs the agent setup script, or set PRODUCT_SHOWCASE_PYTHON to a valid interpreter path.',
+  ].join('\n');
+}
+
+function resolvePythonCommand(): { cmd: string; argsPrefix: string[] } {
+  const envOverride = process.env.PRODUCT_SHOWCASE_PYTHON;
+  if (typeof envOverride === 'string' && envOverride.trim()) {
+    const cmd = envOverride.trim();
+    if (cmd.includes(path.sep) && !fs.existsSync(cmd)) {
+      throw new Error(
+        `PRODUCT_SHOWCASE_PYTHON was set but does not exist: ${cmd}\n\n${getAgentSetupHelpText()}`
+      );
+    }
+    return { cmd, argsPrefix: [] };
+  }
+
+  const venvCandidates = [
+    path.join(AGENT_DIR, '.venv', 'bin', 'python3'),
+    path.join(AGENT_DIR, '.venv', 'bin', 'python'),
+  ];
+  for (const candidate of venvCandidates) {
+    if (fs.existsSync(candidate)) return { cmd: candidate, argsPrefix: [] };
+  }
+
+  const allowSystemPython =
+    typeof process.env.PRODUCT_SHOWCASE_ALLOW_SYSTEM_PYTHON === 'string' &&
+    process.env.PRODUCT_SHOWCASE_ALLOW_SYSTEM_PYTHON.toLowerCase() === 'true';
+
+  // Default: require the agent venv for deterministic behavior (especially in AWS).
+  if (!allowSystemPython) {
+    throw new Error(getAgentSetupHelpText());
+  }
+
+  // Optional fallback for power users/dev: allow PATH python when explicitly enabled.
+  return { cmd: 'python3', argsPrefix: [] };
+}
+
+function preflightCheck(pythonCmd: string): void {
+  const agentEntry = path.join(AGENT_DIR, 'agent_direct.py');
+  if (!fs.existsSync(agentEntry)) {
+    throw new Error(`Agent entrypoint missing: ${agentEntry}`);
+  }
+
+  // If pythonCmd is an absolute/relative path, ensure it exists.
+  if (pythonCmd.includes(path.sep) && !fs.existsSync(pythonCmd)) {
+    throw new Error(
+      `Python interpreter not found: ${pythonCmd}\n\n${getAgentSetupHelpText()}`
+    );
+  }
+
+  // Fail fast if the Python environment doesn't have required deps.
+  // This is intentionally lightweight and only runs once per startup attempt.
+  const probe = spawnSync(pythonCmd, ['-c', 'import google.genai'], {
+    cwd: AGENT_DIR,
+    env: process.env,
+    encoding: 'utf8',
+  });
+  if (probe.status !== 0) {
+    const stderr = (probe.stderr || '').toString().trim();
+    const stdout = (probe.stdout || '').toString().trim();
+    const details = [stderr, stdout].filter(Boolean).join('\n');
+    throw new Error(
+      `Python dependencies for Product Showcase agent are not installed for interpreter: ${pythonCmd}\n` +
+        (details ? `\n${details}\n` : '\n') +
+        `\n${getAgentSetupHelpText()}`
+    );
+  }
+}
+
 /**
  * Start the agent process with direct stdin/stdout communication
  */
@@ -42,11 +125,11 @@ async function startAgentProcess(): Promise<void> {
 
   return new Promise((resolve, reject) => {
     try {
-      // Use virtual environment Python
-      const venvPython = path.join(AGENT_DIR, '.venv', 'bin', 'python3');
+      const { cmd: pythonCmd, argsPrefix } = resolvePythonCommand();
+      preflightCheck(pythonCmd);
       
       // Spawn Python process with stdin/stdout communication
-      agentProcess = spawn(venvPython, ['agent_direct.py'], {
+      agentProcess = spawn(pythonCmd, [...argsPrefix, 'agent_direct.py'], {
         cwd: AGENT_DIR,
         env: {
           ...process.env,

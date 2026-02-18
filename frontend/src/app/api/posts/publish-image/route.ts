@@ -7,7 +7,7 @@ export async function POST(req: Request) {
     const auth = req.headers.get("authorization") || "";
     const body = await req.json();
 
-    const res = await fetch(`${BACKEND_BASE_URL}/feedback`, {
+    const res = await fetch(`${BACKEND_BASE_URL}/posts/publish-image`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -23,3 +23,4 @@ export async function POST(req: Request) {
     return NextResponse.json({ status: "error", message }, { status: 500 });
   }
 }
+

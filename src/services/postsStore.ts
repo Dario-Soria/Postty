@@ -1,7 +1,7 @@
 import { getFirestore } from './firebaseAdmin';
 
 export type PostKind = 'image' | 'video';
-export type PostStatus = 'ready_to_upload' | 'published' | 'discarded' | 'failed' | 'generating';
+export type PostStatus = 'ready_to_upload' | 'publishing' | 'published' | 'discarded' | 'failed' | 'generating';
 
 export type UserPost = {
   id: string;

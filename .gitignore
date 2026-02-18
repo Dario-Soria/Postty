@@ -33,3 +33,6 @@ generated-images/
 # Temporary uploads
 temp-uploads/
 
+# Local feedback logs (may include PII)
+frontend/feedback-logs/*.json
+

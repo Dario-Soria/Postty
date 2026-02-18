@@ -465,8 +465,9 @@ export default function V2Page() {
             <img src="/icons/grid-01.svg" alt="Posts" className="w-6 h-6 opacity-70" />
           </button>
           <button 
+            type="button"
             className="p-3 rounded-xl hover:bg-gray-50 transition-colors"
-            title="Reels"
+            title="Reels (Coming soon)"
           >
             <img src="/icons/film-01.svg" alt="Reels" className="w-6 h-6 opacity-70" />
           </button>

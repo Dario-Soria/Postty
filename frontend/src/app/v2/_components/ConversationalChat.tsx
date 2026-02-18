@@ -3,6 +3,11 @@
 import * as React from "react";
 import { GlassCard } from "./ui/GlassCard";
 import { TopBar } from "./ui/TopBar";
+import { uuid } from "@/lib/uuid";
+
+// `crypto.randomUUID()` is not available on LAN `http://192.168.x.x:*` (non-secure context).
+// Shadow it so the rest of the file can keep using `crypto.randomUUID()`.
+const crypto = { randomUUID: uuid } as const;
 
 type Message = {
   id: string;

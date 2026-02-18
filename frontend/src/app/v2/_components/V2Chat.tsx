@@ -7,6 +7,11 @@ import { TopBar } from "./ui/TopBar";
 import { IconSend } from "./ui/Icons";
 import { openTextEditor, type BackendTextLayout } from "@/lib/features/text-editor";
 import { useAuth } from "@/contexts/AuthContext";
+import { uuid } from "@/lib/uuid";
+
+// `crypto.randomUUID()` is not available on LAN `http://192.168.x.x:*` (non-secure context).
+// Shadow it so the rest of the file can keep using `crypto.randomUUID()`.
+const crypto = { randomUUID: uuid } as const;
 
 type ChatMessage = {
   id: string;

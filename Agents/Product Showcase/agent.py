@@ -305,11 +305,15 @@ class NanoBananaAgent:
         self.current_step = 0  # Track current workflow step (1-6)
         self.selected_post_type = None  # Store selected post type (hero-shot, product-on-human, etc.)
         self.post_type_examples = {}  # V2: Store post type example image IDs for prioritization
+        self.cached_post_types = None  # Cache postTypes so we can re-show carousel without re-analysis
+        self.awaiting_generation_retry = False  # If last generation failed, allow user to reply "sí" to retry
+        self.pending_numbered_options = None  # Dict[int,str] for generic \"reply with 1/2/3\" choices in text
         self.design_changes = None  # Store user's requested design changes
         self.changes_summary = None  # Store summarized version of design changes
         self.text_analysis = None  # Store text analysis from selected reference
         self.reference_analysis = None  # V5: Store real-time Gemini Vision analysis of reference
         self.last_smart_suggestions = None  # V2: Store smart suggestions for when user accepts them
+        self.optional_text_mode = False  # If reference has no text, offer optional overlay text suggestions
         self.pending_text_edit = None  # V3: Store pending text edit proposal awaiting confirmation
         self.product_name = None  # Store analyzed product name
         self.product_industry = None  # Store analyzed product industry
@@ -317,6 +321,240 @@ class NanoBananaAgent:
         self.available_references = []  # Store references from search for later selection
         self.last_generated_image = None  # Store path to last generated image for edit mode
         self.generation_count = 0  # Track number of generations (0=first, >0=edits)
+
+    def _reset_to_initial_upload_state(self) -> None:
+        """Fully reset the agent so the next step is: ask user to upload product image."""
+        self.history = []
+
+        self.selected_reference = None
+        self.uses_original_reference = False
+        self.product_image_path = None
+        self.text_content = None
+        self.awaiting_text_input = False
+        self.design_guidelines = None
+        self.product_analysis = None
+        self.last_scene_prompt = None
+
+        self.current_step = 0
+        self.selected_post_type = None
+        self.post_type_examples = {}
+        self.cached_post_types = None
+        self.awaiting_generation_retry = False
+        self.pending_numbered_options = None
+        self.design_changes = None
+        self.changes_summary = None
+        self.text_analysis = None
+        self.reference_analysis = None
+        self.last_smart_suggestions = None
+        self.optional_text_mode = False
+        self.pending_text_edit = None
+        self.available_references = []
+
+        # Edit-mode state
+        self.last_generated_image = None
+        self.generation_count = 0
+
+        # Product metadata
+        self.product_name = None
+        self.product_industry = None
+        self.product_category = None
+
+    def _reset_to_post_type_selection_state(self) -> None:
+        """
+        Reset downstream state so the user can re-pick the ads/post type without re-analyzing the product image.
+
+        Keeps:
+        - product_image_path, product_name/industry/category
+        - post_type_examples and cached_post_types
+        - selected_post_type (kept until user selects a new one)
+        """
+        self.selected_reference = None
+        self.uses_original_reference = False
+        self.pending_numbered_options = None
+
+        # Downstream flow state (template/reference + design/text)
+        self.text_content = None
+        self.awaiting_text_input = False
+        self.design_guidelines = None
+        self.design_changes = None
+        self.changes_summary = None
+        self.text_analysis = None
+        self.reference_analysis = None
+        self.last_smart_suggestions = None
+        self.optional_text_mode = False
+        self.pending_text_edit = None
+        self.available_references = []
+
+        # Edit-mode state
+        self.last_generated_image = None
+        self.generation_count = 0
+
+        # Return user to post type selection
+        self.current_step = 1
+
+    def _is_change_post_type_intent(self, user_msg_lower: str) -> bool:
+        """Detect user intent to change the previously selected ads/post type."""
+        msg = (user_msg_lower or "").strip()
+        if not msg:
+            return False
+
+        change_signals = [
+            "cambiar",
+            "cambio",
+            "me equivo",
+            "equivoc",
+            "arrepent",
+            "volver a elegir",
+            "re-eleg",
+            "change",
+            "wrong",
+            "regret",
+            "pick another",
+            "choose another",
+        ]
+        type_signals = [
+            "tipo",
+            "ads",
+            "anuncio",
+            "post type",
+            "post-type",
+            "ad type",
+        ]
+
+        has_change = any(s in msg for s in change_signals)
+        has_type = any(s in msg for s in type_signals)
+        return has_change and has_type
+
+    def _is_affirmative(self, user_msg_lower: str) -> bool:
+        msg = (user_msg_lower or "").strip()
+        if not msg:
+            return False
+        # Keep this tight; avoid matching common words inside other strings.
+        yes_exact = {"si", "sí", "yes", "y", "dale", "ok", "okay", "retry", "reintentar", "intentar", "otra vez"}
+        if msg in yes_exact:
+            return True
+        # Also allow short confirmations like "sí, dale" / "yes please"
+        if msg.startswith("si ") or msg.startswith("sí ") or msg.startswith("yes "):
+            return True
+        if "reintentar" in msg or "retry" in msg or "otra vez" in msg:
+            return True
+        return False
+
+    def _is_negative(self, user_msg_lower: str) -> bool:
+        msg = (user_msg_lower or "").strip()
+        if not msg:
+            return False
+        no_exact = {"no", "nope", "nah", "cancelar", "cancela", "cancel", "stop", "parar"}
+        if msg in no_exact:
+            return True
+        if msg.startswith("no "):
+            return True
+        return False
+
+    def _extract_numbered_options_from_text(self, text: str) -> List[Dict[str, Any]]:
+        """
+        Extract numbered options from a block of text.
+        Supports patterns like:
+          1. Option title: details...
+          2) Another option...
+        Options may span multiple lines until the next numbered item.
+        Returns a list of { "n": int, "text": str } in appearance order.
+        """
+        if not isinstance(text, str) or not text.strip():
+            return []
+        import re
+
+        # Allow optional leading bullets (e.g. "- 1.") and multiple separators (".", ")", ":", "-").
+        matches = list(re.finditer(r"(?m)^[ \t]*(?:[-*•]\s*)?(\d{1,2})[.)\:\-][ \t]+", text))
+        if not matches:
+            return []
+
+        options: List[Dict[str, Any]] = []
+        seen = set()
+        for i, m in enumerate(matches):
+            try:
+                n = int(m.group(1))
+            except Exception:
+                continue
+            if n in seen:
+                continue
+            seen.add(n)
+
+            start = m.end()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+            chunk = text[start:end].strip()
+            if chunk:
+                options.append({"n": n, "text": chunk})
+        return options
+
+    def _set_pending_numbered_options_from_text(self, assistant_text: str) -> None:
+        """If assistant_text contains numbered options, cache them for numeric replies."""
+        try:
+            opts = self._extract_numbered_options_from_text(assistant_text)
+            if not opts or len(opts) < 2:
+                return
+            mapping: Dict[int, str] = {}
+            for o in opts:
+                try:
+                    n = int(o.get("n"))
+                except Exception:
+                    continue
+                t = str(o.get("text") or "").strip()
+                if not t:
+                    continue
+                mapping[n] = t
+            if mapping:
+                self.pending_numbered_options = mapping
+        except Exception:
+            # best-effort only
+            return
+
+    def _is_restart_intent(self, user_msg_lower: str) -> bool:
+        """Detect user intent to restart the flow and generate a new image from scratch."""
+        msg = (user_msg_lower or "").strip()
+        if not msg:
+            return False
+
+        # IMPORTANT: be strict. False positives here are very costly (they wipe the session).
+        # We only restart when the user explicitly indicates a NEW image/product or "start over".
+        try:
+            import re as _re
+
+            explicit_phrases = [
+                # Spanish
+                "otra imagen",
+                "otra foto",
+                "otro producto",
+                "nuevo producto",
+                "nueva imagen",
+                "empezar de nuevo",
+                "empecemos de cero",
+                "arrancar de nuevo",
+                "reiniciar",
+                "resetear",
+                # English
+                "another image",
+                "another photo",
+                "another product",
+                "new product",
+                "new image",
+                "start over",
+                "restart flow",
+                "reset flow",
+            ]
+            if any(p in msg for p in explicit_phrases):
+                return True
+
+            # Pattern-based: require an object (imagen/foto/producto/image/photo/product).
+            # This avoids matching common phrases like "crear otra frase" / "hacer otra cosa".
+            patterns = [
+                r"\b(generar|crear|hacer)\s+otra\s+(imagen|foto|post|pieza|creatividad)\b",
+                r"\b(generate|create|make)\s+another\s+(image|photo|post)\b",
+            ]
+            return any(_re.search(p, msg) for p in patterns)
+        except Exception:
+            # If regex fails, default to conservative: do NOT restart.
+            return False
 
     def chat(self, user_message: str, image_path: Optional[str] = None, 
              uploaded_reference: Optional[Dict[str, str]] = None,
@@ -342,17 +580,10 @@ class NanoBananaAgent:
         
         # Store product image path if provided
         if image_path:
+            # New product upload must start a clean flow.
+            # Otherwise we risk reusing the previous reference/product/prompt via edit-mode state.
+            self._reset_to_initial_upload_state()
             self.product_image_path = image_path
-            # Reset state for new product
-            self.current_step = 0
-            self.selected_post_type = None
-            self.selected_reference = None
-            self.design_changes = None
-            self.changes_summary = None
-            self.text_content = None
-            self.text_analysis = None
-            self.reference_analysis = None
-            self.design_guidelines = None
             
             # Step 1: Product uploaded, analyze and get post types
             print(f"[DEBUG] Product image uploaded, triggering Step 1: {image_path}")
@@ -360,6 +591,90 @@ class NanoBananaAgent:
         
         # Normalize user message for comparisons
         user_msg_lower = user_message.lower().strip()
+
+        # If the assistant previously showed numbered options in plain text,
+        # allow the user to reply with "1", "2", ... and treat it as selecting that option.
+        # This avoids relying on self.history being populated in every handler.
+        try:
+            if (
+                isinstance(user_message, str)
+                and user_message.strip().isdigit()
+                and isinstance(self.pending_numbered_options, dict)
+                and len(self.pending_numbered_options) > 0
+            ):
+                n = int(user_message.strip(), 10)
+                chosen = self.pending_numbered_options.get(n)
+                if isinstance(chosen, str) and chosen.strip():
+                    user_message = chosen.strip()
+                    user_msg_lower = user_message.lower().strip()
+                    print(
+                        f"[DEBUG] Numeric option selected (cached): {n} -> {user_message[:120]}...",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                # Clear after one use to prevent accidental reuse later.
+                self.pending_numbered_options = None
+        except Exception as _e:
+            print(f"[DEBUG] Cached numeric selection failed: {_e}", file=sys.stderr, flush=True)
+
+        # Detect restart intent early (must override edit mode / generate commands)
+        if self._is_restart_intent(user_msg_lower):
+            print("[DEBUG] Restart intent detected - resetting to initial upload state")
+            self._reset_to_initial_upload_state()
+            reset_msg = (
+                "Perfecto. Empecemos de cero.\n\n"
+                "Por favor, **subí la foto del producto** usando el botón (+) para arrancar."
+            )
+            self.history.append({"role": "assistant", "content": reset_msg, "is_reset": True})
+            return {"type": "text", "text": reset_msg, "readyToGenerate": False}
+
+        # If the last generation failed and we asked to retry, let the user reply "sí/yes/retry"
+        # and we will re-run the pipeline immediately with the same context (no flow reset).
+        if self.awaiting_generation_retry:
+            if self._is_affirmative(user_msg_lower):
+                print("[DEBUG] Generation retry confirmed by user; re-running pipeline", file=sys.stderr, flush=True)
+                self.awaiting_generation_retry = False
+                # Keep the flow at generation step while retrying.
+                self.current_step = 6
+                return self._handle_generate_pipeline("[TRIGGER_GENERATE_PIPELINE]")
+            if self._is_negative(user_msg_lower):
+                self.awaiting_generation_retry = False
+                msg = (
+                    "Ok. Si querés, podés ajustar el diseño/textos y volver a intentar.\n\n"
+                    "Cuando estés listo, presioná **Generar**."
+                )
+                self.history.append({"role": "assistant", "content": msg})
+                return {"type": "text", "text": msg, "readyToGenerate": True}
+            # Any other message means the user wants to change something; clear the retry gate
+            # and continue with normal routing.
+            self.awaiting_generation_retry = False
+
+        # Detect \"change ads/post type\" intent early, before step routing.
+        # IMPORTANT: do NOT re-analyze the product image; reuse cached post types.
+        if self._is_change_post_type_intent(user_msg_lower):
+            if not self.product_image_path or not self.cached_post_types:
+                msg = (
+                    "Perfecto. Para cambiar el tipo de ads necesito volver a mostrarte las opciones, "
+                    "pero no tengo guardadas las opciones de este producto.\n\n"
+                    "Por favor, **subí nuevamente la foto del producto** usando el botón (+)."
+                )
+                self.history.append({"role": "assistant", "content": msg})
+                return {"type": "text", "text": msg, "readyToGenerate": False}
+
+            self._reset_to_post_type_selection_state()
+            product_name = self.product_name or "tu producto"
+            prompt = (
+                f"¡Excelente Foto! Veo que quieres lograr un post para tu producto de **{product_name}**. "
+                "Estuve investigando mientras esperabas y estos son los **top tipos de ads para tu producto**, "
+                "elige alguno para continuar con tu post por favor."
+            )
+            self.history.append({"role": "assistant", "content": prompt})
+            return {
+                "type": "post_type_options",
+                "text": prompt,
+                "productThumbnail": self.product_image_path,
+                "postTypes": self.cached_post_types,
+            }
         
         # ================================================================================
         # PRIORITY 1: Edit Mode Detection (Step 7) - MUST BE FIRST
@@ -381,6 +696,30 @@ class NanoBananaAgent:
             return self._handle_edit_mode_contextual(user_message)
         
         # Check if user selected a post type (Step 1 -> Step 2)
+
+        # Allow selecting options by number to minimize typing (e.g. "1", "2", ...).
+        # Only applies when we're at the post type selection step.
+        try:
+            if (
+                self.current_step == 1
+                and isinstance(user_message, str)
+                and user_message.strip().isdigit()
+                and isinstance(self.cached_post_types, list)
+                and len(self.cached_post_types) > 0
+            ):
+                idx = int(user_message.strip(), 10) - 1
+                if 0 <= idx < len(self.cached_post_types):
+                    chosen = self.cached_post_types[idx]
+                    pt_type = str(chosen.get("type") or "").strip()
+                    pt_label = str(chosen.get("label") or "").strip()
+                    if pt_type:
+                        self.selected_post_type = pt_type
+                        print(f"[DEBUG] Post type selected (numeric): {pt_type}, triggering Step 2")
+                        # Keep the same behavior as label selection.
+                        return self._handle_search_references_by_type(pt_type)
+                # Out of range / missing type: fall through to normal logic
+        except Exception as _e:
+            print(f"[DEBUG] Numeric post type selection failed: {_e}", file=sys.stderr, flush=True)
         
         # First, check against hardcoded keywords for common types
         post_type_keywords = {
@@ -413,6 +752,116 @@ class NanoBananaAgent:
                     self.selected_post_type = pt_type
                     print(f"[DEBUG] Post type selected (dynamic): {pt_type}, triggering Step 2")
                     return self._handle_search_references_by_type(pt_type)
+
+        # Allow selecting a reference by number (e.g. "1") when the reference carousel is shown.
+        try:
+            if (
+                self.current_step == 2
+                and isinstance(user_message, str)
+                and user_message.strip().isdigit()
+                and isinstance(self.available_references, list)
+                and len(self.available_references) > 0
+            ):
+                idx = int(user_message.strip(), 10) - 1
+                if 0 <= idx < len(self.available_references):
+                    chosen = self.available_references[idx]
+                    ref_id = str(chosen.get("id") or "").strip()
+                    print(f"[DEBUG] Reference selected (numeric): {ref_id[:12]}..., triggering Step 3")
+                    return self._handle_reference_selected(chosen)
+                # Out of range: fall through to normal logic
+        except Exception as _e:
+            print(f"[DEBUG] Numeric reference selection failed: {_e}", file=sys.stderr, flush=True)
+
+        # Generic numeric selection: if the assistant just showed numbered options in text,
+        # treat a numeric reply (e.g. "1") as selecting that option.
+        # This is intentionally after the structured carousels (post types/references) so it
+        # doesn't interfere with those dedicated selectors.
+        try:
+            if isinstance(user_message, str) and user_message.strip().isdigit():
+                n = int(user_message.strip(), 10)
+                # Look back for the most recent assistant message containing numbered options.
+                for prev in reversed(self.history[-12:] if isinstance(self.history, list) else []):
+                    if not isinstance(prev, dict):
+                        continue
+                    if prev.get("role") != "assistant":
+                        continue
+                    content = prev.get("content")
+                    opts = self._extract_numbered_options_from_text(content) if isinstance(content, str) else []
+                    if not opts:
+                        continue
+                    # Build mapping by the explicit numbers used (not by array index).
+                    by_n = {int(o["n"]): str(o["text"]) for o in opts if isinstance(o, dict) and "n" in o and "text" in o}
+                    chosen = by_n.get(n)
+                    if chosen:
+                        rewritten = chosen.strip()
+                        if rewritten:
+                            print(f"[DEBUG] Numeric option selected (generic): {n} -> {rewritten[:80]}...", file=sys.stderr, flush=True)
+                            user_message = rewritten
+                            user_msg_lower = user_message.lower().strip()
+                    break
+        except Exception as _e:
+            print(f"[DEBUG] Generic numeric selection failed: {_e}", file=sys.stderr, flush=True)
+
+        # ================================================================================
+        # V3: Reference selection from UI (card click) - robust handling
+        # Backend may send:
+        # - message: "[User selected reference: <id>]"
+        # - selected_reference: { id, url }
+        # IDs are not guaranteed to be UUIDs, so don't rely only on regex UUID matching.
+        # ================================================================================
+        try:
+            ref_id: Optional[str] = None
+            ref_url: Optional[str] = None
+
+            if isinstance(selected_reference, dict) and selected_reference.get('id'):
+                ref_id = str(selected_reference.get('id') or '').strip()
+                ref_url = str(selected_reference.get('url') or '').strip() or None
+            elif isinstance(user_message, str) and "[User selected reference:" in user_message:
+                import re as _re
+                m = _re.search(r'\[User selected reference:\s*([^\]]+)\]', user_message)
+                if m:
+                    ref_id = str(m.group(1) or '').strip()
+
+            if ref_id:
+                chosen = None
+                if self.available_references:
+                    for ref in self.available_references:
+                        if str(ref.get("id") or "").strip().lower() == ref_id.lower():
+                            chosen = ref
+                            break
+                # Fallback: search backwards in history for the last references payload
+                if not chosen and self.history:
+                    for msg in reversed(self.history):
+                        refs = msg.get("references") if isinstance(msg, dict) else None
+                        if isinstance(refs, list):
+                            for ref in refs:
+                                if str(ref.get("id") or "").strip().lower() == ref_id.lower():
+                                    chosen = ref
+                                    break
+                        if chosen:
+                            break
+
+                if chosen:
+                    print(f"[DEBUG] Reference selected (v3): {ref_id}, triggering Step 3")
+                    return self._handle_reference_selected(chosen)
+
+                # Last-resort: build a minimal reference so we can still analyze it in real-time.
+                if ref_url:
+                    minimal_ref = {
+                        "id": ref_id,
+                        "url": ref_url,
+                        "imageUrl": ref_url,
+                        "design_guidelines": {},
+                        "text_analysis": {},
+                        "text_in_image": None,
+                        "tags": [],
+                        "scope": "unknown",
+                    }
+                    print(f"[DEBUG] Reference selected (v3 minimal): {ref_id}, triggering Step 3")
+                    return self._handle_reference_selected(minimal_ref)
+        except Exception as _e:
+            # Never block chat; fall back to other selection mechanisms.
+            print(f"[DEBUG] V3 selected_reference handling failed: {_e}", file=sys.stderr, flush=True)
         
         # Check if user selected a reference (Step 2 -> Step 3)
         # Look for UUID pattern in message - this indicates a reference selection
@@ -477,48 +926,14 @@ class NanoBananaAgent:
         
         # Handle special reset conversation message
         if user_message == "RESET_CONVERSATION":
-            # Clear all state to start fresh
-            self.history = []
-            self.selected_reference = None
-            self.product_image_path = None
-            self.text_content = None
-            self.awaiting_text_input = False
-            self.design_guidelines = None
-            self.product_analysis = None
-            
-            # Return fresh greeting
+            self._reset_to_initial_upload_state()
             return {
                 "type": "text",
-                "text": "¡Hola! Soy tu especialista en fotografía de producto para Instagram. Para empezar, **subí la foto de tu producto** usando el botón (+) y te voy a ayudar a crear contenido profesional que destaque tu producto. 📸"
+                "text": "Perfecto. Para empezar, **subí la foto de tu producto** usando el botón (+).",
+                "readyToGenerate": False,
             }
         
-        # Detect if user wants to start over with a new product
-        user_msg_lower = user_message.lower()
-        start_over_keywords = [
-            'otro producto', 'nueva imagen', 'nuevo producto', 'empezar de nuevo',
-            'start over', 'different product', 'another product', 'new product',
-            'quiero crear otra', 'vamos a crear una nueva', 'crear algo con otro',
-            'imagen de producto nueva', 'producto nueva'
-        ]
-        
-        if any(keyword in user_msg_lower for keyword in start_over_keywords):
-            # User wants to start over - reset all state
-            print("[DEBUG] User requested to start over with new product - resetting state")
-            self.history = []
-            self.selected_reference = None
-            self.product_image_path = None
-            self.text_content = None
-            self.awaiting_text_input = False
-            self.design_guidelines = None
-            self.product_analysis = None
-            
-            reset_msg = "¡Claro que sí! Entendido, vamos a empezar de nuevo. **Subí la foto del nuevo producto** y te ayudo a crear algo increíble. 📸"
-            # Add a special marker to history to indicate a reset point
-            self.history.append({"role": "assistant", "content": reset_msg, "is_reset": True})
-            return {
-                "type": "text",
-                "text": reset_msg
-            }
+        # Restart intent is handled earlier to override other flows.
         
         # Handle special start conversation message
         is_initial_greeting = user_message == "START_CONVERSATION"
@@ -707,7 +1122,19 @@ Otherwise, respond naturally to continue the conversation.
             
             # Check if user wants no text
             user_msg_lower = user_message.lower().strip()
-            no_text_keywords = ['sin texto', 'no texto', 'sin text', 'no text', 'imagen sola', 'ninguno', 'nada', 'skip']
+            # IMPORTANT: keep this list strict. Words like "ninguno"/"nada" often mean
+            # "no more changes" (confirmation), not "remove all overlay text".
+            no_text_keywords = [
+                'sin texto',
+                'no texto',
+                'sin text',
+                'no text',
+                'imagen sola',
+                'solo imagen',
+                'sólo imagen',
+                'skip text',
+                'skip texto',
+            ]
             
             if any(keyword in user_msg_lower for keyword in no_text_keywords):
                 # User wants no text
@@ -850,6 +1277,101 @@ Otherwise, respond naturally to continue the conversation.
         
         self.history.append({"role": "assistant", "content": response_text_stripped})
         return {"type": "text", "text": response_text_stripped}
+
+    def _normalize_text_value(self, value: Any) -> Optional[str]:
+        """Coerce suggestion/text values into a clean string (or None)."""
+        if isinstance(value, str):
+            s = value.strip()
+            return s if s else None
+        if isinstance(value, dict):
+            for k in ("sugerencia", "suggestion", "text", "value"):
+                v = value.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+        return None
+
+    def _extract_numbered_text_slots(self, user_message: str) -> Dict[str, str]:
+        """
+        Parse numbered multiline inputs like:
+          1. Title
+          2) Subtitle
+        Returns: {'text_1': 'Title', 'text_2': 'Subtitle'}
+        """
+        import re
+
+        slots: Dict[str, str] = {}
+        for raw in (user_message or "").splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            m = re.match(r'^\s*(\d{1,2})\s*[\.\)\:\-]\s*(.+?)\s*$', line)
+            if not m:
+                continue
+            idx = int(m.group(1))
+            txt = m.group(2).strip().strip('"').strip("'").strip()
+            if not txt:
+                continue
+            slots[f"text_{idx}"] = txt
+
+        # Sort by numeric index for stability
+        def _key(k: str) -> int:
+            try:
+                return int(k.split("_", 1)[1])
+            except Exception:
+                return 10_000
+
+        return {k: slots[k] for k in sorted(slots.keys(), key=_key)}
+
+    def _expected_text_slots_count(self) -> int:
+        """Best-effort: infer how many text slots exist from last_smart_suggestions."""
+        if not isinstance(self.last_smart_suggestions, dict):
+            return 0
+        import re
+
+        max_n = 0
+        for k in self.last_smart_suggestions.keys():
+            m = re.match(r'^text_(\d+)$', str(k))
+            if m:
+                max_n = max(max_n, int(m.group(1)))
+        return max_n
+
+    def _merge_text_slots_into_suggestions(self, suggestions: Dict[str, Any], slots: Dict[str, str]) -> Dict[str, Any]:
+        """Merge text_N strings into suggestions, preserving existing labels when present."""
+        out: Dict[str, Any] = dict(suggestions or {})
+        for k, v in (slots or {}).items():
+            cur = out.get(k)
+            if isinstance(cur, dict):
+                merged = dict(cur)
+                merged["sugerencia"] = v
+                out[k] = merged
+            else:
+                out[k] = v
+        return out
+
+    def _normalize_suggestions_to_text_content(self, suggestions: Dict[str, Any]) -> Dict[str, str]:
+        """
+        Convert last_smart_suggestions into a text_content dict with string values:
+          {'text_1': '...', 'text_2': '...'}
+        """
+        import re
+
+        out: Dict[str, str] = {}
+        for k, v in (suggestions or {}).items():
+            m = re.match(r'^text_(\d+)$', str(k))
+            if not m:
+                continue
+            s = self._normalize_text_value(v)
+            if s:
+                out[str(k)] = s
+
+        # Ensure stable order
+        def _key(k: str) -> int:
+            try:
+                return int(k.split("_", 1)[1])
+            except Exception:
+                return 10_000
+
+        return {k: out[k] for k in sorted(out.keys(), key=_key)}
     
     def _parse_text_content(self, user_message: str) -> Dict[str, str]:
         """
@@ -872,6 +1394,12 @@ Otherwise, respond naturally to continue the conversation.
         text_pieces = []
         for line in lines:
             line = line.strip().strip('"').strip("'").strip(',').strip()
+            # Strip common numeric prefixes like `1. `, `2) `, etc.
+            try:
+                import re
+                line = re.sub(r'^\s*\d+\s*[\.\)\:\-]\s*', '', line).strip()
+            except Exception:
+                pass
             if line and len(line) > 1:
                 text_pieces.append(line)
         
@@ -1717,9 +2245,15 @@ SOBRE LOS CAMPOS:
             # LLM decides if ready to generate (only true if no text in reference and changes confirmed)
             ready_to_generate = bool(result.get("ready_to_generate", False))
             print(f"[DEBUG] _handle_design_mode_contextual: Staying in design mode, readyToGenerate={ready_to_generate} (LLM decided)", file=sys.stderr, flush=True)
+            assistant_text = result.get("respuesta", "¿Qué cambios te gustaría hacer al diseño?") or "¿Qué cambios te gustaría hacer al diseño?"
+            try:
+                self.history.append({"role": "assistant", "content": assistant_text})
+                self._set_pending_numbered_options_from_text(assistant_text)
+            except Exception:
+                pass
             return {
                 "type": "text",
-                "text": result.get("respuesta", "¿Qué cambios te gustaría hacer al diseño?"),
+                "text": assistant_text,
                 "readyToGenerate": ready_to_generate
             }
             
@@ -2490,6 +3024,7 @@ IMPORTANTE: Si pide "achicar" o "más corto", propone un texto con MENOS palabra
             if result.get('status') == 'success' and result.get('postTypes'):
                 post_types = result['postTypes']
                 self.current_step = 1
+                self.cached_post_types = post_types
                 
                 # V2: Store FULL example image data for each post type to ensure it appears first in references
                 # This is HARDCODED to always show the selected post type image as the first reference
@@ -3278,20 +3813,49 @@ Tu respuesta (SOLO el formato de salida, sin explicaciones ni texto adicional):"
             "already_summarized": already_summarized
         })
         
-        # Check if reference has text - must have BOTH text_in_image == 'yes' AND actual text_elements
-        text_in_image_flag = self.selected_reference and self.selected_reference.get('text_in_image') == 'yes'
-        has_actual_text_elements = (
-            self.text_analysis and 
-            self.text_analysis.get('text_elements') and 
-            len(self.text_analysis.get('text_elements', [])) > 0
+        # Check if reference has text/slots in a robust way.
+        # DB flags can be missing/incorrect; prefer real-time reference_analysis when available.
+        text_in_image_flag = bool(self.selected_reference and self.selected_reference.get('text_in_image') == 'yes')
+        has_text_analysis_elements = bool(
+            self.text_analysis
+            and isinstance(self.text_analysis.get('text_elements'), list)
+            and len(self.text_analysis.get('text_elements', [])) > 0
         )
-        
-        # Only consider it has text if both conditions are met
-        has_text = text_in_image_flag and has_actual_text_elements
+        has_realtime_textos = bool(
+            self.reference_analysis
+            and isinstance(self.reference_analysis.get('textos'), list)
+            and len(self.reference_analysis.get('textos', [])) > 0
+        )
+        has_typography_slots = False
+        try:
+            if isinstance(self.design_guidelines, dict):
+                typography = self.design_guidelines.get('typography', {}) or {}
+                headline = typography.get('headline', {}) or {}
+                subheadline = typography.get('subheadline', {}) or {}
+                badges = typography.get('badges', {}) or {}
+                cta = self.design_guidelines.get('cta_button', {}) or {}
+                has_typography_slots = bool(
+                    headline
+                    or (isinstance(subheadline, dict) and subheadline.get('present', False))
+                    or (isinstance(badges, dict) and badges.get('present', False))
+                    or (isinstance(cta, dict) and cta.get('present', False))
+                )
+        except Exception:
+            has_typography_slots = False
+
+        # Default to NO TEXT when real-time analysis says there are no text elements.
+        # DB flags / typography placeholders can be stale or misleading for text-free references.
+        if isinstance(self.reference_analysis, dict):
+            has_text = bool(has_realtime_textos)
+        else:
+            # Fallback when we don't have real-time reference analysis available.
+            has_text = bool(has_typography_slots or text_in_image_flag or has_text_analysis_elements)
         
         debug_tracker.log_step("4.1 CHECK_TEXT_IN_REFERENCE", {
             "text_in_image_flag": text_in_image_flag,
-            "has_actual_text_elements": has_actual_text_elements,
+            "has_actual_text_elements": has_text_analysis_elements,
+            "has_realtime_textos": has_realtime_textos,
+            "has_typography_slots": has_typography_slots,
             "has_text": has_text,
             "text_in_image_value": self.selected_reference.get('text_in_image') if self.selected_reference else None,
             "text_analysis": self.text_analysis
@@ -3404,9 +3968,47 @@ Tu respuesta (SOLO el formato de salida, sin explicaciones ni texto adicional):"
                 "readyToGenerate": False
             }
         else:
-            debug_tracker.log_step("4.2 NO_TEXT_IN_REFERENCE", {"skipping_to": "confirm_ready"})
-            # No text, go directly to confirm - include changes confirmation
-            return self._handle_confirm_ready(include_changes_confirmation=True)
+            # Reference has no overlay text: still run an explicit text step (optional).
+            debug_tracker.log_step("4.2 NO_TEXT_IN_REFERENCE", {"next": "optional_text_step"})
+            self.current_step = 4
+            self.awaiting_text_input = True
+            self.optional_text_mode = True
+
+            product_name = self.product_name or "tu producto"
+            category = self.product_category or ""
+            base = f"{product_name}" + (f" ({category})" if category else "")
+
+            suggestions = [
+                f"Conocé {product_name}",
+                "Resultados que se notan",
+                "Compralo hoy",
+            ]
+
+            # Keep format compatible with the rest of the text flow.
+            self.last_smart_suggestions = {
+                "text_1": {"etiqueta": "Tagline", "sugerencia": suggestions[0]},
+                "text_2": {"etiqueta": "Beneficio", "sugerencia": suggestions[1]},
+                "text_3": {"etiqueta": "CTA", "sugerencia": suggestions[2]},
+            }
+
+            suggestions_str = "\n".join(
+                [
+                    f"1. **Tagline:** {suggestions[0]}",
+                    f"2. **Beneficio:** {suggestions[1]}",
+                    f"3. **CTA:** {suggestions[2]}",
+                ]
+            )
+
+            text = (
+                f"{confirmation_prefix}\n\n"
+                "Ahora vamos con el texto.\n\n"
+                "Tu referencia **no tiene texto de diseño**. ¿Querés agregar algún texto corto (opcional)?\n\n"
+                f"{suggestions_str}\n\n"
+                "Podés responder con el número, escribir tu propio texto, o decir **sin texto**."
+            )
+
+            self.history.append({"role": "assistant", "content": text})
+            return {"type": "text", "text": text, "readyToGenerate": False}
     
     def _handle_conversational_text_flow(self, user_message: str) -> Dict[str, Any]:
         """
@@ -3435,8 +4037,151 @@ Tu respuesta (SOLO el formato de salida, sin explicaciones ni texto adicional):"
             self.awaiting_text_input = False
             self.current_step = 6
             if self.last_smart_suggestions:
-                self.text_content = self.last_smart_suggestions.copy()
+                self.text_content = self._normalize_suggestions_to_text_content(self.last_smart_suggestions)
             return self._handle_generate_pipeline("[TRIGGER_GENERATE_PIPELINE]")
+
+        # Optional text step (reference has no overlay text): treat any non-empty message as either:
+        # - "sin texto" → proceed without text
+        # - otherwise → use it as a single overlay text
+        try:
+            if getattr(self, "optional_text_mode", False) and self.awaiting_text_input:
+                msg_raw = (user_message or "").strip()
+                msg = msg_raw.lower().strip()
+                if not msg_raw:
+                    return {"type": "text", "text": "Decime qué texto querés usar, o respondé **sin texto**.", "readyToGenerate": False}
+
+                no_text_keywords = [
+                    'sin texto',
+                    'no texto',
+                    'sin text',
+                    'no text',
+                    'imagen sola',
+                    'solo imagen',
+                    'sólo imagen',
+                    'skip text',
+                    'skip texto',
+                    'mantener',
+                    'ok',
+                    'dale',
+                    'listo',
+                    'perfecto',
+                ]
+                if any(keyword == msg or keyword in msg for keyword in no_text_keywords):
+                    self.text_content = None
+                    self.last_smart_suggestions = None
+                    self.awaiting_text_input = False
+                    self.optional_text_mode = False
+                    self.current_step = 5
+                    response_text = "Perfecto, lo hacemos sin texto. Cuando quieras, hacé click en **Generar**."
+                    self.history.append({"role": "assistant", "content": response_text})
+                    return {"type": "text", "text": response_text, "readyToGenerate": True}
+
+                # Use the user's message as the single overlay text.
+                self.last_smart_suggestions = {
+                    "text_1": {"etiqueta": "Texto", "sugerencia": msg_raw}
+                }
+                self.text_content = self._normalize_suggestions_to_text_content(self.last_smart_suggestions)
+                self.awaiting_text_input = False
+                self.optional_text_mode = False
+                self.current_step = 5
+                response_text = "Perfecto, ya guardé tu texto. Cuando quieras, hacé click en **Generar**."
+                self.history.append({"role": "assistant", "content": response_text})
+                return {"type": "text", "text": response_text, "readyToGenerate": True}
+        except Exception as _e:
+            print(f"[DEBUG] Optional text mode handler failed: {_e}", file=sys.stderr, flush=True)
+
+        # If user confirms they want to keep the suggested texts (no more changes), allow generation immediately.
+        try:
+            msg = (user_message or "").strip().lower()
+            confirm_phrases = [
+                'ninguno',
+                'nada',
+                'no hay más cambios',
+                'no hay mas cambios',
+                'no más cambios',
+                'no mas cambios',
+                'no, dejalo así',
+                'no, dejalo asi',
+                'dejalo así',
+                'dejalo asi',
+                'así está bien',
+                'asi esta bien',
+                'perfecto',
+                'listo',
+                'dale',
+                'ok',
+                'mantener',
+            ]
+            if any(msg == p or p in msg for p in confirm_phrases):
+                if self.last_smart_suggestions:
+                    self.text_content = self._normalize_suggestions_to_text_content(self.last_smart_suggestions)
+                self.awaiting_text_input = False
+                self.current_step = 5
+                response_text = "Perfecto, dejo los textos así. Cuando quieras, hacé click en **Generar**."
+                self.history.append({"role": "assistant", "content": response_text})
+                return {"type": "text", "text": response_text, "readyToGenerate": True}
+        except Exception:
+            pass
+
+        # If user explicitly wants no overlay text, allow generation immediately.
+        try:
+            user_msg_lower = (user_message or "").lower().strip()
+            no_text_keywords = [
+                'sin texto',
+                'no texto',
+                'sin text',
+                'no text',
+                'imagen sola',
+                'solo imagen',
+                'sólo imagen',
+                'skip text',
+                'skip texto',
+            ]
+            if any(keyword in user_msg_lower for keyword in no_text_keywords):
+                self.text_content = None
+                self.last_smart_suggestions = None
+                self.awaiting_text_input = False
+                self.current_step = 5
+                response_text = "Perfecto, lo hacemos sin texto. Cuando quieras, hacé click en **Generar**."
+                self.history.append({"role": "assistant", "content": response_text})
+                return {"type": "text", "text": response_text, "readyToGenerate": True}
+        except Exception:
+            # Never block text flow due to parsing logic
+            pass
+
+        # =======================================================================
+        # Deterministic numbered text input parsing (bypass LLM misclassification)
+        # Accept: `1. Title` newline `2. Subtitle` etc.
+        # =======================================================================
+        numbered_slots = self._extract_numbered_text_slots(user_message)
+        if numbered_slots:
+            expected = self._expected_text_slots_count()
+            provided = len(numbered_slots)
+
+            # Merge into last_smart_suggestions if present (preserve labels when available)
+            if self.last_smart_suggestions and isinstance(self.last_smart_suggestions, dict):
+                self.last_smart_suggestions = self._merge_text_slots_into_suggestions(
+                    self.last_smart_suggestions, numbered_slots
+                )
+                self.text_content = self._normalize_suggestions_to_text_content(self.last_smart_suggestions)
+            else:
+                self.text_content = numbered_slots.copy()
+
+            if expected and provided < expected:
+                remaining = expected - provided
+                response_text = (
+                    f"Perfecto. Guardé el texto {provided}. "
+                    f"Ahora escribime el texto {provided + 1} (puedes usar el formato `{provided + 1}. ...`)."
+                )
+                self.awaiting_text_input = True
+                self.history.append({"role": "assistant", "content": response_text})
+                return {"type": "text", "text": response_text, "readyToGenerate": False}
+
+            response_text = "Perfecto, ya guardé tus textos. Cuando quieras, haz click en **Generar**."
+            self.awaiting_text_input = False
+            self.current_step = 5
+            self.history.append({"role": "assistant", "content": response_text})
+            return {"type": "text", "text": response_text, "readyToGenerate": True}
         
         debug_tracker.log_step("CONVERSATIONAL_FLOW_START", {
             "user_message": user_message[:100],
@@ -3539,7 +4284,7 @@ Responde SOLO con el JSON.
                 # If ready to generate, store the current suggestions as text_content
                 if llm_response.get('readyToGenerate') and not llm_response.get('custom_text'):
                     if self.last_smart_suggestions:
-                        self.text_content = self.last_smart_suggestions.copy()
+                        self.text_content = self._normalize_suggestions_to_text_content(self.last_smart_suggestions)
                         debug_tracker.log_step("CONVERSATIONAL_FLOW_CONFIRMED", {
                             "text_content": self.text_content
                         })
@@ -3570,7 +4315,7 @@ Responde SOLO con el JSON.
         # Fallback: assume confirmation and proceed
         self.awaiting_text_input = False
         if self.last_smart_suggestions:
-            self.text_content = self.last_smart_suggestions.copy()
+            self.text_content = self._normalize_suggestions_to_text_content(self.last_smart_suggestions)
         
         # V4: Save fallback response to history
         fallback_text = "Genial! Cuando estés listo, haz click en **Generar** para crear tu post."
@@ -3719,7 +4464,7 @@ Responde SOLO con JSON valido con las sugerencias modificadas:
         if intent['type'] == 'accept':
             debug_tracker.log_step("5.1 USER_ACCEPTED_SUGGESTIONS", {})
             if self.last_smart_suggestions:
-                self.text_content = self.last_smart_suggestions.copy()
+                self.text_content = self._normalize_suggestions_to_text_content(self.last_smart_suggestions)
                 debug_tracker.log_step("5.1.1 USING_STORED_SUGGESTIONS", {
                     "text_content": self.text_content
                 })
@@ -3730,6 +4475,10 @@ Responde SOLO con JSON valido con las sugerencias modificadas:
             })
             # Regenerate suggestions with modifications
             self.text_content = self._regenerate_suggestions_with_modifications(intent.get('modifications', ''))
+            # Store as latest suggestions and normalize for pipeline use
+            if isinstance(self.text_content, dict):
+                self.last_smart_suggestions = self.text_content
+                self.text_content = self._normalize_suggestions_to_text_content(self.text_content)
             debug_tracker.log_step("5.1.1 MODIFIED_SUGGESTIONS", {
                 "text_content": self.text_content
             })
@@ -3896,9 +4645,51 @@ Responde SOLO con JSON valido con las sugerencias modificadas:
         """
         # #region agent log - DEBUG: Capture full state before pipeline
         import json as _json_debug; import time as _time_debug
-        _debug_log_path = "/Users/juanmartinbeinesfurcada/Desktop/Code/Juan test/Postty/.cursor/debug.log"
-        _debug_state = {"hypothesisId": "A-D", "location": "agent.py:_handle_generate_pipeline:entry", "message": "Full state before pipeline", "data": {"product_name": self.product_name, "post_type": self.selected_post_type, "selected_reference": str(self.selected_reference)[:500] if self.selected_reference else None, "text_content": self.text_content, "design_changes": self.design_changes[:200] if self.design_changes else None, "product_image_path": self.product_image_path}, "timestamp": int(_time_debug.time()*1000), "sessionId": "debug-session"}
-        with open(_debug_log_path, "a") as _f: _f.write(_json_debug.dumps(_debug_state) + "\n")
+        import os as _os_debug
+        import sys as _sys_debug
+        import tempfile as _tempfile_debug
+        from pathlib import Path as _Path_debug
+
+        # Never allow debug logging to break generation.
+        # Configurable via POSTTY_AGENT_DEBUG_LOG_PATH; defaults to <repo>/.cursor/debug.log.
+        _debug_log_path_raw = _os_debug.environ.get("POSTTY_AGENT_DEBUG_LOG_PATH", "").strip()
+        if _debug_log_path_raw:
+            _debug_log_path = _Path_debug(_debug_log_path_raw).expanduser()
+        else:
+            try:
+                _repo_root = _Path_debug(__file__).resolve().parents[2]
+            except Exception:
+                _repo_root = _Path_debug.cwd()
+            _debug_log_path = _repo_root / ".cursor" / "debug.log"
+
+        _debug_state = {
+            "hypothesisId": "A-D",
+            "location": "agent.py:_handle_generate_pipeline:entry",
+            "message": "Full state before pipeline",
+            "data": {
+                "product_name": self.product_name,
+                "post_type": self.selected_post_type,
+                "selected_reference": str(self.selected_reference)[:500] if self.selected_reference else None,
+                "text_content": self.text_content,
+                "design_changes": self.design_changes[:200] if self.design_changes else None,
+                "product_image_path": self.product_image_path,
+            },
+            "timestamp": int(_time_debug.time() * 1000),
+            "sessionId": "debug-session",
+        }
+
+        try:
+            _debug_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with _debug_log_path.open("a", encoding="utf-8") as _f:
+                _f.write(_json_debug.dumps(_debug_state) + "\n")
+        except Exception as _e:
+            # Fallback to a temp file, but still never fail generation.
+            try:
+                _tmp_path = _Path_debug(_tempfile_debug.gettempdir()) / "postty-agent-debug.log"
+                with _tmp_path.open("a", encoding="utf-8") as _f:
+                    _f.write(_json_debug.dumps({"write_error": str(_e), **_debug_state}) + "\n")
+            except Exception:
+                print(f"[DEBUG] Failed to write agent debug log: {_e}", file=_sys_debug.stderr, flush=True)
         # #endregion
         
         debug_tracker.log_step("6.0 STEP6_GENERATE_PIPELINE_START", {
@@ -4005,34 +4796,39 @@ Responde SOLO con JSON valido con las sugerencias modificadas:
                     # V4: First try the new dynamic format (text_1, text_2, etc.)
                     for i in range(1, 20):
                         text_value = self.text_content.get(f'text_{i}')
-                        if text_value and text_value not in text_array:
-                            text_array.append(text_value)
+                        s = self._normalize_text_value(text_value)
+                        if s and s not in text_array:
+                            text_array.append(s)
                     
                     # V4: Fallback to legacy format if no text_N keys found
                     if not text_array:
                         # Legacy: Collect all headlines (indexed or not)
                         for i in range(1, 10):
                             headline = self.text_content.get(f'headline_{i}') or (self.text_content.get('headline') if i == 1 else None)
-                            if headline and headline not in text_array:
-                                text_array.append(headline)
+                            s = self._normalize_text_value(headline)
+                            if s and s not in text_array:
+                                text_array.append(s)
                         
                         # Legacy: Collect all subheadlines
                         for i in range(1, 10):
                             subheadline = self.text_content.get(f'subheadline_{i}') or (self.text_content.get('subheadline') if i == 1 else None)
-                            if subheadline and subheadline not in text_array:
-                                text_array.append(subheadline)
+                            s = self._normalize_text_value(subheadline)
+                            if s and s not in text_array:
+                                text_array.append(s)
                         
                         # Legacy: Collect taglines
                         for i in range(1, 10):
                             tagline = self.text_content.get(f'tagline_{i}') or (self.text_content.get('tagline') if i == 1 else None)
-                            if tagline and tagline not in text_array:
-                                text_array.append(tagline)
+                            s = self._normalize_text_value(tagline)
+                            if s and s not in text_array:
+                                text_array.append(s)
                         
                         # Legacy: Collect CTAs
                         for i in range(1, 10):
                             cta = self.text_content.get(f'cta_{i}') or (self.text_content.get('cta') if i == 1 else None)
-                            if cta and cta not in text_array:
-                                text_array.append(cta)
+                            s = self._normalize_text_value(cta)
+                            if s and s not in text_array:
+                                text_array.append(s)
                     
                     print(f"[DEBUG] Text array: {text_array}")
                     data['userText'] = json.dumps(text_array)
@@ -4083,6 +4879,7 @@ Responde SOLO con JSON valido con las sugerencias modificadas:
             
             if not result.get('success') or not result.get('finalImagePath'):
                 error_msg = "La generación de imagen falló. ¿Intentamos de nuevo?"
+                self.awaiting_generation_retry = True
                 self.history.append({"role": "assistant", "content": error_msg})
                 return {"type": "text", "text": error_msg}
             
@@ -4142,6 +4939,7 @@ Responde SOLO con JSON valido con las sugerencias modificadas:
             error_msg = f"Error generando imagen: {str(e)}"
             print(error_msg)
             fallback = "Tuve un problema generando la imagen. ¿Intentamos de nuevo?"
+            self.awaiting_generation_retry = True
             self.history.append({"role": "assistant", "content": fallback})
             return {"type": "text", "text": fallback}
 

@@ -7,7 +7,7 @@ export async function POST(req: Request) {
     const auth = req.headers.get("authorization") || "";
     const body = await req.json();
 
-    const res = await fetch(`${BACKEND_BASE_URL}/feedback`, {
+    const res = await fetch(`${BACKEND_BASE_URL}/posts/update-caption`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -16,10 +16,11 @@ export async function POST(req: Request) {
       body: JSON.stringify(body),
     });
 
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     return NextResponse.json(data, { status: res.status });
   } catch (e) {
     const message = e instanceof Error ? e.message : "Unknown error occurred";
     return NextResponse.json({ status: "error", message }, { status: 500 });
   }
 }
+

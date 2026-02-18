@@ -38,7 +38,16 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
         }
       }
 
-      const { agentType, message, conversationHistory, userId, isReferenceUpload, selectedReferenceId, selectedReferenceUrl } = fields;
+      const {
+        agentType,
+        message,
+        conversationHistory,
+        userId,
+        isReferenceUpload,
+        selectedReferenceId,
+        selectedReferenceUrl,
+        selectedPostType,
+      } = fields;
 
       if (!agentType) {
         return reply.status(400).send({
@@ -119,10 +128,31 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
 
       // Ensure the Python agent process is running
       logger.info(`[Agent Chat] Ensuring agent is running...`);
-      await ensureAgentRunning();
+      try {
+        await ensureAgentRunning();
+      } catch (err) {
+        const details = err instanceof Error ? err.message : String(err);
+        logger.error('[Agent Chat] Agent startup failed:', details);
+        return reply.status(503).send({
+          status: 'error',
+          message: 'Agent is not available (setup required)',
+          details,
+        });
+      }
 
       // Build message to send to agent
       let messageToSend = message || (imageFile ? "" : "");
+
+      // Deterministic post-type selection (sent by the /v3 UI when a user taps a post type card).
+      // This avoids relying on label text parsing, which can be brittle across locales/casing.
+      if (
+        typeof selectedPostType === 'string' &&
+        selectedPostType.trim().length > 0 &&
+        !uploadedReferenceData &&
+        !(selectedReferenceId && selectedReferenceUrl)
+      ) {
+        messageToSend = selectedPostType.trim();
+      }
       
       // If user uploaded a reference, modify the message to include reference data
       if (uploadedReferenceData) {
@@ -176,9 +206,13 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
         // V2: Return local URL immediately, upload to S3 in background
         // This improves UX by showing the image faster
         const filename = path.basename(result.file);
-        // Use full backend URL so frontend can load it (frontend is on different port)
-        const backendPort = process.env.PORT || '8080';
-        const localUrl = `http://localhost:${backendPort}/generated-images/${filename}`;
+        // IMPORTANT: `http://localhost:*` breaks when the UI is opened from another device
+        // (e.g. phone on LAN). Prefer a configured public base URL, otherwise return a
+        // relative path that the frontend can proxy.
+        const publicBase = (process.env.POSTTY_PUBLIC_BACKEND_URL || process.env.POSTTY_PUBLIC_BASE_URL || '')
+          .trim()
+          .replace(/\/+$/, '');
+        const localUrl = publicBase ? `${publicBase}/generated-images/${filename}` : `/generated-images/${filename}`;
         
         logger.info(`Serving image locally first: ${localUrl}`);
         

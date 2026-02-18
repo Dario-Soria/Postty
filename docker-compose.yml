@@ -1,0 +1,32 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      - PORT=8080
+    volumes:
+      - backend-generated-images:/app/generated-images
+      - backend-temp-uploads:/app/temp-uploads
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      # Frontend API proxy should hit the backend container
+      - POSTTY_API_BASE_URL=http://backend:8080
+    depends_on:
+      - backend
+
+volumes:
+  backend-generated-images:
+  backend-temp-uploads:

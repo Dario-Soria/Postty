@@ -21,6 +21,14 @@ const META_APP_SECRET = process.env.META_APP_SECRET || process.env.FACEBOOK_APP_
 const META_REDIRECT_URI = process.env.META_REDIRECT_URI;
 const OAUTH_STATE_SECRET = process.env.POSTTY_IG_OAUTH_STATE_SECRET || '';
 const FRONTEND_BASE_URL = process.env.POSTTY_FRONTEND_BASE_URL || '';
+const FRONTEND_ORIGIN = (() => {
+  if (!FRONTEND_BASE_URL) return null;
+  try {
+    return new URL(FRONTEND_BASE_URL).origin;
+  } catch {
+    return null;
+  }
+})();
 
 const SCOPES = [
   'instagram_basic',
@@ -38,7 +46,16 @@ function safeReturnTo(raw: unknown): string | null {
   const s = raw.trim();
   if (!s) return null;
   if (s.startsWith('/')) return s;
+  // Allow absolute URLs to the configured frontend base URL (legacy behavior),
+  // and also allow same-origin absolute URLs (e.g. /v3 when base is /v2).
   if (FRONTEND_BASE_URL && s.startsWith(FRONTEND_BASE_URL)) return s;
+  if (FRONTEND_ORIGIN && /^https?:\/\//i.test(s)) {
+    try {
+      if (new URL(s).origin === FRONTEND_ORIGIN) return s;
+    } catch {
+      // ignore invalid URL
+    }
+  }
   return null;
 }
 

@@ -213,11 +213,58 @@ const getPostTypesRoute: FastifyPluginAsync = async (fastify) => {
         `);
       }
 
+      // Final fallback: If nothing matches category/industry, return best generic post types
+      // so the Step 1 carousel can still render and the flow doesn't break.
       if (result.rows.length === 0) {
-        return reply.status(200).send({
-          status: 'success',
-          postTypes: [],
-        });
+        logger.info('get-post-types: No results for filters, falling back to generic top post types');
+        result = await pool.query(`
+          SELECT DISTINCT ON (post_type) 
+            post_type, 
+            id, 
+            s3_bucket, 
+            s3_key,
+            industry,
+            product_category,
+            tags
+          FROM reference_images
+          WHERE post_type IS NOT NULL AND post_type != ''
+          ORDER BY post_type, ranking DESC, created_at DESC
+        `);
+      }
+
+      // If we still have nothing, return empty list (DB likely empty).
+      if (result.rows.length === 0) {
+        return reply.status(200).send({ status: 'success', postTypes: [] });
+      }
+
+      // If we have some results but fewer than limit, supplement with generic results to fill.
+      if (result.rows.length < Math.min(limit, 4)) {
+        try {
+          const supplemental = await pool.query(`
+            SELECT DISTINCT ON (post_type) 
+              post_type, 
+              id, 
+              s3_bucket, 
+              s3_key,
+              industry,
+              product_category,
+              tags
+            FROM reference_images
+            WHERE post_type IS NOT NULL AND post_type != ''
+            ORDER BY post_type, ranking DESC, created_at DESC
+          `);
+          const seen = new Set<string>(result.rows.map((r: any) => String(r.post_type)));
+          for (const row of supplemental.rows) {
+            const pt = String(row.post_type);
+            if (seen.has(pt)) continue;
+            result.rows.push(row);
+            seen.add(pt);
+            if (result.rows.length >= Math.min(limit, 4)) break;
+          }
+        } catch (e) {
+          // Best-effort only; don't fail the endpoint if supplement query fails.
+          logger.warn('get-post-types: Failed to supplement with generic post types', e as any);
+        }
       }
 
       // Score post types by relevance to product/industry if provided

@@ -8,6 +8,7 @@
     "start": "node dist/server.js",
     "dev": "ts-node src/server.ts",
     "verify": "node verify-setup.js",
+    "setup:agent": "bash scripts/setup-product-showcase-agent.sh",
     "index-references": "ts-node scripts/index-reference-images.ts",
     "import-references": "ts-node scripts/import-reference-images.ts"
   },
