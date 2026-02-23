@@ -15,6 +15,9 @@ export interface UserProfile {
   photoURL: string | null;
   provider: "google" | "email";
   emailVerified?: boolean;
+  accessGranted?: boolean;
+  groups?: string[];
+  accessEvaluatedAt?: any;
   createdAt: any;
   references?: any[];
   brand?: Record<string, any>;

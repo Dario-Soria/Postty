@@ -36,3 +36,6 @@ temp-uploads/
 # Local feedback logs (may include PII)
 frontend/feedback-logs/*.json
 
+# Cursor workspace artifacts
+.cursor/
+

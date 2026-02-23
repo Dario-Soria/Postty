@@ -338,10 +338,16 @@ export function getAvailableReferences(): { style: string; images: string[] }[] 
   return Object.entries(refs).map(([style, images]) => ({ style, images }));
 }
 
-export function isPipelineReady(): { ready: boolean; message: string } {
+export function isPipelineReady(options?: { requireReferences?: boolean }): { ready: boolean; message: string } {
+  const requireReferences = options?.requireReferences !== false;
+
   // Check GEMINI_API_KEY
   if (!process.env.GEMINI_API_KEY) {
     return { ready: false, message: 'GEMINI_API_KEY not set' };
+  }
+
+  if (!requireReferences) {
+    return { ready: true, message: 'Ready (reference check skipped)' };
   }
   
   // Check for reference images in both old and new systems

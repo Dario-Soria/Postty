@@ -8,6 +8,7 @@ const BACKEND_BASE_URL = process.env.POSTTY_API_BASE_URL || "http://localhost:80
 export async function POST(req: Request) {
   try {
     const contentType = req.headers.get("content-type") || "";
+    const authHeader = req.headers.get("authorization") || "";
     
     let productImageBase64: string | null = null;
     let prompt: string = "";
@@ -70,7 +71,10 @@ export async function POST(req: Request) {
     // Call the new pipeline endpoint
     const pipelineResponse = await fetch(`${BACKEND_BASE_URL}/pipeline/json`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(authHeader ? { Authorization: authHeader } : {}),
+      },
       body: JSON.stringify({
         productImageBase64,
         textPrompt: prompt,

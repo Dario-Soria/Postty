@@ -4,6 +4,7 @@ import * as React from "react";
 import { Spinner } from "@nextui-org/react";
 import { useAuth } from "@/contexts/AuthContext";
 import LoginScreen from "@/app/components/LoginScreen";
+import { AccessPendingScreen } from "@/app/v2/_components/AccessPendingScreen";
 import { uuid } from "@/lib/uuid";
 
 type PostTypeOption = {
@@ -53,6 +54,8 @@ type UserPost = {
 
 export default function V3Page() {
   const { user, loading, signOut } = useAuth();
+  const [accessCheckLoading, setAccessCheckLoading] = React.useState(false);
+  const [accessDenied, setAccessDenied] = React.useState(false);
   const [isMobileBrowser, setIsMobileBrowser] = React.useState(false);
   const [showMobileImageChooser, setShowMobileImageChooser] = React.useState(false);
   const [mobileToast, setMobileToast] = React.useState<string | null>(null);
@@ -612,6 +615,28 @@ export default function V3Page() {
     }
   }, [activeLeftMenu, clientSessionId, messages, productThumbnail, user]);
 
+  // Keep the latest uploaded product thumbnail in the active post-type assistant card.
+  // This fixes stale thumbnails when the user starts another post with a new image.
+  React.useEffect(() => {
+    if (!productThumbnail) return;
+    setMessages((prev) => {
+      let targetIndex = -1;
+      for (let i = prev.length - 1; i >= 0; i -= 1) {
+        const m = prev[i];
+        if (m.role === "assistant" && m.postTypeOptions && m.postTypeOptions.length > 0) {
+          targetIndex = i;
+          break;
+        }
+      }
+      if (targetIndex < 0) return prev;
+      const current = prev[targetIndex];
+      if (current.productThumbnail === productThumbnail) return prev;
+      const next = [...prev];
+      next[targetIndex] = { ...current, productThumbnail };
+      return next;
+    });
+  }, [productThumbnail]);
+
   // Auto-grow chat textarea (up to a max height)
   React.useEffect(() => {
     const el = inputRef.current;
@@ -715,9 +740,11 @@ export default function V3Page() {
       if (user?.uid) {
         formData.append("userId", user.uid);
       }
+      const token = user ? await user.getIdToken() : null;
 
       const response = await fetch("/api/agent-chat", {
         method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
         body: formData,
       });
 
@@ -759,12 +786,16 @@ export default function V3Page() {
         // Step 1: Show post type options with images
         const t = typeof result.text === "string" ? result.text.trim() : "";
         if (t) lastProductSummaryForCaptionRef.current = t;
+        const resolvedThumb =
+          typeof result.productThumbnail === "string" && result.productThumbnail.trim().length > 0
+            ? result.productThumbnail
+            : productThumbnail || undefined;
         const msg: Message = {
           id: uuid(),
           role: "assistant",
           content: result.text || "",
           postTypeOptions: result.postTypes,
-          productThumbnail: productThumbnail || undefined,
+          productThumbnail: resolvedThumb,
         };
         setMessages((prev) => [...prev, msg]);
       } else if (result.type === "reference_options") {
@@ -818,9 +849,11 @@ export default function V3Page() {
       formData.append("selectedReferenceUrl", reference.url);
       if (clientSessionId) formData.append("sessionId", clientSessionId);
       if (user?.uid) formData.append("userId", user.uid);
+      const token = user ? await user.getIdToken() : null;
 
       const response = await fetch("/api/agent-chat", {
         method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
         body: formData,
       });
 
@@ -1398,7 +1431,44 @@ export default function V3Page() {
   }, []);
 
   // Show loading state while checking auth
-  if (loading) {
+  React.useEffect(() => {
+    if (loading) return;
+    if (!user) {
+      setAccessDenied(false);
+      setAccessCheckLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const run = async () => {
+      setAccessCheckLoading(true);
+      try {
+        const token = await user.getIdToken();
+        const res = await fetch("/api/user/is-first-post", {
+          method: "GET",
+          headers: { Authorization: `Bearer ${token}` },
+          cache: "no-store",
+        });
+        if (cancelled) return;
+        if (res.status === 403) {
+          setAccessDenied(true);
+        } else {
+          setAccessDenied(false);
+        }
+      } catch {
+        if (!cancelled) setAccessDenied(false);
+      } finally {
+        if (!cancelled) setAccessCheckLoading(false);
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [loading, user]);
+
+  if (loading || accessCheckLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white">
         <Spinner size="lg" />
@@ -1409,6 +1479,10 @@ export default function V3Page() {
   // Show login screen if not authenticated
   if (!user) {
     return <LoginScreen />;
+  }
+
+  if (accessDenied) {
+    return <AccessPendingScreen email={user.email} onSignOut={signOut} />;
   }
 
   // User is authenticated - show main app

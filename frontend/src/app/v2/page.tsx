@@ -13,6 +13,7 @@ import { DirectGenerateScreen } from "./_components/DirectGenerateScreen";
 import { ConversationalChat } from "./_components/ConversationalChat";
 import { Toast } from "./_components/ui/Toast";
 import { EmailVerificationScreen } from "./_components/EmailVerificationScreen";
+import { AccessPendingScreen } from "./_components/AccessPendingScreen";
 import { useAuth } from "@/contexts/AuthContext";
 import { reloadUser } from "@/lib/firebase/auth";
 import { updateUserProfile } from "@/lib/firebase/firestore";
@@ -32,6 +33,8 @@ export default function V2Page() {
   const [step, setStep] = React.useState<Step>(1);
   const [toast, setToast] = React.useState<ToastState>(null);
   const [profileTimeout, setProfileTimeout] = React.useState(false);
+  const [accessCheckLoading, setAccessCheckLoading] = React.useState(false);
+  const [accessDenied, setAccessDenied] = React.useState(false);
 
   // Agent selection state
   const [selectedAgent, setSelectedAgent] = React.useState<string | null>(null);
@@ -179,6 +182,44 @@ export default function V2Page() {
     }
   }, [userProfile, user, authLoading]);
 
+  // Invite-only gate check (server-authoritative).
+  React.useEffect(() => {
+    if (authLoading) return;
+    if (!user) {
+      setAccessDenied(false);
+      setAccessCheckLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const run = async () => {
+      setAccessCheckLoading(true);
+      try {
+        const token = await user.getIdToken();
+        const response = await fetch("/api/user/is-first-post", {
+          method: "GET",
+          headers: { Authorization: `Bearer ${token}` },
+          cache: "no-store",
+        });
+        if (cancelled) return;
+        if (response.status === 403) {
+          setAccessDenied(true);
+        } else {
+          setAccessDenied(false);
+        }
+      } catch {
+        if (!cancelled) setAccessDenied(false);
+      } finally {
+        if (!cancelled) setAccessCheckLoading(false);
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [authLoading, user]);
+
   // Handle step transitions based on auth state
   React.useEffect(() => {
     if (authLoading) return;
@@ -240,7 +281,7 @@ export default function V2Page() {
 
   const content = React.useMemo(() => {
     // Show loading spinner while checking auth
-    if (authLoading) {
+    if (authLoading || accessCheckLoading) {
       return (
         <div className="min-h-[calc(100dvh-5rem)] flex flex-col items-center justify-center">
           <div className="text-center">
@@ -254,6 +295,10 @@ export default function V2Page() {
     // If not authenticated, show welcome screen
     if (!user) {
       return <WelcomeScreen onContinue={() => setStep(2)} showToast={showToast} />;
+    }
+
+    if (accessDenied) {
+      return <AccessPendingScreen email={user.email} onSignOut={handleSignOut} />;
     }
 
     // Check if user signed in with email/password (not Google OAuth)
@@ -289,6 +334,12 @@ export default function V2Page() {
     }
 
     // Step 7: Agent Chat - Allow this BEFORE profile check so agents can work
+    // Invite-only gate (from backend-mirrored profile projection).
+    // Missing/false accessGranted means the user is pending invite.
+    if (userProfile && userProfile.accessGranted !== true) {
+      return <AccessPendingScreen email={user.email} onSignOut={handleSignOut} />;
+    }
+
     if (step === 7 && selectedAgent) {
       const agentNames: Record<string, string> = {
         "product-showcase": "Product Showcase",
@@ -419,7 +470,7 @@ export default function V2Page() {
         </div>
       </div>
     );
-  }, [authLoading, handleSignOut, instagramHandle, productImageFile, productPrompt, selectedAgent, selectedStyle, showToast, step, textIntent, user, userName, userProfile, profileTimeout]);
+  }, [accessCheckLoading, accessDenied, authLoading, handleSignOut, instagramHandle, productImageFile, productPrompt, selectedAgent, selectedStyle, showToast, step, textIntent, user, userName, userProfile, profileTimeout]);
 
   return (
     <div className="min-h-[100dvh] w-full bg-white text-slate-900">

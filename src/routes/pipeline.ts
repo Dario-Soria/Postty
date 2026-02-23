@@ -31,6 +31,12 @@ import {
   type PipelineInput,
   type PipelineOutput,
 } from '../services/pipelineOrchestrator';
+import { requireUserOrInternal } from '../services/firebaseAuth';
+import {
+  acquirePipelineSlot,
+  getPipelineQueueStats,
+  logPipelineQueueStats,
+} from '../services/pipelineQueue';
 
 // Temp uploads directory for multipart files
 function getTempUploadDir(): string {
@@ -120,9 +126,11 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
   fastify.get('/pipeline/status', async (_request: FastifyRequest, reply: FastifyReply) => {
     try {
       const status = isPipelineReady();
+      const queue = getPipelineQueueStats();
       return reply.send({
         success: true,
         ...status,
+        queue,
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
@@ -178,15 +186,6 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
     logger.info('📨 POST /pipeline - Incoming request');
     logger.info('═══════════════════════════════════════════════════════════════');
 
-    // Check if pipeline is ready
-    const readyCheck = isPipelineReady();
-    if (!readyCheck.ready) {
-      return reply.status(503).send({
-        success: false,
-        error: readyCheck.message,
-      });
-    }
-
     let productImagePath: string | null = null;
     let downloadedReferencePath: string | null = null;
 
@@ -231,6 +230,22 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
         return reply.status(400).send({
           success: false,
           error: 'Missing required field: textPrompt',
+        });
+      }
+
+      // Enforce auth on expensive generation endpoint (Firebase user OR trusted internal token).
+      await requireUserOrInternal(request, formData.userId);
+
+      // Only require local fallback references if no explicit reference was provided.
+      const hasExplicitReference = Boolean(
+        (formData.referenceImageUrl && formData.referenceImageUrl.trim().length > 0) ||
+        (formData.referenceImage && formData.referenceImage.trim().length > 0)
+      );
+      const readyCheck = isPipelineReady({ requireReferences: !hasExplicitReference });
+      if (!readyCheck.ready) {
+        return reply.status(503).send({
+          success: false,
+          error: readyCheck.message,
         });
       }
 
@@ -359,8 +374,23 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
           : '(random)',
       }, null, 2));
 
-      // Execute pipeline
-      const result: PipelineOutput = await executePipeline(pipelineInput);
+      const requestStartMs = Date.now();
+      const slot = await acquirePipelineSlot();
+      if (slot.queueWaitMs > 0) {
+        logger.info(
+          `[Pipeline] requestId=${request.id} queued ${slot.queueWaitMs}ms before processing`
+        );
+      }
+      logPipelineQueueStats('[Pipeline] Before execute');
+      let result: PipelineOutput;
+      try {
+        result = await executePipeline(pipelineInput);
+      } finally {
+        slot.release();
+      }
+      logger.info(
+        `[Pipeline] requestId=${request.id} done in ${Date.now() - requestStartMs}ms (queueWait=${slot.queueWaitMs}ms)`
+      );
 
       // Clean up temp file
       if (productImagePath) {
@@ -390,8 +420,9 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
 
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       logger.error('Pipeline execution failed:', errorMsg);
+      const statusCode = errorMsg.toLowerCase().includes('auth') ? 401 : 500;
       
-      return reply.status(500).send({
+      return reply.status(statusCode).send({
         success: false,
         error: errorMsg,
       });
@@ -420,8 +451,18 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
     logger.info('📨 POST /pipeline/json - Incoming request');
     logger.info('═══════════════════════════════════════════════════════════════');
 
-    // Check if pipeline is ready
-    const readyCheck = isPipelineReady();
+    // If request provides an explicit reference, don't require local fallback references.
+    const readinessBody = request.body as {
+      productImageBase64?: string;
+      textPrompt?: string;
+      referenceImage?: string;
+      referenceImageUrl?: string;
+    };
+    const hasExplicitReference = Boolean(
+      (readinessBody?.referenceImageUrl && readinessBody.referenceImageUrl.trim().length > 0) ||
+      (readinessBody?.referenceImage && readinessBody.referenceImage.trim().length > 0)
+    );
+    const readyCheck = isPipelineReady({ requireReferences: !hasExplicitReference });
     if (!readyCheck.ready) {
       return reply.status(503).send({
         success: false,
@@ -439,6 +480,7 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
         referenceImage?: string;
         referenceImageUrl?: string; // signed S3 URL for DB-backed references
         referenceImage2?: string; // V6: Second reference for edit mode with original reference
+        userId?: string; // used for trusted internal calls
         productName?: string;
         language?: 'es' | 'en';
         aspectRatio?: '1:1' | '9:16' | '16:9' | '4:3' | '3:4' | '4:5';
@@ -472,6 +514,9 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
           error: 'Missing required field: textPrompt',
         });
       }
+
+      // Enforce auth on expensive generation endpoint (Firebase user OR trusted internal token).
+      await requireUserOrInternal(request, body.userId);
 
       // Save base64 image to temp file
       const tempDir = getTempUploadDir();
@@ -563,8 +608,23 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
       logger.info(`🎨 Style: ${pipelineInput.style}`);
       if (body.textFormat) logger.info(`📝 Text format: ${body.textFormat}`);
 
-      // Execute pipeline
-      const result: PipelineOutput = await executePipeline(pipelineInput);
+      const requestStartMs = Date.now();
+      const slot = await acquirePipelineSlot();
+      if (slot.queueWaitMs > 0) {
+        logger.info(
+          `[Pipeline/json] requestId=${request.id} queued ${slot.queueWaitMs}ms before processing`
+        );
+      }
+      logPipelineQueueStats('[Pipeline/json] Before execute');
+      let result: PipelineOutput;
+      try {
+        result = await executePipeline(pipelineInput);
+      } finally {
+        slot.release();
+      }
+      logger.info(
+        `[Pipeline/json] requestId=${request.id} done in ${Date.now() - requestStartMs}ms (queueWait=${slot.queueWaitMs}ms)`
+      );
 
       // Clean up temp file
       if (productImagePath) safeUnlink(productImagePath);
@@ -587,8 +647,9 @@ export default async function pipelineRoutes(fastify: FastifyInstance): Promise<
 
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       logger.error('Pipeline execution failed:', errorMsg);
+      const statusCode = errorMsg.toLowerCase().includes('auth') ? 401 : 500;
       
-      return reply.status(500).send({
+      return reply.status(statusCode).send({
         success: false,
         error: errorMsg,
       });

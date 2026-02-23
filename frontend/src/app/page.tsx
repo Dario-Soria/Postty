@@ -1,18 +1,6 @@
-"use client";
-
-import { useEffect } from "react";
-import { useRouter } from "next/navigation";
+import V3Page from "./v3/page";
 
 export default function HomePage() {
-  const router = useRouter();
-
-  useEffect(() => {
-    router.replace("/v3");
-  }, [router]);
-
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-white">
-      <div className="text-gray-400">Redirecting...</div>
-    </div>
-  );
+  // Keep V3 as the canonical app experience while preserving root URL.
+  return <V3Page />;
 }

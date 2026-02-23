@@ -9,7 +9,7 @@ import { extractSubjectMaskWithGemini } from '../services/geminiMultimodal';
 import { mergeProductOnBackground } from '../services/productMergeV2';
 import { saveReferenceImageAsync } from '../services/referenceLibrarySqlite';
 import { orchestrateV2Prompt } from '../services/v2GeminiOrchestrator';
-import { requireUser } from '../services/firebaseAuth';
+import { requireUserOrInternal } from '../services/firebaseAuth';
 
 function ensureTempDir(): string {
   const dir = path.join(process.cwd(), 'temp-uploads', 'v2');
@@ -65,6 +65,11 @@ export default async function v2GenerateRoutes(fastify: FastifyInstance): Promis
    */
   fastify.post('/v2/generate', async (req, reply) => {
     const body = isRecord(req.body) ? req.body : {};
+    try {
+      await requireUserOrInternal(req as any, typeof body.userId === 'string' ? body.userId : null);
+    } catch {
+      return reply.status(401).send({ error: 'Authentication required' });
+    }
     const prompt = typeof body.prompt === 'string' ? body.prompt : '';
     const numCandidates = typeof body.num_candidates === 'number' ? Math.min(Math.max(body.num_candidates, 1), 6) : 3;
     const previewOnly = parseBooleanInput(body.preview_only);
@@ -112,6 +117,11 @@ export default async function v2GenerateRoutes(fastify: FastifyInstance): Promis
    */
   fastify.post('/v2/generate-with-image', async (req, reply) => {
     const { fields, files } = await readMultipartToBuffers(req);
+    try {
+      await requireUserOrInternal(req as any, fields.userId || null);
+    } catch {
+      return reply.status(401).send({ error: 'Authentication required' });
+    }
     const prompt = (fields.prompt || '').trim();
     const numCandidates = fields.num_candidates ? Math.min(Math.max(parseInt(fields.num_candidates, 10) || 3, 1), 6) : 3;
     const previewOnly = parseBooleanInput(fields.preview_only);
@@ -192,13 +202,13 @@ export default async function v2GenerateRoutes(fastify: FastifyInstance): Promis
     const previewOnly = parseBooleanInput(fields.preview_only);
     const numCandidates = fields.num_candidates ? Math.min(Math.max(parseInt(fields.num_candidates, 10) || 3, 1), 12) : 3;
 
-    // Best-effort user context. If missing, references will be saved to GLOBAL library.
+    // Require auth for expensive generation/upload flows.
     let uid: string | null = null;
     try {
-      const user = await requireUser(req as any);
+      const user = await requireUserOrInternal(req as any, fields.userId || null);
       uid = user.uid;
     } catch {
-      uid = null;
+      return reply.status(401).send({ error: 'Authentication required' });
     }
 
     const product = files.find((f) => f.fieldname === 'image') || files[0];

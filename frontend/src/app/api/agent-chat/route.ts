@@ -11,11 +11,13 @@ export async function POST(request: NextRequest) {
   try {
     // Get the form data from the request
     const formData = await request.formData();
+    const authHeader = request.headers.get('authorization') || '';
 
     // userId is already in formData from frontend, just forward it
     // Forward the form data to the backend (includes userId if present)
     const response = await fetch(`${BACKEND_URL}/agent-chat`, {
       method: 'POST',
+      headers: authHeader ? { Authorization: authHeader } : undefined,
       body: formData,
     });
 

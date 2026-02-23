@@ -8,6 +8,16 @@ const nextConfig: NextConfig = {
   // requests for dev assets like `/_next/*`.
   // NOTE: Next expects hostnames only (no protocol / port).
   allowedDevOrigins: ["localhost", "127.0.0.1", "192.168.1.13"],
+  async redirects() {
+    return [
+      // Public app entry should stay on root URL.
+      { source: "/v3", destination: "/", permanent: false },
+      { source: "/v3/:path*", destination: "/", permanent: false },
+      // Disable legacy V2 surface.
+      { source: "/v2", destination: "/", permanent: false },
+      { source: "/v2/:path*", destination: "/", permanent: false },
+    ];
+  },
   async rewrites() {
     const backend = process.env.POSTTY_API_BASE_URL || "http://localhost:8080";
     return [

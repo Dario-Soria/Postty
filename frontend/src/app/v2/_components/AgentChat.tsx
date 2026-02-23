@@ -384,9 +384,11 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
         if (user?.uid) {
           formData.append("userId", user.uid);
         }
+        const token = user ? await user.getIdToken() : null;
         
         const response = await fetch("/api/agent-chat", {
           method: "POST",
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
           body: formData,
         });
 
@@ -491,8 +493,13 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
       formData.append("conversationHistory", JSON.stringify([]));
       formData.append("sessionId", nextSessionId);
       if (user?.uid) formData.append("userId", user.uid);
+      const token = user ? await user.getIdToken() : null;
 
-      const response = await fetch("/api/agent-chat", { method: "POST", body: formData });
+      const response = await fetch("/api/agent-chat", {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        body: formData,
+      });
       if (!response.ok) throw new Error("Failed to reset conversation");
       const result = await response.json();
       if (result?.type === "text" && result.text) {
@@ -650,9 +657,11 @@ export function AgentChat({ agentId, agentName, onBack, showToast }: Props) {
       if (user?.uid) {
         formData.append("userId", user.uid);
       }
+      const token = user ? await user.getIdToken() : null;
 
       const response = await fetch("/api/agent-chat", {
         method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
         body: formData,
       });
 

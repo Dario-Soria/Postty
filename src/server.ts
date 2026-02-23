@@ -8,6 +8,7 @@ dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
 import Fastify from 'fastify';
 import multipart from '@fastify/multipart';
+import rateLimit from '@fastify/rate-limit';
 import publishInstagramRoute from './routes/publish-instagram';
 import generateAndPublishRoute from './routes/generate-and-publish';
 import generateWithImageAndPublishRoute from './routes/generate-with-image-and-publish';
@@ -51,11 +52,16 @@ const PORT = parseInt(process.env.PORT || '8080', 10);
 const HOST = '0.0.0.0';
 const BODY_LIMIT_BYTES = parseInt(process.env.POSTTY_BODY_LIMIT_BYTES || '31457280', 10); // 30MB
 const FILE_LIMIT_BYTES = parseInt(process.env.POSTTY_FILE_LIMIT_BYTES || '26214400', 10); // 25MB per file
+const RATE_LIMIT_MAX = parseInt(process.env.POSTTY_RATE_LIMIT_MAX || '60', 10); // requests per window per IP
+const RATE_LIMIT_WINDOW =
+  process.env.POSTTY_RATE_LIMIT_WINDOW || process.env.POSTTY_RATE_LIMIT_WINDOW_MS || '1 minute';
 
 // Create Fastify instance
 const fastify = Fastify({
   logger: false, // We use our custom logger
   bodyLimit: BODY_LIMIT_BYTES,
+  // Required behind Cloud Run/load balancers so rate limiting keys use real client IP.
+  trustProxy: true,
 });
 
 /**
@@ -104,6 +110,18 @@ async function start(): Promise<void> {
       },
       throwFileSizeLimit: true,
     });
+    await fastify.register(rateLimit, {
+      global: true,
+      max: Number.isFinite(RATE_LIMIT_MAX) && RATE_LIMIT_MAX > 0 ? RATE_LIMIT_MAX : 60,
+      timeWindow: RATE_LIMIT_WINDOW,
+      skipOnError: true,
+      errorResponseBuilder: (_req, context) => ({
+        statusCode: 429,
+        error: 'Too Many Requests',
+        message: 'Too many requests. Please try again in a moment.',
+        remaining: context.after,
+      }),
+    });
 
     // Register routes
     await fastify.register(publishInstagramRoute);
@@ -144,7 +162,7 @@ async function start(): Promise<void> {
     await fastify.register(feedbackRoutes);
 
     // Health check endpoint
-    fastify.get('/health', async (request, reply) => {
+    fastify.get('/health', { config: { rateLimit: false } }, async (request, reply) => {
       return { status: 'ok', timestamp: new Date().toISOString() };
     });
 

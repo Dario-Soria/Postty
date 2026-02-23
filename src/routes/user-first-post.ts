@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as logger from '../utils/logger';
-import { getFirebaseAdmin, getFirestore } from '../services/firebaseAdmin';
+import { getFirestore } from '../services/firebaseAdmin';
+import { requireAuthorizedUser } from '../services/firebaseAuth';
 
 /**
  * Endpoint to check if this is the user's first post
@@ -14,31 +15,8 @@ export default async function userFirstPostRoute(fastify: FastifyInstance): Prom
   // GET /user/is-first-post - Check if user has generated their first post
   fastify.get('/user/is-first-post', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      // Get Authorization header
-      const authHeader = request.headers.authorization;
-      if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return reply.status(401).send({
-          status: 'error',
-          message: 'Missing or invalid Authorization header',
-        });
-      }
-
-      const idToken = authHeader.slice(7); // Remove "Bearer "
-
-      // Verify Firebase ID token
-      const admin = getFirebaseAdmin();
-      let decodedToken;
-      try {
-        decodedToken = await admin.auth().verifyIdToken(idToken);
-      } catch (err) {
-        logger.error('[UserFirstPost] Invalid token:', err);
-        return reply.status(401).send({
-          status: 'error',
-          message: 'Invalid or expired token',
-        });
-      }
-
-      const uid = decodedToken.uid;
+      const user = await requireAuthorizedUser(request as any);
+      const uid = user.uid;
 
       // V2: Check flag in user document instead of counting posts
       const db = getFirestore();
@@ -55,9 +33,11 @@ export default async function userFirstPostRoute(fastify: FastifyInstance): Prom
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       logger.error('[UserFirstPost] Error:', errorMsg);
-      return reply.status(500).send({
+      const lower = errorMsg.toLowerCase();
+      const status = lower.includes('authorization') || lower.includes('invalid authentication') ? 401 : lower.includes('access not granted') ? 403 : 500;
+      return reply.status(status).send({
         status: 'error',
-        message: 'Error checking first post status',
+        message: status === 500 ? 'Error checking first post status' : errorMsg,
       });
     }
   });
@@ -65,31 +45,8 @@ export default async function userFirstPostRoute(fastify: FastifyInstance): Prom
   // POST /user/mark-first-post - Mark that user has generated their first post
   fastify.post('/user/mark-first-post', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      // Get Authorization header
-      const authHeader = request.headers.authorization;
-      if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return reply.status(401).send({
-          status: 'error',
-          message: 'Missing or invalid Authorization header',
-        });
-      }
-
-      const idToken = authHeader.slice(7); // Remove "Bearer "
-
-      // Verify Firebase ID token
-      const admin = getFirebaseAdmin();
-      let decodedToken;
-      try {
-        decodedToken = await admin.auth().verifyIdToken(idToken);
-      } catch (err) {
-        logger.error('[UserFirstPost] Invalid token:', err);
-        return reply.status(401).send({
-          status: 'error',
-          message: 'Invalid or expired token',
-        });
-      }
-
-      const uid = decodedToken.uid;
+      const user = await requireAuthorizedUser(request as any);
+      const uid = user.uid;
 
       // Update user document to mark first post as generated
       const db = getFirestore();
@@ -107,9 +64,11 @@ export default async function userFirstPostRoute(fastify: FastifyInstance): Prom
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       logger.error('[UserFirstPost] Error marking first post:', errorMsg);
-      return reply.status(500).send({
+      const lower = errorMsg.toLowerCase();
+      const status = lower.includes('authorization') || lower.includes('invalid authentication') ? 401 : lower.includes('access not granted') ? 403 : 500;
+      return reply.status(status).send({
         status: 'error',
-        message: 'Error marking first post',
+        message: status === 500 ? 'Error marking first post' : errorMsg,
       });
     }
   });

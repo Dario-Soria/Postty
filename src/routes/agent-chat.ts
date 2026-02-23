@@ -6,6 +6,7 @@ import { sendMessageToAgent, ensureAgentRunning } from '../services/productShowc
 import { uploadLocalImage } from '../services/imageUploader';
 import { saveReferenceImageAsync } from '../services/referenceLibrarySqlite';
 import { getSignedGetObjectUrl } from '../services/s3Client';
+import { requireUserOrInternal } from '../services/firebaseAuth';
 
 interface AgentChatBody {
   agentType: string;
@@ -49,6 +50,20 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
         selectedPostType,
       } = fields;
 
+      let authedUid: string | null = null;
+      try {
+        const authed = await requireUserOrInternal(
+          request,
+          typeof userId === 'string' ? userId : null
+        );
+        authedUid = authed.uid;
+      } catch {
+        return reply.status(401).send({
+          status: 'error',
+          message: 'Authentication required',
+        });
+      }
+
       if (!agentType) {
         return reply.status(400).send({
           status: 'error',
@@ -80,7 +95,7 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
             buffer,
             originalFilename: imageFile.filename,
             mime,
-            ownerUid: typeof userId === 'string' ? userId : undefined,
+            ownerUid: authedUid || undefined,
           });
           
           if (savedRef) {
@@ -124,7 +139,7 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
       logger.info(`[Agent Chat] Session ID: ${sessionId.substring(0, 12)}...`);
 
       const userUid =
-        typeof userId === 'string' && userId.trim().length > 0 ? userId.trim() : undefined;
+        authedUid && authedUid.trim().length > 0 ? authedUid.trim() : undefined;
 
       // Ensure the Python agent process is running
       logger.info(`[Agent Chat] Ensuring agent is running...`);

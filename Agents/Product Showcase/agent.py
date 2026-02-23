@@ -527,6 +527,13 @@ class NanoBananaAgent:
                 "otro producto",
                 "nuevo producto",
                 "nueva imagen",
+                "otro post",
+                "nuevo post",
+                "nuevo posteo",
+                "nueva publicacion",
+                "nueva publicación",
+                "otro anuncio",
+                "nuevo anuncio",
                 "empezar de nuevo",
                 "empecemos de cero",
                 "arrancar de nuevo",
@@ -536,8 +543,10 @@ class NanoBananaAgent:
                 "another image",
                 "another photo",
                 "another product",
+                "another post",
                 "new product",
                 "new image",
+                "new post",
                 "start over",
                 "restart flow",
                 "reset flow",
@@ -549,7 +558,9 @@ class NanoBananaAgent:
             # This avoids matching common phrases like "crear otra frase" / "hacer otra cosa".
             patterns = [
                 r"\b(generar|crear|hacer)\s+otra\s+(imagen|foto|post|pieza|creatividad)\b",
+                r"\b(generar|crear|hacer)\s+un\s+nuevo\s+(post|producto|anuncio)\b",
                 r"\b(generate|create|make)\s+another\s+(image|photo|post)\b",
+                r"\b(generate|create|make)\s+a\s+new\s+(post|product|image)\b",
             ]
             return any(_re.search(p, msg) for p in patterns)
         except Exception:
@@ -1300,18 +1311,18 @@ Otherwise, respond naturally to continue the conversation.
         import re
 
         slots: Dict[str, str] = {}
-        for raw in (user_message or "").splitlines():
-            line = raw.strip()
-            if not line:
-                continue
-            m = re.match(r'^\s*(\d{1,2})\s*[\.\)\:\-]\s*(.+?)\s*$', line)
-            if not m:
-                continue
-            idx = int(m.group(1))
-            txt = m.group(2).strip().strip('"').strip("'").strip()
-            if not txt:
-                continue
-            slots[f"text_{idx}"] = txt
+        normalized = (user_message or "").replace("\r", "\n")
+        # Accept both multiline and same-line numbered inputs:
+        # "1. Titulo\n2. Subtitulo" or "2. Subtitulo 3. CTA"
+        pattern = re.compile(
+            r'(^|\n|\s)(\d{1,2})\s*[\.\)\:\-]\s*(.+?)(?=(?:\n|\s)\d{1,2}\s*[\.\)\:\-]\s+|$)',
+            re.S,
+        )
+        for m in pattern.finditer(normalized):
+            idx = int(m.group(2))
+            txt = re.sub(r'\s+', ' ', (m.group(3) or '')).strip().strip('"').strip("'").strip()
+            if txt:
+                slots[f"text_{idx}"] = txt
 
         # Sort by numeric index for stability
         def _key(k: str) -> int:
@@ -2873,6 +2884,8 @@ IMPORTANTE: Si pide "achicar" o "más corto", propone un texto con MENOS palabra
             # Single with block for the request
             with open(self.product_image_path, 'rb') as product_file:
                 files = {'productImage': product_file}
+                internal_token = (os.environ.get('POSTTY_INTERNAL_TOKEN') or '').strip()
+                headers = {'X-Postty-Internal-Token': internal_token} if internal_token else None
                 data = {
                     'textPrompt': prompt,
                     'referenceImage': reference_image_for_request,
@@ -2880,6 +2893,9 @@ IMPORTANTE: Si pide "achicar" o "más corto", propone un texto con MENOS palabra
                     'language': 'es',
                     'aspectRatio': '4:5',
                 }
+                user_id_for_backend = getattr(self, 'user_id', None)
+                if isinstance(user_id_for_backend, str) and user_id_for_backend.strip():
+                    data['userId'] = user_id_for_backend.strip()
                 
                 # V6: Add second reference image if using original reference mode
                 if reference_image_2:
@@ -2927,6 +2943,7 @@ IMPORTANTE: Si pide "achicar" o "más corto", propone un texto con MENOS palabra
                 
                 response = requests.post(
                     f'{self.backend_url}/pipeline',
+                    headers=headers,
                     files=files,
                     data=data,
                     timeout=60
@@ -4156,7 +4173,6 @@ Tu respuesta (SOLO el formato de salida, sin explicaciones ni texto adicional):"
         numbered_slots = self._extract_numbered_text_slots(user_message)
         if numbered_slots:
             expected = self._expected_text_slots_count()
-            provided = len(numbered_slots)
 
             # Merge into last_smart_suggestions if present (preserve labels when available)
             if self.last_smart_suggestions and isinstance(self.last_smart_suggestions, dict):
@@ -4167,11 +4183,23 @@ Tu respuesta (SOLO el formato de salida, sin explicaciones ni texto adicional):"
             else:
                 self.text_content = numbered_slots.copy()
 
-            if expected and provided < expected:
-                remaining = expected - provided
+            current_count = 0
+            if isinstance(self.text_content, dict):
+                for i in range(1, expected + 1 if expected else 21):
+                    if self._normalize_text_value(self.text_content.get(f"text_{i}")):
+                        current_count += 1
+
+            if expected and current_count < expected:
+                next_missing = None
+                for i in range(1, expected + 1):
+                    if not self._normalize_text_value(self.text_content.get(f"text_{i}")):
+                        next_missing = i
+                        break
+                if next_missing is None:
+                    next_missing = current_count + 1
                 response_text = (
-                    f"Perfecto. Guardé el texto {provided}. "
-                    f"Ahora escribime el texto {provided + 1} (puedes usar el formato `{provided + 1}. ...`)."
+                    f"Perfecto. Guardé {current_count} de {expected} textos. "
+                    f"Ahora escribime el texto {next_missing} (podés usar el formato `{next_missing}. ...`)."
                 )
                 self.awaiting_text_input = True
                 self.history.append({"role": "assistant", "content": response_text})
@@ -4775,6 +4803,8 @@ Responde SOLO con JSON valido con las sugerencias modificadas:
             # Build multipart form data with proper file handle management
             with open(product_image, 'rb') as product_file:
                 files = {'productImage': product_file}
+                internal_token = (os.environ.get('POSTTY_INTERNAL_TOKEN') or '').strip()
+                headers = {'X-Postty-Internal-Token': internal_token} if internal_token else None
                 data = {
                     'textPrompt': prompt,
                     # Prefer DB/S3 reference URL if available; backend will download to temp.
@@ -4785,6 +4815,9 @@ Responde SOLO con JSON valido con las sugerencias modificadas:
                     'language': 'es',
                     'aspectRatio': '4:5',  # Always use 4:5 for Instagram posts
                 }
+                user_id_for_backend = getattr(self, 'user_id', None)
+                if isinstance(user_id_for_backend, str) and user_id_for_backend.strip():
+                    data['userId'] = user_id_for_backend.strip()
                 
                 # Add text specifications if user provided text
                 if has_text:
@@ -4864,6 +4897,7 @@ Responde SOLO con JSON valido con las sugerencias modificadas:
                 print(f"[DEBUG] Calling pipeline with skipText={data['skipText']}")
                 response = requests.post(
                     f'{self.backend_url}/pipeline',
+                    headers=headers,
                     files=files,
                     data=data,
                     timeout=180  # Pipeline can take up to 3 minutes
@@ -4894,8 +4928,6 @@ Responde SOLO con JSON valido con las sugerencias modificadas:
             # Increment ranking for the reference that was used
             if reference_image:
                 try:
-                    import os
-                    import requests
                     reference_filename = os.path.basename(reference_image)
                     print(f"[DEBUG] Incrementing ranking for reference: {reference_filename}", file=sys.stderr)
                     requests.post(

@@ -9,6 +9,7 @@ const BACKEND_URL = process.env.POSTTY_API_BASE_URL || 'http://localhost:8080';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
+    const authHeader = request.headers.get('authorization') || '';
 
     // Log what we're sending
     console.log('[Pipeline API] Request:', {
@@ -23,6 +24,7 @@ export async function POST(request: NextRequest) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...(authHeader ? { Authorization: authHeader } : {}),
       },
       body: JSON.stringify(body),
     });
