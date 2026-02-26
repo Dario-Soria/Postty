@@ -88,18 +88,28 @@ def main():
                 
             request = json.loads(line)
             message = request.get('message', '')
+            language_detection_text = request.get('language_detection_text')
             image_path = request.get('image_path')  # Optional product image path
             session_id = request.get('session_id', 'default')  # Session ID for multi-user support
             user_id = request.get('user_id')  # Optional Firebase uid (used for post attribution)
+            preferred_language = request.get('preferred_language')  # Optional requested language from UI/profile
             uploaded_reference = request.get('uploaded_reference')  # User-uploaded reference {id, url}
             selected_reference = request.get('selected_reference')  # DB reference selected {id, url}
             
             print(f"[DEBUG] Session: {session_id[:12]}..., Message: {message[:50] if message else 'None'}, Image: {image_path}", 
                   file=sys.stderr, flush=True)
+            if isinstance(language_detection_text, str):
+                print(
+                    f"[DEBUG] language_detection_text: {language_detection_text[:80] if language_detection_text else '(empty)'}",
+                    file=sys.stderr,
+                    flush=True,
+                )
             if uploaded_reference:
                 print(f"[DEBUG] Uploaded reference: id={uploaded_reference.get('id', 'N/A')[:8]}...", file=sys.stderr, flush=True)
             if selected_reference:
                 print(f"[DEBUG] Selected reference: id={selected_reference.get('id', 'N/A')[:8]}...", file=sys.stderr, flush=True)
+            if isinstance(preferred_language, str) and preferred_language.strip():
+                print(f"[DEBUG] Preferred language requested: {preferred_language.strip()}", file=sys.stderr, flush=True)
             
             # Get or create agent for this specific session
             agent = get_or_create_agent(session_id, PROJECT_ID, config)
@@ -134,6 +144,19 @@ def main():
                     uploaded_reference=uploaded_reference,
                     selected_reference=selected_reference
                 )
+                try:
+                    user_language_text = (
+                        language_detection_text.strip()
+                        if isinstance(language_detection_text, str)
+                        else ""
+                    )
+                    result = agent.apply_language_policy(
+                        user_message=user_language_text,
+                        result=result,
+                        preferred_language=preferred_language,
+                    )
+                except Exception as lang_err:
+                    print(f"[ERROR] Language policy failed: {lang_err}", file=sys.stderr, flush=True)
                 print(f"[DEBUG] Agent returned type: {result.get('type', 'unknown')}", file=sys.stderr, flush=True)
                 response = {"status": "success", "result": result}
             

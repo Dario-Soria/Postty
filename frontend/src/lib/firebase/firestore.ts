@@ -18,6 +18,9 @@ export interface UserProfile {
   accessGranted?: boolean;
   groups?: string[];
   accessEvaluatedAt?: any;
+  preferredLanguage?: "en" | "es" | "pt";
+  languageSource?: "stored" | "browser" | "message";
+  languageUpdatedAt?: any;
   createdAt: any;
   references?: any[];
   brand?: Record<string, any>;
@@ -84,5 +87,18 @@ export async function updateUserProfile(
 ): Promise<void> {
   const userRef = doc(db, "users", userId);
   await updateDoc(userRef, updates as DocumentData);
+}
+
+export async function updateUserLanguagePreference(
+  userId: string,
+  language: "en" | "es" | "pt",
+  source: "browser" | "message" | "stored"
+): Promise<void> {
+  const userRef = doc(db, "users", userId);
+  await updateDoc(userRef, {
+    preferredLanguage: language,
+    languageSource: source,
+    languageUpdatedAt: serverTimestamp(),
+  } as DocumentData);
 }
 

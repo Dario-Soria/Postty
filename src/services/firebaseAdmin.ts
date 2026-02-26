@@ -29,9 +29,16 @@ export function getFirebaseAdmin(): any {
       });
       logger.info('[FirebaseAdmin] Initialized with FIREBASE_* env vars');
     } else {
-      // Fallback: Application Default Credentials (e.g. GOOGLE_APPLICATION_CREDENTIALS)
-      admin.initializeApp();
-      logger.info('[FirebaseAdmin] Initialized with application default credentials');
+      // Fallback: Application Default Credentials (e.g. GOOGLE_APPLICATION_CREDENTIALS).
+      // Always pin the Firebase project id when provided, so token audience checks
+      // don't drift to an unrelated gcloud default project.
+      if (projectId) {
+        admin.initializeApp({ projectId });
+        logger.info('[FirebaseAdmin] Initialized with ADC + FIREBASE_PROJECT_ID');
+      } else {
+        admin.initializeApp();
+        logger.info('[FirebaseAdmin] Initialized with application default credentials');
+      }
     }
   }
 

@@ -264,6 +264,9 @@ class NanoBananaAgent:
     - Uses gemini-2.5-flash-image for image creation.
     """
 
+    _gemini_probe_ok = None
+    _gemini_probe_error = None
+
     def __init__(self, project_id: str, config: AgentConfig, service_account_path: str = "secrets/sa.json"):
         self.project_id = project_id
         self.config = config
@@ -287,6 +290,7 @@ class NanoBananaAgent:
                 project=self.project_id,
                 location=self.config.region,
             )
+        self._probe_gemini_key_or_raise()
         
         self.history: List[Dict[str, Any]] = []  # [{"role":"user|assistant","content":"...","image_url":Optional[str]}]
         
@@ -321,6 +325,307 @@ class NanoBananaAgent:
         self.available_references = []  # Store references from search for later selection
         self.last_generated_image = None  # Store path to last generated image for edit mode
         self.generation_count = 0  # Track number of generations (0=first, >0=edits)
+        self.current_language = "es"  # Session language for assistant outputs
+        self._translation_fail_untranslated = False
+        self._last_language_error = None
+
+    def _is_truthy_env(self, value: Optional[str], default: bool = False) -> bool:
+        if value is None:
+            return default
+        return str(value).strip().lower() not in {"", "0", "false", "off", "no"}
+
+    def _active_language(self) -> str:
+        lang = self._normalize_language(getattr(self, "current_language", "es"))
+        return lang or "es"
+
+    def _t(self, key: str, **kwargs) -> str:
+        lang = self._active_language()
+        templates = {
+            "post_types_intro": {
+                "es": "¡Excelente Foto! Veo que quieres lograr un post para tu producto de **{product_name}**. Estuve investigando mientras esperabas y estos son los **top tipos de ads para tu producto**, elige alguno para continuar con tu post por favor.",
+                "en": "Excellent photo! I can see you want to create a post for your **{product_name}**. I reviewed options while you were waiting, and these are the **top ad types for your product**. Please choose one to continue.",
+                "pt": "Excelente foto! Vejo que você quer criar um post para o seu **{product_name}**. Enquanto você esperava, revisei opções e estes são os **melhores tipos de anúncio para o seu produto**. Escolha um para continuar.",
+            },
+            "post_types_not_found": {
+                "es": "¡Excelente Foto! Veo tu **{product_name}**. No encontré tipos de post en la base de datos. ¿Querés describir qué tipo de imagen te gustaría crear?",
+                "en": "Excellent photo! I can see your **{product_name}**. I couldn't find post types in the database. Can you describe the kind of image you want to create?",
+                "pt": "Excelente foto! Vejo o seu **{product_name}**. Não encontrei tipos de post no banco de dados. Você pode descrever o tipo de imagem que quer criar?",
+            },
+            "post_types_fetch_error": {
+                "es": "Tuve un problema obteniendo los tipos de post. ¿Podés describir qué tipo de imagen te gustaría?",
+                "en": "I had a problem loading post types. Can you describe what kind of image you want?",
+                "pt": "Tive um problema ao carregar os tipos de post. Você pode descrever que tipo de imagem deseja?",
+            },
+            "retry_after_failure": {
+                "es": "Ok. Si querés, podés ajustar el diseño/textos y volver a intentar.\n\nCuando estés listo, presioná **Generar**.",
+                "en": "Okay. If you want, you can adjust the design/text and try again.\n\nWhen you're ready, press **Generate**.",
+                "pt": "Certo. Se quiser, você pode ajustar o design/texto e tentar novamente.\n\nQuando estiver pronto, pressione **Gerar**.",
+            },
+            "change_post_type_missing_state": {
+                "es": "Perfecto. Para cambiar el tipo de ads necesito volver a mostrarte las opciones, pero no tengo guardadas las opciones de este producto.\n\nPor favor, **subí nuevamente la foto del producto** usando el botón (+).",
+                "en": "Perfect. To change the ad type, I need to show the options again, but I don't have this product's options saved.\n\nPlease **upload the product photo again** using the (+) button.",
+                "pt": "Perfeito. Para mudar o tipo de anúncio, preciso mostrar as opções novamente, mas não tenho as opções deste produto salvas.\n\nPor favor, **envie novamente a foto do produto** usando o botão (+).",
+            },
+            "missing_product_image": {
+                "es": "No tengo la imagen del producto. ¿Podés subirla de nuevo?",
+                "en": "I don't have the product image. Could you upload it again?",
+                "pt": "Não tenho a imagem do produto. Você pode enviar novamente?",
+            },
+            "missing_generated_image": {
+                "es": "No tengo la imagen generada anterior. ¿Querés empezar de nuevo?",
+                "en": "I don't have the previously generated image. Do you want to start over?",
+                "pt": "Não tenho a imagem gerada anterior. Quer começar de novo?",
+            },
+            "apply_changes_failed": {
+                "es": "No pude aplicar los cambios. ¿Querés intentar de nuevo?",
+                "en": "I couldn't apply the changes. Do you want to try again?",
+                "pt": "Não consegui aplicar as mudanças. Quer tentar novamente?",
+            },
+            "apply_changes_problem": {
+                "es": "Tuve un problema aplicando los cambios. ¿Querés intentar de nuevo?",
+                "en": "I had a problem applying the changes. Do you want to try again?",
+                "pt": "Tive um problema ao aplicar as mudanças. Quer tentar novamente?",
+            },
+        }
+        bundle = templates.get(key, {})
+        template = bundle.get(lang) or bundle.get("es") or ""
+        if not template:
+            return ""
+        try:
+            return template.format(**kwargs)
+        except Exception:
+            return template
+
+    def _probe_gemini_key_or_raise(self) -> None:
+        fail_fast = self._is_truthy_env(os.environ.get("POSTTY_GEMINI_FAILFAST"), default=True)
+        if not fail_fast:
+            return
+        if NanoBananaAgent._gemini_probe_ok is True:
+            return
+        if NanoBananaAgent._gemini_probe_ok is False:
+            raise RuntimeError(
+                f"Gemini key invalid or restricted (cached): {NanoBananaAgent._gemini_probe_error}"
+            )
+
+        key = (os.environ.get("GEMINI_API_KEY") or "").strip().strip("'").strip('"')
+        if not key:
+            NanoBananaAgent._gemini_probe_ok = False
+            NanoBananaAgent._gemini_probe_error = "GEMINI_API_KEY missing"
+            raise RuntimeError("Gemini key invalid or missing. Set GEMINI_API_KEY.")
+
+        try:
+            probe = self.client.models.generate_content(
+                model=self.config.text_model,
+                contents=["ping"],
+            )
+            _ = (probe.text or "").strip()
+            NanoBananaAgent._gemini_probe_ok = True
+            NanoBananaAgent._gemini_probe_error = None
+        except Exception as e:
+            NanoBananaAgent._gemini_probe_ok = False
+            NanoBananaAgent._gemini_probe_error = str(e)
+            raise RuntimeError(f"Gemini key invalid or restricted: {e}")
+
+    def _is_multilang_enabled(self) -> bool:
+        return str(os.environ.get("POSTTY_MULTILANG_ENABLED", "false")).strip().lower() == "true"
+
+    def _normalize_language(self, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        v = str(value).strip().lower()
+        if not v:
+            return None
+        if v.startswith("es"):
+            return "es"
+        if v.startswith("pt"):
+            return "pt"
+        if v.startswith("en"):
+            return "en"
+        return None
+
+    def _language_name(self, code: str) -> str:
+        if code == "es":
+            return "Spanish"
+        if code == "pt":
+            return "Portuguese"
+        return "English"
+
+    def _detect_turn_language(self, user_message: str) -> Optional[str]:
+        msg = (user_message or "").strip()
+        if not msg:
+            return None
+        if msg.startswith("[") and msg.endswith("]"):
+            return None
+        if len(msg) < 5:
+            return None
+
+        lowered = msg.lower()
+        if any(token in lowered for token in [" por favor", " gracias", " imagen", " producto", "quiero", "subi", "subí"]):
+            return "es"
+        if any(token in lowered for token in [" por favor", " obrigado", " imagem", " produto", "quero", "voce", "você"]):
+            return "pt"
+        if any(token in lowered for token in [" please", " thanks", " image", "product", "i want", "upload"]):
+            return "en"
+
+        if len(msg) < 12:
+            return None
+
+        try:
+            prompt = (
+                "Classify the language of this user message.\n"
+                "Allowed codes: en, es, pt, other.\n"
+                "Return strict JSON only with keys language and confidence.\n"
+                f'Message: """{msg}"""'
+            )
+            response = self.client.models.generate_content(
+                model=self.config.text_model,
+                contents=[prompt],
+            )
+            raw = (response.text or "").strip()
+            parsed = json.loads(raw)
+            lang = self._normalize_language(parsed.get("language"))
+            confidence = float(parsed.get("confidence", 0.0))
+            if lang and confidence >= 0.7:
+                return lang
+            return None
+        except Exception as e:
+            print(f"[multilang] detect language failed: {e}", file=sys.stderr, flush=True)
+            return None
+
+    def _translate_text(self, text: str, target_language: str) -> str:
+        raw_text = str(text or "")
+        if not raw_text.strip():
+            return raw_text
+        try:
+            prompt = (
+                f"Translate the assistant message to {self._language_name(target_language)}.\n"
+                "Keep markdown formatting, emojis, product names, URLs, IDs and special markers exactly as-is.\n"
+                "Return only the translated message.\n"
+                f'Message: """{raw_text}"""'
+            )
+            response = self.client.models.generate_content(
+                model=self.config.text_model,
+                contents=[prompt],
+            )
+            translated = (response.text or "").strip()
+            return translated if translated else raw_text
+        except Exception as e:
+            self._last_language_error = str(e)
+            print(f"[multilang] translation failed: {e}", file=sys.stderr, flush=True)
+            fallback = self._fallback_translate_text(raw_text, target_language)
+            if target_language != "es" and fallback.strip() == raw_text.strip():
+                self._translation_fail_untranslated = True
+            return fallback
+
+    def _fallback_translate_text(self, text: str, target_language: str) -> str:
+        """
+        Deterministic fallback for common system messages when LLM translation is unavailable.
+        Keeps behavior stable if API key/model constraints temporarily fail.
+        """
+        if target_language == "es":
+            return text
+
+        compact = " ".join(str(text).split())
+
+        # Restart/start-over canned response used frequently in the flow.
+        if (
+            "Perfecto. Empecemos de cero." in text
+            and "subí la foto del producto" in text.lower()
+        ):
+            if target_language == "en":
+                return (
+                    "Perfect. Let's start from scratch.\n\n"
+                    "Please, **upload your product photo** using the (+) button to begin."
+                )
+            if target_language == "pt":
+                return (
+                    "Perfeito. Vamos começar do zero.\n\n"
+                    "Por favor, **envie a foto do seu produto** usando o botão (+) para começar."
+                )
+
+        # Generic retry message after generation failure.
+        if "Tuve un problema generando la imagen" in compact:
+            if target_language == "en":
+                return "I had a problem generating the image. Want to try again?"
+            if target_language == "pt":
+                return "Tive um problema ao gerar a imagem. Quer tentar de novo?"
+
+        if "¡Excelente Foto! Veo que quieres lograr un post para tu producto de" in compact:
+            product_name = "your product" if target_language == "en" else "seu produto"
+            if "**" in text:
+                try:
+                    left = text.index("**") + 2
+                    right = text.index("**", left)
+                    extracted = text[left:right].strip()
+                    if extracted:
+                        product_name = extracted
+                except Exception:
+                    pass
+            return self._t("post_types_intro", product_name=product_name)
+
+        # Safe default: keep original text.
+        return text
+
+    def apply_language_policy(
+        self,
+        user_message: str,
+        result: Dict[str, Any],
+        preferred_language: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not isinstance(result, dict):
+            return result
+
+        requested = self._normalize_language(preferred_language)
+        language_source = "default"
+        switched = False
+        language_applied = True
+        self._translation_fail_untranslated = False
+        self._last_language_error = None
+
+        multilang_enabled = self._is_multilang_enabled()
+        if multilang_enabled and requested and requested != self.current_language:
+            self.current_language = requested
+            language_source = "request"
+            switched = True
+
+        if multilang_enabled:
+            detected = self._detect_turn_language(user_message)
+            if detected and detected != self.current_language:
+                self.current_language = detected
+                language_source = "message"
+                switched = True
+
+            target_language = self.current_language or requested or "es"
+            if isinstance(result.get("text"), str):
+                result["text"] = self._translate_text(result["text"], target_language)
+
+            if isinstance(result.get("postTypes"), list):
+                for item in result["postTypes"]:
+                    if isinstance(item, dict) and isinstance(item.get("label"), str):
+                        item["label"] = self._translate_text(item["label"], target_language)
+
+            if isinstance(result.get("references"), list):
+                for item in result["references"]:
+                    if isinstance(item, dict) and isinstance(item.get("description"), str):
+                        item["description"] = self._translate_text(item["description"], target_language)
+            language_applied = not self._translation_fail_untranslated
+        else:
+            self.current_language = "es"
+            language_source = "default"
+            switched = False
+            language_applied = True
+
+        result["language"] = self.current_language
+        result["languageSource"] = language_source
+        result["languageSwitched"] = switched
+        result["languageApplied"] = language_applied
+        result["languageError"] = self._last_language_error
+        print(
+            f"[multilang] language={self.current_language} source={language_source} switched={switched} applied={language_applied}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return result
 
     def _reset_to_initial_upload_state(self) -> None:
         """Fully reset the agent so the next step is: ask user to upload product image."""
@@ -650,10 +955,7 @@ class NanoBananaAgent:
                 return self._handle_generate_pipeline("[TRIGGER_GENERATE_PIPELINE]")
             if self._is_negative(user_msg_lower):
                 self.awaiting_generation_retry = False
-                msg = (
-                    "Ok. Si querés, podés ajustar el diseño/textos y volver a intentar.\n\n"
-                    "Cuando estés listo, presioná **Generar**."
-                )
+                msg = self._t("retry_after_failure")
                 self.history.append({"role": "assistant", "content": msg})
                 return {"type": "text", "text": msg, "readyToGenerate": True}
             # Any other message means the user wants to change something; clear the retry gate
@@ -664,21 +966,13 @@ class NanoBananaAgent:
         # IMPORTANT: do NOT re-analyze the product image; reuse cached post types.
         if self._is_change_post_type_intent(user_msg_lower):
             if not self.product_image_path or not self.cached_post_types:
-                msg = (
-                    "Perfecto. Para cambiar el tipo de ads necesito volver a mostrarte las opciones, "
-                    "pero no tengo guardadas las opciones de este producto.\n\n"
-                    "Por favor, **subí nuevamente la foto del producto** usando el botón (+)."
-                )
+                msg = self._t("change_post_type_missing_state")
                 self.history.append({"role": "assistant", "content": msg})
                 return {"type": "text", "text": msg, "readyToGenerate": False}
 
             self._reset_to_post_type_selection_state()
             product_name = self.product_name or "tu producto"
-            prompt = (
-                f"¡Excelente Foto! Veo que quieres lograr un post para tu producto de **{product_name}**. "
-                "Estuve investigando mientras esperabas y estos son los **top tipos de ads para tu producto**, "
-                "elige alguno para continuar con tu post por favor."
-            )
+            prompt = self._t("post_types_intro", product_name=product_name)
             self.history.append({"role": "assistant", "content": prompt})
             return {
                 "type": "post_type_options",
@@ -1694,6 +1988,7 @@ Be specific with the product name if you can see it."""
         if not user_input or not user_input.strip():
             return "NONE"
         
+        output_language = self._language_name(self._active_language())
         prompt = f"""Eres un asistente que interpreta solicitudes de cambios para imágenes de productos.
 
 El usuario ha visto una referencia de imagen y respondió: "{user_input}"
@@ -1704,7 +1999,7 @@ Reglas:
 1. Si el usuario NO quiere cambios (dice "igual", "perfecto", "me gusta", "sin cambios", "así está bien", etc. SIN pedir ninguna modificación), responde exactamente: NONE
 2. Si el usuario quiere cambios (aunque diga "igual pero...", "todo bien excepto...", "me gusta, solo cambiar..."), lista cada cambio de forma clara y concisa
 3. No inventes cambios que el usuario no pidió
-4. Usa español simple y directo
+4. Responde en {output_language}, claro y directo
 5. Si hay ambigüedad, interpreta a favor de hacer el cambio solicitado
 
 Ejemplos:
@@ -2145,6 +2440,7 @@ FORMATO: Mantener 4:5 (1080x1350px)
             for texto in self.reference_analysis.get('textos', []):
                 text_types_in_reference.append(texto.get('tipo', 'texto'))
         
+        output_language = self._language_name(self._active_language())
         prompt = f"""Sos un asistente de diseño de posts para Instagram.
 El usuario seleccionó una referencia de diseño y ahora puede pedir cambios al diseño.
 
@@ -2171,7 +2467,7 @@ ANALIZA EL INTENT:
 6. ¿No está claro? → Preguntar amablemente qué necesita
 
 REGLAS IMPORTANTES:
-- Respondé en español argentino, casual pero profesional
+- Respondé en {output_language}, casual pero profesional
 - SIEMPRE que el usuario pida agregar o cambiar algo, PRIMERO sugerí 2-3 opciones CONCRETAS y específicas, luego preguntá cuál prefiere
 - Ejemplo CORRECTO: "Dale, para la pose de la mujer te sugiero: 1) Aplicándose la crema frente al espejo con expresión relajada, 2) Mostrando el producto cerca del rostro con sonrisa natural, o 3) Con las manos en el rostro en gesto de cuidado. ¿Cuál te gusta más?"
 - Ejemplo INCORRECTO: "¿Tenés alguna pose en mente o querés que te sugiera opciones?" (NO preguntar si quiere sugerencias, DARLAS directamente)
@@ -2334,6 +2630,7 @@ SOBRE LOS CAMPOS:
         # END DO NOT MODIFY SECTION
         # =======================================================================
         
+        output_language = self._language_name(self._active_language())
         prompt = f"""Sos un asistente de diseño de posts para Instagram. El usuario acaba de recibir una imagen generada.
 
 CONTEXTO ACTUAL:
@@ -2358,7 +2655,7 @@ ANALIZA EL INTENT:
 6. ¿No está claro? → Preguntar amablemente qué necesita
 
 REGLAS:
-- Respondé en español argentino, casual pero profesional
+- Respondé en {output_language}, casual pero profesional
 - Si propones un cambio de texto, da el texto nuevo CONCRETO
 - NO inventes cambios que el usuario no pidió
 - Sé conciso (máximo 2-3 oraciones)
@@ -2820,11 +3117,11 @@ IMPORTANTE: Si pide "achicar" o "más corto", propone un texto con MENOS palabra
         
         # Validate we have required data
         if not self.product_image_path:
-            return {"type": "text", "text": "No tengo la imagen del producto. ¿Podés subirla de nuevo?"}
+            return {"type": "text", "text": self._t("missing_product_image")}
         
         # V2: For edits, we need the previously generated image
         if not self.last_generated_image:
-            return {"type": "text", "text": "No tengo la imagen generada anterior. ¿Querés empezar de nuevo?"}
+            return {"type": "text", "text": self._t("missing_generated_image")}
         
         try:
             import requests
@@ -2890,7 +3187,7 @@ IMPORTANTE: Si pide "achicar" o "más corto", propone un texto con MENOS palabra
                     'textPrompt': prompt,
                     'referenceImage': reference_image_for_request,
                     'skipText': 'false' if has_text else 'true',
-                    'language': 'es',
+                    'language': self._active_language(),
                     'aspectRatio': '4:5',
                 }
                 user_id_for_backend = getattr(self, 'user_id', None)
@@ -2953,7 +3250,7 @@ IMPORTANTE: Si pide "achicar" o "más corto", propone un texto con MENOS palabra
             result = response.json()
             
             if not result.get('success') or not result.get('finalImagePath'):
-                return {"type": "text", "text": "No pude aplicar los cambios. ¿Querés intentar de nuevo?"}
+                return {"type": "text", "text": self._t("apply_changes_failed")}
             
             final_image_path = result['finalImagePath']
             self.last_generated_image = final_image_path
@@ -2976,7 +3273,7 @@ IMPORTANTE: Si pide "achicar" o "más corto", propone un texto con MENOS palabra
         except Exception as e:
             print(f"[DEBUG] Edit pipeline error: {e}")
             debug_tracker.log_step("7.1 EDIT_PIPELINE_ERROR", success=False, error=str(e))
-            return {"type": "text", "text": "Tuve un problema aplicando los cambios. ¿Querés intentar de nuevo?"}
+            return {"type": "text", "text": self._t("apply_changes_problem")}
     
     def _handle_get_post_types(self) -> Dict[str, Any]:
         """
@@ -3065,7 +3362,7 @@ IMPORTANTE: Si pide "achicar" o "más corto", propone un texto con MENOS palabra
                 
                 return {
                     "type": "post_type_options",
-                    "text": f"¡Excelente Foto! Veo que quieres lograr un post para tu producto de **{product_name}**. Estuve investigando mientras esperabas y estos son los **top tipos de ads para tu producto**, elige alguno para continuar con tu post por favor.",
+                    "text": self._t("post_types_intro", product_name=product_name),
                     "productThumbnail": self.product_image_path,
                     "postTypes": post_types
                 }
@@ -3073,14 +3370,14 @@ IMPORTANTE: Si pide "achicar" o "más corto", propone un texto con MENOS palabra
                 debug_tracker.log_step("1.5 POST_TYPES_RETRIEVED", success=False, error="No post types found")
                 return {
                     "type": "text",
-                    "text": f"¡Excelente Foto! Veo tu **{product_name}**. No encontré tipos de post en la base de datos. ¿Querés describir qué tipo de imagen te gustaría crear?"
+                    "text": self._t("post_types_not_found", product_name=product_name)
                 }
                 
         except Exception as e:
             debug_tracker.log_step("1.0 STEP1_GET_POST_TYPES", success=False, error=str(e))
             return {
                 "type": "text",
-                "text": "Tuve un problema obteniendo los tipos de post. ¿Podés describir qué tipo de imagen te gustaría?"
+                "text": self._t("post_types_fetch_error")
             }
     
     def _get_base_category(self, product_category: str) -> str:
@@ -3733,11 +4030,12 @@ Tu respuesta (SOLO la acción, sin comillas ni explicaciones):"""
         
         Output format matches NanoBanana's REQUESTED CHANGES section:
         - Each change on a new line starting with "- "
-        - Clear, actionable instructions in Spanish
+        - Clear, actionable instructions in the current response language
         
         Last verified working: 2026-01-31
         =======================================================================
         """
+        output_language = self._language_name(self._active_language())
         prompt = f"""Sos un asistente que convierte mensajes de usuarios en instrucciones para un generador de imágenes de Instagram.
 
 MENSAJES ACUMULADOS DEL USUARIO:
@@ -3748,7 +4046,7 @@ Tu tarea es extraer SOLO las instrucciones de cambio y formatearlas para el gene
 FORMATO DE SALIDA REQUERIDO:
 - Cada instrucción en una línea separada
 - Cada línea empieza con "- " (guión y espacio)
-- Instrucciones claras y accionables en español
+- Instrucciones claras y accionables en {output_language}
 - Usar verbos en infinitivo: "Agregar", "Cambiar", "Quitar", "Modificar"
 
 REGLAS:
@@ -3831,6 +4129,13 @@ Tu respuesta (SOLO el formato de salida, sin explicaciones ni texto adicional):"
         })
         
         # Check if reference has text/slots in a robust way.
+        # If DB text_analysis.has_text is explicitly set, honor it strictly.
+        db_has_text = None
+        if isinstance(self.text_analysis, dict) and 'has_text' in self.text_analysis:
+            db_has_text_raw = self.text_analysis.get('has_text')
+            if isinstance(db_has_text_raw, bool):
+                db_has_text = db_has_text_raw
+
         # DB flags can be missing/incorrect; prefer real-time reference_analysis when available.
         text_in_image_flag = bool(self.selected_reference and self.selected_reference.get('text_in_image') == 'yes')
         has_text_analysis_elements = bool(
@@ -3860,9 +4165,12 @@ Tu respuesta (SOLO el formato de salida, sin explicaciones ni texto adicional):"
         except Exception:
             has_typography_slots = False
 
+        # Strict gate: if DB text_analysis.has_text exists, use it as source of truth.
+        if db_has_text is not None:
+            has_text = db_has_text
         # Default to NO TEXT when real-time analysis says there are no text elements.
         # DB flags / typography placeholders can be stale or misleading for text-free references.
-        if isinstance(self.reference_analysis, dict):
+        elif isinstance(self.reference_analysis, dict):
             has_text = bool(has_realtime_textos)
         else:
             # Fallback when we don't have real-time reference analysis available.
@@ -3873,6 +4181,7 @@ Tu respuesta (SOLO el formato de salida, sin explicaciones ni texto adicional):"
             "has_actual_text_elements": has_text_analysis_elements,
             "has_realtime_textos": has_realtime_textos,
             "has_typography_slots": has_typography_slots,
+            "db_has_text": db_has_text,
             "has_text": has_text,
             "text_in_image_value": self.selected_reference.get('text_in_image') if self.selected_reference else None,
             "text_analysis": self.text_analysis
@@ -3985,6 +4294,23 @@ Tu respuesta (SOLO el formato de salida, sin explicaciones ni texto adicional):"
                 "readyToGenerate": False
             }
         else:
+            # If DB says there is no text in the reference, skip text editing completely.
+            if db_has_text is False:
+                debug_tracker.log_step("4.2 NO_TEXT_DB_GATE", {"next": "ready_to_generate_no_text"})
+                self.current_step = 5
+                self.awaiting_text_input = False
+                self.optional_text_mode = False
+                self.text_content = None
+                self.last_smart_suggestions = None
+
+                text = (
+                    f"{confirmation_prefix}\n\n"
+                    "Tu referencia no tiene texto de diseño, así que seguimos sin edición de texto.\n\n"
+                    "Cuando quieras, hacé click en **Generar**."
+                )
+                self.history.append({"role": "assistant", "content": text})
+                return {"type": "text", "text": text, "readyToGenerate": True}
+
             # Reference has no overlay text: still run an explicit text step (optional).
             debug_tracker.log_step("4.2 NO_TEXT_IN_REFERENCE", {"next": "optional_text_step"})
             self.current_step = 4
@@ -4812,7 +5138,7 @@ Responde SOLO con JSON valido con las sugerencias modificadas:
                     # Back-compat: still allow local filename references when present.
                     'referenceImage': reference_image if reference_image else '',
                     'skipText': 'false',  # Let Gemini generate text
-                    'language': 'es',
+                    'language': self._active_language(),
                     'aspectRatio': '4:5',  # Always use 4:5 for Instagram posts
                 }
                 user_id_for_backend = getattr(self, 'user_id', None)

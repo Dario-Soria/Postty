@@ -46,6 +46,11 @@ import getPostTypesRoute from './routes/get-post-types';
 import serveGeneratedImageRoute from './routes/serve-generated-image';
 import feedbackRoutes from './routes/feedback';
 import * as logger from './utils/logger';
+import {
+  geminiFailFastEnabled,
+  normalizeGeminiApiKey,
+  probeGeminiApiKey,
+} from './services/geminiKey';
 
 // Configuration
 const PORT = parseInt(process.env.PORT || '8080', 10);
@@ -86,6 +91,24 @@ async function start(): Promise<void> {
     logger.info(
       `[Config] Meta OAuth env present: META_APP_ID=${!!metaAppId}, META_APP_SECRET=${!!metaAppSecret}, META_REDIRECT_URI=${!!process.env.META_REDIRECT_URI}, POSTTY_IG_OAUTH_STATE_SECRET=${!!process.env.POSTTY_IG_OAUTH_STATE_SECRET}`
     );
+
+    // Fail fast for misconfigured Gemini key so language/image flows don't partially degrade.
+    const normalizedGeminiKey = normalizeGeminiApiKey(process.env.GEMINI_API_KEY);
+    if (normalizedGeminiKey !== (process.env.GEMINI_API_KEY || '')) {
+      process.env.GEMINI_API_KEY = normalizedGeminiKey;
+    }
+    logger.info(
+      `[Config] Gemini env present=${normalizedGeminiKey.length > 0} failFast=${geminiFailFastEnabled()}`
+    );
+    if (geminiFailFastEnabled()) {
+      if (!normalizedGeminiKey) {
+        throw new Error(
+          'Gemini key invalid or missing. Set GEMINI_API_KEY (without quotes/newlines).'
+        );
+      }
+      await probeGeminiApiKey(normalizedGeminiKey);
+      logger.info('[Config] Gemini probe passed');
+    }
 
     // Accept application/x-www-form-urlencoded requests (used by some clients/tools).
     // We parse it ourselves to avoid adding extra dependencies.

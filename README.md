@@ -1,58 +1,124 @@
-## Postty (v3.2)
+## Postty - Architecture & Operations
 
-Postty is a **Fastify (Node.js + TypeScript) backend** plus a **Next.js frontend** for:
-- generating Instagram-ready images (Gemini Imagen or OpenAI),
-- generating captions (OpenAI),
-- optionally publishing to Instagram (Instagram Graph API),
-- and supporting a UI approval flow (generate → approve/edit → publish).
+Postty is an AI-assisted social content platform with a **Next.js frontend** and a **Fastify backend**.  
+It is deployed as a cloud-native stack with invite-only access control.
 
-### Quick links (docs we actually use)
+## Current cloud architecture
 
-- **[QUICKSTART.md](QUICKSTART.md)**: fastest setup/run checklist
-- **[SETUP_GUIDE.md](SETUP_GUIDE.md)**: Instagram + AWS + keys setup (detailed)
-- **[API_ENDPOINTS.md](API_ENDPOINTS.md)**: API reference (more verbose than this README)
-- **[REFERENCE_LIBRARY_INDEXING.md](REFERENCE_LIBRARY_INDEXING.md)**: batch index reference images
-- **[CUSTOMER_SETUP.md](CUSTOMER_SETUP.md)**: customer onboarding checklist
-- **[AI_FEATURE_GUIDE.md](AI_FEATURE_GUIDE.md)**: AI feature notes + behavior
-- **[DOCUMENTATION_SUMMARY.md](DOCUMENTATION_SUMMARY.md)**: map of all docs
+- **Frontend**: Vercel (Next.js App Router)
+  - Public URL: `https://frontend-two-kappa-97.vercel.app/`
+  - Canonical user entrypoint is `/` (V3 app rendered at root).
+  - `/v2` and `/v3` are redirected to `/`.
+- **Backend**: Google Cloud Run (Fastify/Node.js)
+  - Service URL: `https://postty-backend-beta-418679285048.us-central1.run.app`
+  - Handles generation, auth verification, publishing, and agent orchestration.
+- **Authentication**: Firebase Auth (Google sign-in)
+- **Authorization**: Firestore invite-only grants
+  - `access_grants/{emailLower}` is source of truth
+  - `users/{uid}` mirrors `accessGranted` for UI speed
+- **Primary app data**: Firestore (`users`, posts metadata, profile projections)
+- **Reference metadata / search**: Neon Postgres (`reference_images`, rankings, filters)
+- **Media storage**: AWS S3 (generated assets + reference library objects)
+- **AI providers**:
+  - Google Gemini / Imagen (`GEMINI_API_KEY`)
+  - OpenAI (`OPENAI_API_KEY`)
+- **Social publishing**: Instagram Graph API (Meta app + tokens)
 
-### Important files / folders (where to look)
+## High-level request flow
 
-- **Backend entrypoint**: `src/server.ts` (registers all routes + file-size limits)
-- **Backend routes (HTTP endpoints)**: `src/routes/`
-- **Backend core services**:
-  - `src/services/imageGenerator.ts` (Gemini Imagen or OpenAI image generation + reference-image edits)
-  - `src/services/captionGenerator.ts` (OpenAI caption generation)
-  - `src/services/imageUploader.ts` (S3 uploads)
-  - `src/services/instagramPublisher.ts` (Instagram Graph API publish flow)
-  - `src/services/geminiStyleProfile.ts` (style-profile extraction from references)
-  - `src/services/geminiImageAnalyzer.ts` (`/image-analyzer` use-case classifier)
-  - `src/services/referenceLibrarySqlite.ts` (reference library: S3 objects + Neon Postgres metadata/ranking + async Gemini indexing)
-- **Prompts**:
-  - `src/prompts/posttyMegaPromptV10.ts` (Content Architect system prompt)
-- **Frontend**:
-  - `frontend/src/app/v2/` (current UI flow)
-  - `frontend/src/app/api/*/route.ts` (**browser-safe proxy** to the backend; also streams NDJSON without buffering)
-- **Local output / temp**:
-  - `generated-images/` (generated PNGs)
-  - `temp-uploads/` (uploads + intermediate files)
-- **Scripts / Tools**:
-  - `scripts/index-reference-images.ts` (batch index images in `reference-library/images/` - see `scripts/README.md`)
-  - `scripts/import-reference-images.ts` (import curated references into S3 + Neon - see “Import reference images” below)
-  - `scripts/rembg_cutout.py` (background removal)
+1. User opens frontend on Vercel (`/`).
+2. User signs in with Google (Firebase Auth).
+3. Frontend sends bearer token to backend via Next.js API proxy routes.
+4. Backend verifies Firebase token and enforces invite-only access.
+5. Backend runs generation pipeline (Gemini/OpenAI + processing + storage).
+6. Results are returned to frontend and optionally published to Instagram.
 
-## Run locally
+## Invite-only security model
 
-### Backend (Fastify)
+Invite-only is enabled via backend env flag:
+
+- `POSTTY_INVITE_ONLY=true`
+
+Authorization decision:
+
+- **Allow** if `access_grants/{emailLower}.enabled == true`
+- **Deny (403)** otherwise
+
+Bootstrap allowlist can also be configured using:
+
+- `POSTTY_INVITE_BOOTSTRAP_ALLOWLIST=email1,email2,...`
+
+Seeding helper script:
+
+```bash
+npm run seed-access-grants -- ds.dariosoria@gmail.com jbeinesfurcada@gmail.com ulisesfferreyra@gmail.com
+```
+
+## Monorepo layout (key paths)
+
+- `src/server.ts`: backend entrypoint and route registration
+- `src/routes/`: Fastify HTTP routes
+- `src/services/`: backend services (auth, pipeline, storage, publishing, AI orchestration)
+- `frontend/src/app/`: Next.js app pages
+- `frontend/src/app/api/`: Next.js route handlers that proxy to backend
+- `Agents/Product Showcase/`: Python agent used by product showcase flow
+- `scripts/`: operational scripts (reference import, access-grant seeding)
+
+## Environment variables by subsystem
+
+### Core backend/runtime
+
+- `PORT`
+- `POSTTY_API_BASE_URL` (frontend proxy target)
+- `POSTTY_BODY_LIMIT_BYTES`
+- `POSTTY_FILE_LIMIT_BYTES`
+- `POSTTY_RATE_LIMIT_MAX`
+- `POSTTY_RATE_LIMIT_WINDOW`
+- `POSTTY_PIPELINE_MAX_CONCURRENCY`
+- `POSTTY_INTERNAL_TOKEN` (trusted internal service-to-service calls)
+
+### Auth / invite-only
+
+- `FIREBASE_PROJECT_ID`
+- `FIREBASE_CLIENT_EMAIL`
+- `FIREBASE_PRIVATE_KEY`
+- `POSTTY_INVITE_ONLY`
+- `POSTTY_INVITE_BOOTSTRAP_ALLOWLIST` (optional)
+
+### AI
+
+- `GEMINI_API_KEY`
+- `OPENAI_API_KEY`
+- Optional model tuning vars (`CHAT_MODEL`, `CAPTION_MODEL`, etc.)
+
+### Storage + database
+
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `AWS_REGION`
+- `AWS_BUCKET_NAME`
+- `DATABASE_URL` (Neon Postgres)
+
+### Instagram / Meta
+
+- `META_APP_ID`
+- `META_APP_SECRET`
+- `META_REDIRECT_URI`
+- `POSTTY_IG_OAUTH_STATE_SECRET`
+- runtime publish tokens/ids as required by your flow
+
+## Local development
+
+### Backend
 
 ```bash
 npm install
 npm run dev
 ```
 
-- **Default port**: `8080` (override with `PORT`)
+Backend runs on `http://localhost:8080` by default.
 
-### Frontend (Next.js)
+### Frontend
 
 ```bash
 cd frontend
@@ -60,149 +126,43 @@ npm install
 npm run dev
 ```
 
-- **Backend URL for the frontend proxy**: set `POSTTY_API_BASE_URL` (defaults to `http://localhost:8080`)
+Frontend runs on `http://localhost:3000`.
 
-## Environment variables (what’s required)
+## Deployment model
 
-Create a `.env` in repo root (backend reads it via `dotenv/config`).
+### Frontend (Vercel)
 
-- **Required for the UI flow**
-  - `OPENAI_API_KEY` (captions, chat, transcription, and some vision/image-edit flows)
-- **Required for Gemini features**
-  - `GEMINI_API_KEY` (Gemini Imagen image generation + style-profile + image-analyzer)
-- **Required for publishing**
-  - `INSTAGRAM_USER_ID`
-  - `INSTAGRAM_ACCESS_TOKEN` (must be a Facebook Page token; see `SETUP_GUIDE.md`)
-  - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `AWS_BUCKET_NAME`
-- **Common optional**
-  - `IMAGE_GENERATION_PROVIDER` = `gemini` | `openai` (default: gemini if `GEMINI_API_KEY` is set, else openai)
-  - `POSTTY_BODY_LIMIT_BYTES`, `POSTTY_FILE_LIMIT_BYTES` (upload limits; defaults in `src/server.ts`)
-  - `CAPTION_MODEL`, `CHAT_MODEL`, `POSTTY_ARCHITECT_MODEL`
-  - `OPENAI_TRANSCRIBE_MODEL` (default `whisper-1`), `TRANSCRIBE_MAX_BYTES` (default 10MB)
-  - `ENABLE_PIXABAY`, `PIXABAY_API_KEY` (optional enrichment used by generation routes)
+- Build/deploy from `frontend/`
+- Root route serves V3 app
+- Redirects are defined in `frontend/next.config.ts`
 
-## Current API (what the app uses)
+### Backend (Cloud Run)
 
-### Browser-safe endpoints (via Next.js proxy)
+- Build container from repository root Dockerfile
+- Deploy service `postty-backend-beta` in `us-central1`
+- Ensure env vars are configured in Cloud Run service settings
 
-The UI calls **Next.js Route Handlers** under `frontend/src/app/api/*`, which proxy to the backend:
+## Reliability and abuse controls
 
-- `POST /api/chat` → `POST /chat`
-- `POST /api/generate` → `POST /generate` (**supports NDJSON streaming**)
-- `POST /api/generate-with-image` → `POST /generate-with-image` (**supports NDJSON streaming**)
-- `POST /api/caption` → `POST /caption`
-- `POST /api/transcribe` → `POST /transcribe`
-- `POST /api/image-analyzer` → `POST /image-analyzer`
-- `POST /api/style-profile` → `POST /style-profile`
-- `POST /api/publish` → `POST /publish-instagram-from-url` (or `/publish-instagram` if you pass a server-local `image_path`)
+- Global API rate limiting in Fastify (`@fastify/rate-limit`)
+- Pipeline queue/concurrency control (`POSTTY_PIPELINE_MAX_CONCURRENCY`)
+- Auth-required for expensive generation endpoints
+- Internal-token flow for trusted agent/backchannel calls
 
-### Backend endpoints (authoritative list)
+## Quick operations checklist
 
-| Method | Path | Body | Notes |
-|---|---|---|---|
-| GET | `/health` | — | Health check |
-| POST | `/chat` | JSON | Slot-filling + guardrails; may return an action to call generation |
-| POST | `/generate` | JSON | Generate image + caption + S3 upload (no publish). Optional `preview_only` streams NDJSON candidates |
-| POST | `/generate-with-image` | multipart | Upload `image` + `prompt`. Optional `preview_only` streams NDJSON candidates |
-| POST | `/caption` | JSON | Caption-only regeneration |
-| POST | `/transcribe` | multipart | Upload `audio` file → text |
-| POST | `/image-analyzer` | multipart | Upload `image` → use-case classification (Gemini vision) |
-| POST | `/style-profile` | multipart | Upload `references` (1..N) → strict `style_profile` JSON |
-| POST | `/publish-instagram-from-url` | JSON | Publish a **public HTTPS** image URL + caption |
-| POST | `/publish-instagram` | JSON | Publish using server-local `image_path` (must be under `generated-images/` or `temp-uploads/`) |
+- Verify backend health: `GET /health`
+- Verify pipeline readiness/queue stats: `GET /pipeline/status`
+- Verify invite-only is on in Cloud Run:
+  - `POSTTY_INVITE_ONLY=true`
+- Verify access grants in Firestore:
+  - `access_grants/{emailLower}.enabled = true`
 
-### Legacy “direct publish” endpoints (kept for scripts / server-to-server)
+## Related docs
 
-These publish immediately (no UI approval step). They are registered in the backend but **not used by the current frontend flow**:
-- `POST /generate-and-publish` (JSON)
-- `POST /generate-with-image-and-publish` (multipart)
-
-## How-to guides (current workflows)
-
-### Import reference images (Global library: S3 + Neon Postgres)
-
-Use this when you (admin) want to add **new curated reference images** to the global library.
-
-**Prereqs**
-- **Neon**: `DATABASE_URL` (or `NEON_DATABASE_URL`)
-- **S3**: `AWS_BUCKET_NAME`, `AWS_REGION`
-- **Gemini indexing**: `GEMINI_API_KEY`
-- **AWS auth (local)**: use `AWS_PROFILE=...` (recommended) or env credentials. The backend/scripts use the default AWS credential provider chain.
-
-**Run**
-
-```bash
-# Import all images in a folder to S3 + Neon (indexing runs async in-process)
-AWS_PROFILE=your-profile \
-DATABASE_URL="postgresql://..." \
-AWS_BUCKET_NAME="your-bucket" \
-AWS_REGION="us-east-1" \
-GEMINI_API_KEY="..." \
-npm run import-references -- --dir=/ABS/PATH/TO/IMAGES
-```
-
-**Optional: wait until each image is indexed**
-
-```bash
-AWS_PROFILE=your-profile \
-DATABASE_URL="postgresql://..." \
-AWS_BUCKET_NAME="your-bucket" \
-AWS_REGION="us-east-1" \
-GEMINI_API_KEY="..." \
-npm run import-references -- --dir=/ABS/PATH/TO/IMAGES --wait
-```
-
-Notes:
-- Imported images are stored under `references/global/{uuid}/{original_filename}` in S3.
-- Metadata + ranking live in Neon table `reference_images` (created automatically on first run).
-
-### Generate → approve → publish (recommended)
-
-- **Generate** with `/api/generate` or `/api/generate-with-image`
-- **Show** the returned `uploaded_image_url` in the UI and let the user edit the caption
-- **Publish** with `/api/publish` (uses backend `/publish-instagram-from-url`)
-
-Example (generate text-only):
-
-```bash
-curl -sS -X POST "http://localhost:3000/api/generate" \
-  -H "Content-Type: application/json" \
-  -d '{"prompt":"Minimalist product promo for a stainless steel water bottle, summer vibe"}' | jq .
-```
-
-Example (publish from URL):
-
-```bash
-curl -sS -X POST "http://localhost:3000/api/publish" \
-  -H "Content-Type: application/json" \
-  -d '{"image_url":"https://...","caption":"Your final caption #tags"}' | jq .
-```
-
-### Stream candidate previews (NDJSON)
-
-`/generate` and `/generate-with-image` support `preview_only=true` and stream results as **NDJSON** (`application/x-ndjson`), emitting events like `start`, `candidate`, `done` (and sometimes `error`).
-
-```bash
-curl -N -sS -X POST "http://localhost:3000/api/generate" \
-  -H "Content-Type: application/json" \
-  -d '{"prompt":"3 variations of a bold gym supplement promo poster","preview_only":true,"num_candidates":3}'
-```
-
-### Extract a style profile from references
-
-Upload multiple reference images as `references` and receive a strict `style_profile` JSON.
-
-```bash
-curl -sS -X POST "http://localhost:3000/api/style-profile" \
-  -F "references=@reference-library/images/1.png" \
-  -F "references=@reference-library/images/2.png" | jq .
-```
-
-### Transcribe audio (voice-to-text)
-
-```bash
-curl -sS -X POST "http://localhost:3000/api/transcribe" \
-  -F "audio=@./path/to/audio.webm" | jq .
-```
-
+- `QUICKSTART.md`
+- `SETUP_GUIDE.md`
+- `API_ENDPOINTS.md`
+- `REFERENCE_LIBRARY_INDEXING.md`
+- `AI_FEATURE_GUIDE.md`
 

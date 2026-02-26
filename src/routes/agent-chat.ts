@@ -14,6 +14,18 @@ interface AgentChatBody {
   conversationHistory?: string;
 }
 
+const isDisplayableImageUrl = (value: unknown): value is string => {
+  if (typeof value !== 'string') return false;
+  const url = value.trim();
+  if (!url) return false;
+  return (
+    url.startsWith('data:image/') ||
+    url.startsWith('blob:') ||
+    url.startsWith('http://') ||
+    url.startsWith('https://')
+  );
+};
+
 export default async function agentChatRoute(fastify: FastifyInstance): Promise<void> {
   fastify.post('/agent-chat', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
@@ -42,12 +54,14 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
       const {
         agentType,
         message,
+        languageDetectionText,
         conversationHistory,
         userId,
         isReferenceUpload,
         selectedReferenceId,
         selectedReferenceUrl,
         selectedPostType,
+        preferredLanguage,
       } = fields;
 
       let authedUid: string | null = null;
@@ -120,9 +134,21 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
 
       // Only support product-showcase for now
       if (agentType !== 'product-showcase') {
+        const lang = typeof preferredLanguage === 'string' ? preferredLanguage.trim().toLowerCase() : 'en';
+        const msg =
+          lang.startsWith('pt')
+            ? 'Este agente ainda não está disponível. Em breve.'
+            : lang.startsWith('es')
+              ? 'Este agente aún no está disponible. Próximamente.'
+              : 'This agent is not available yet. Coming soon.';
         return reply.send({
           type: 'text',
-          text: 'Este agente aún no está disponible. Próximamente.',
+          text: msg,
+          language: lang.startsWith('pt') ? 'pt' : lang.startsWith('es') ? 'es' : 'en',
+          languageSource: 'request',
+          languageSwitched: false,
+          languageApplied: true,
+          languageError: null,
         });
       }
 
@@ -187,11 +213,16 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
       // Don't send image path if it's a reference upload (not a product)
       const imagePath = uploadedReferenceData ? undefined : imageFile?.path;
       logger.info(`[Agent Chat] Sending message: "${messageToSend}", image: ${imagePath || 'none'}`);
+      if (typeof preferredLanguage === 'string' && preferredLanguage.trim().length > 0) {
+        logger.info(`[Agent Chat] preferredLanguage=${preferredLanguage.trim()}`);
+      }
       const result = await sendMessageToAgent(
         messageToSend, 
+        typeof languageDetectionText === 'string' ? languageDetectionText.trim() : undefined,
         imagePath, 
         sessionId, 
         userUid, 
+        typeof preferredLanguage === 'string' ? preferredLanguage.trim() : undefined,
         uploadedReferenceData || undefined, 
         selectedReferenceId && selectedReferenceUrl ? { id: selectedReferenceId, url: selectedReferenceUrl } : undefined
       );
@@ -200,11 +231,22 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
       // Handle different response types
       if (result.type === 'post_type_options') {
         // Post type options with example images
+        const safeProductThumbnail = isDisplayableImageUrl(result.productThumbnail)
+          ? result.productThumbnail
+          : undefined;
+        if (result.productThumbnail && !safeProductThumbnail) {
+          logger.warn('[Agent Chat] Dropping non-displayable productThumbnail from agent response');
+        }
         return reply.send({
           type: 'post_type_options',
           text: result.text,
-          productThumbnail: result.productThumbnail,
+          productThumbnail: safeProductThumbnail,
           postTypes: result.postTypes,
+          language: result.language,
+          languageSource: result.languageSource,
+          languageSwitched: result.languageSwitched,
+          languageApplied: result.languageApplied,
+          languageError: result.languageError,
         });
       }
       
@@ -214,6 +256,11 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
           type: 'reference_options',
           text: result.text,
           references: result.references,
+          language: result.language,
+          languageSource: result.languageSource,
+          languageSwitched: result.languageSwitched,
+          languageApplied: result.languageApplied,
+          languageError: result.languageError,
         });
       }
       
@@ -250,6 +297,11 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
         if (result.textLayout) {
           response.textLayout = result.textLayout;
         }
+        response.language = result.language;
+        response.languageSource = result.languageSource;
+        response.languageSwitched = result.languageSwitched;
+        response.languageApplied = result.languageApplied;
+        response.languageError = result.languageError;
         
         return reply.send(response);
       }
@@ -264,6 +316,11 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
       if (result.readyToGenerate !== undefined) {
         textResponse.readyToGenerate = result.readyToGenerate;
       }
+      textResponse.language = result.language;
+      textResponse.languageSource = result.languageSource;
+      textResponse.languageSwitched = result.languageSwitched;
+      textResponse.languageApplied = result.languageApplied;
+      textResponse.languageError = result.languageError;
       
       return reply.send(textResponse);
 

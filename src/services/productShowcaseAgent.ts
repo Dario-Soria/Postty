@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as logger from '../utils/logger';
 import * as readline from 'readline';
+import { geminiFailFastEnabled, normalizeGeminiApiKey } from './geminiKey';
 
 const AGENT_DIR = path.join(process.cwd(), 'Agents', 'Product Showcase');
 
@@ -11,15 +12,54 @@ let isStarting = false;
 let isReady = false;
 let messageQueue: Array<{
   message: string;
+  languageDetectionText?: string;
   imagePath?: string;
   sessionId: string;
   userId?: string;
+  preferredLanguage?: string;
   uploadedReference?: { id: string; url: string };
   selectedReference?: { id: string; url: string };
   resolve: (value: any) => void;
   reject: (error: Error) => void;
 }> = [];
 let currentRequest: { resolve: (value: any) => void; reject: (error: Error) => void } | null = null;
+
+type AgentResult = {
+  type: 'text' | 'image' | 'reference_options' | 'post_type_options';
+  text: string;
+  file?: string;
+  references?: any[];
+  textLayout?: any;
+  postTypes?: any[];
+  productThumbnail?: string;
+  readyToGenerate?: boolean;
+  language?: string;
+  languageSource?: string;
+  languageSwitched?: boolean;
+  languageApplied?: boolean;
+  languageError?: string | null;
+};
+
+const isDisplayableImageUrl = (value: unknown): value is string => {
+  if (typeof value !== 'string') return false;
+  const url = value.trim();
+  if (!url) return false;
+  return (
+    url.startsWith('data:image/') ||
+    url.startsWith('blob:') ||
+    url.startsWith('http://') ||
+    url.startsWith('https://')
+  );
+};
+
+const sanitizeAgentResult = (raw: AgentResult): AgentResult => {
+  if (raw.type !== 'post_type_options') return raw;
+  if (!raw.productThumbnail) return raw;
+  if (isDisplayableImageUrl(raw.productThumbnail)) return raw;
+  logger.warn('[Agent] Dropping non-displayable productThumbnail before route handling');
+  const { productThumbnail: _dropInvalidThumbnail, ...rest } = raw;
+  return rest;
+};
 
 /**
  * Check if the agent process is running and ready
@@ -108,6 +148,16 @@ function preflightCheck(pythonCmd: string): void {
         `\n${getAgentSetupHelpText()}`
     );
   }
+
+  const normalizedGeminiKey = normalizeGeminiApiKey(process.env.GEMINI_API_KEY);
+  if (normalizedGeminiKey !== (process.env.GEMINI_API_KEY || '')) {
+    process.env.GEMINI_API_KEY = normalizedGeminiKey;
+  }
+  if (geminiFailFastEnabled() && !normalizedGeminiKey) {
+    throw new Error(
+      'Gemini key invalid or missing. Configure GEMINI_API_KEY to start Product Showcase agent.'
+    );
+  }
 }
 
 /**
@@ -179,7 +229,7 @@ async function startAgentProcess(): Promise<void> {
         if (currentRequest) {
           if (response.status === 'success') {
             logger.info('[Agent] Success response received');
-            currentRequest.resolve(response.result);
+            currentRequest.resolve(sanitizeAgentResult(response.result as AgentResult));
           } else {
             logger.error(`[Agent] Error response: ${response.message}`);
             currentRequest.reject(new Error(response.message || 'Unknown error'));
@@ -255,9 +305,11 @@ function processQueue(): void {
   // Send message to agent via stdin with optional image_path, session_id, and reference data
   const request: any = { 
     message: item.message,
+    language_detection_text: item.languageDetectionText,
     image_path: item.imagePath,
     session_id: item.sessionId,
     user_id: item.userId,
+    preferred_language: item.preferredLanguage,
   };
   
   // Include uploaded reference data if present
@@ -313,21 +365,14 @@ export async function ensureAgentRunning(): Promise<void> {
  */
 export async function sendMessageToAgent(
   message: string,
+  languageDetectionText?: string,
   imagePath?: string,
   sessionId: string = 'default',
   userId?: string,
+  preferredLanguage?: string,
   uploadedReference?: { id: string; url: string },
   selectedReference?: { id: string; url: string }
-): Promise<{ 
-  type: 'text' | 'image' | 'reference_options' | 'post_type_options'; 
-  text: string; 
-  file?: string; 
-  references?: any[]; 
-  textLayout?: any;
-  postTypes?: any[];
-  productThumbnail?: string;
-  readyToGenerate?: boolean;
-}> {
+): Promise<AgentResult> {
   if (!agentProcess || !isReady) {
     throw new Error('Agent process is not running');
   }
@@ -336,9 +381,11 @@ export async function sendMessageToAgent(
     // Add to queue
     messageQueue.push({
       message,
+      languageDetectionText,
       imagePath,
       sessionId,
       userId,
+      preferredLanguage,
       uploadedReference,
       selectedReference,
       resolve,

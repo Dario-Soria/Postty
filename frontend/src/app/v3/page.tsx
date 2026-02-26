@@ -6,6 +6,15 @@ import { useAuth } from "@/contexts/AuthContext";
 import LoginScreen from "@/app/components/LoginScreen";
 import { AccessPendingScreen } from "@/app/v2/_components/AccessPendingScreen";
 import { uuid } from "@/lib/uuid";
+import {
+  updateUserLanguagePreference,
+  type UserProfile,
+} from "@/lib/firebase/firestore";
+import {
+  detectBrowserLanguage,
+  normalizePreferredLanguage,
+  type SupportedLanguage,
+} from "@/lib/language";
 
 type PostTypeOption = {
   type: string;
@@ -52,8 +61,23 @@ type UserPost = {
   error?: string | null;
 };
 
+const isDisplayableImageUrl = (value: unknown): value is string => {
+  if (typeof value !== "string") return false;
+  const url = value.trim();
+  if (!url) return false;
+  return (
+    url.startsWith("data:image/") ||
+    url.startsWith("blob:") ||
+    url.startsWith("http://") ||
+    url.startsWith("https://")
+  );
+};
+
 export default function V3Page() {
-  const { user, loading, signOut } = useAuth();
+  const { user, userProfile, loading, signOut } = useAuth();
+  const MULTILANG_ENABLED = process.env.NEXT_PUBLIC_POSTTY_MULTILANG_ENABLED === "true";
+  const AUTO_FEEDBACK_AFTER_GENERATION_ENABLED =
+    process.env.NEXT_PUBLIC_POSTTY_V3_AUTO_FEEDBACK_ENABLED === "true";
   const [accessCheckLoading, setAccessCheckLoading] = React.useState(false);
   const [accessDenied, setAccessDenied] = React.useState(false);
   const [isMobileBrowser, setIsMobileBrowser] = React.useState(false);
@@ -314,8 +338,11 @@ export default function V3Page() {
   const [isFirstPost, setIsFirstPost] = React.useState<boolean | null>(null); // null = loading
   const [selectedReference, setSelectedReference] = React.useState<ReferenceOption | null>(null);
   const [productThumbnail, setProductThumbnail] = React.useState<string | null>(null);
+  const productThumbnailRef = React.useRef<string | null>(null);
   const [readyToGenerate, setReadyToGenerate] = React.useState(false);
   const [isGenerating, setIsGenerating] = React.useState(false);
+  const [preferredLanguage, setPreferredLanguage] = React.useState<SupportedLanguage>("en");
+  const persistedLanguageRef = React.useRef<SupportedLanguage | null>(null);
   
   // Save / Post (caption + background publish) state
   const [showCaptionModal, setShowCaptionModal] = React.useState(false);
@@ -333,6 +360,7 @@ export default function V3Page() {
   const lastSelectedPostTypeLabelRef = React.useRef<string>("");
   const lastProductSummaryForCaptionRef = React.useRef<string>("");
   const pendingPublishIdsRef = React.useRef<Set<string>>(new Set());
+  const autoFeedbackTimerRef = React.useRef<number | null>(null);
 
   // My Posts panel state
   const [myPosts, setMyPosts] = React.useState<UserPost[]>([]);
@@ -346,6 +374,10 @@ export default function V3Page() {
 
   const chatScrollRef = React.useRef<HTMLDivElement | null>(null);
 
+  React.useEffect(() => {
+    productThumbnailRef.current = productThumbnail;
+  }, [productThumbnail]);
+
   const scrollChatToBottom = React.useCallback(
     (behavior: ScrollBehavior) => {
       const el = chatScrollRef.current;
@@ -356,6 +388,25 @@ export default function V3Page() {
     },
     [activeLeftMenu]
   );
+
+  const scheduleAutoFeedbackAfterGeneration = React.useCallback(() => {
+    if (autoFeedbackTimerRef.current !== null) {
+      window.clearTimeout(autoFeedbackTimerRef.current);
+    }
+    autoFeedbackTimerRef.current = window.setTimeout(() => {
+      setShowFeedbackBlur(true);
+      setShowFeedbackModal(true);
+      autoFeedbackTimerRef.current = null;
+    }, 3000);
+  }, []);
+
+  React.useEffect(() => {
+    return () => {
+      if (autoFeedbackTimerRef.current !== null) {
+        window.clearTimeout(autoFeedbackTimerRef.current);
+      }
+    };
+  }, []);
   
   // Mobile-only: show swipe hint until user actually swipes the post-type carousel.
   React.useEffect(() => {
@@ -420,43 +471,312 @@ export default function V3Page() {
   }, [selectedReference, messages]);
 
   // Loading messages by stage - designed to NOT repeat (stops at last message)
-  const loadingMessagesByStage: Record<LoadingStage, string[]> = {
-    analyzing_product: [
-      "Analizando tu producto",
-      "Identificando características principales",
-      "Estudiando la iluminación",
-      "Evaluando composición y ángulos",
-      "Detectando colores dominantes",
-      "Analizando texturas y materiales",
-      "Extrayendo estilo visual",
-      "Casi listo..."
-    ],
-    searching_references: [
-      "Buscando inspiración",
-      "Explorando estilos similares",
-      "Filtrando referencias relevantes",
-      "Comparando opciones visuales",
-      "Analizando tendencias",
-      "Seleccionando las mejores coincidencias",
-      "Preparando opciones para vos",
-      "Ya casi..."
-    ],
-    applying_changes: [
-      "Aplicando tus cambios",
-      "Ajustando composición",
-      "Refinando detalles",
-      "Optimizando resultado",
-      "Procesando ajustes finales",
-      "Puliendo la imagen",
-      "Últimos retoques",
-      "Casi listo..."
-    ]
-  };
+  const loadingMessagesByStage: Record<LoadingStage, string[]> =
+    preferredLanguage === "pt"
+      ? {
+          analyzing_product: [
+            "Analisando seu produto",
+            "Identificando características principais",
+            "Estudando a iluminação",
+            "Avaliando composição e ângulos",
+            "Detectando cores dominantes",
+            "Analisando texturas e materiais",
+            "Extraindo estilo visual",
+            "Quase pronto...",
+          ],
+          searching_references: [
+            "Buscando inspiração",
+            "Explorando estilos similares",
+            "Filtrando referências relevantes",
+            "Comparando opções visuais",
+            "Analisando tendências",
+            "Selecionando as melhores opções",
+            "Preparando opções para você",
+            "Quase lá...",
+          ],
+          applying_changes: [
+            "Aplicando suas mudanças",
+            "Ajustando composição",
+            "Refinando detalhes",
+            "Otimizando resultado",
+            "Processando ajustes finais",
+            "Polindo a imagem",
+            "Últimos retoques",
+            "Quase pronto...",
+          ],
+        }
+      : preferredLanguage === "en"
+        ? {
+            analyzing_product: [
+              "Analyzing your product",
+              "Identifying key features",
+              "Studying the lighting",
+              "Evaluating composition and angles",
+              "Detecting dominant colors",
+              "Analyzing textures and materials",
+              "Extracting visual style",
+              "Almost ready...",
+            ],
+            searching_references: [
+              "Searching for inspiration",
+              "Exploring similar styles",
+              "Filtering relevant references",
+              "Comparing visual options",
+              "Analyzing trends",
+              "Selecting the best matches",
+              "Preparing options for you",
+              "Almost there...",
+            ],
+            applying_changes: [
+              "Applying your changes",
+              "Adjusting composition",
+              "Refining details",
+              "Optimizing result",
+              "Processing final tweaks",
+              "Polishing the image",
+              "Final touches",
+              "Almost ready...",
+            ],
+          }
+        : {
+            analyzing_product: [
+              "Analizando tu producto",
+              "Identificando características principales",
+              "Estudiando la iluminación",
+              "Evaluando composición y ángulos",
+              "Detectando colores dominantes",
+              "Analizando texturas y materiales",
+              "Extrayendo estilo visual",
+              "Casi listo...",
+            ],
+            searching_references: [
+              "Buscando inspiración",
+              "Explorando estilos similares",
+              "Filtrando referencias relevantes",
+              "Comparando opciones visuales",
+              "Analizando tendencias",
+              "Seleccionando las mejores coincidencias",
+              "Preparando opciones para vos",
+              "Ya casi...",
+            ],
+            applying_changes: [
+              "Aplicando tus cambios",
+              "Ajustando composición",
+              "Refinando detalles",
+              "Optimizando resultado",
+              "Procesando ajustes finales",
+              "Puliendo la imagen",
+              "Últimos retoques",
+              "Casi listo...",
+            ],
+          };
 
   const loadingMessages = loadingMessagesByStage[loadingStage];
   const inputRef = React.useRef<HTMLTextAreaElement>(null);
   const previousUserIdRef = React.useRef<string | null>(null);
   // Reference uploads intentionally disabled in v3 (will return in a future version).
+
+  const uiCopy = React.useMemo(() => {
+    if (preferredLanguage === "es") {
+      return {
+        uploadMarker: "📸 Imagen subida",
+        referenceSelectedMarker: "📷 Referencia seleccionada",
+        referenceSelectedLabel: "Referencia seleccionada",
+        genericError: "Perdón, tuve un problema. ¿Podés intentar de nuevo?",
+        genericErrorAlt: "Lo siento, hubo un error. Por favor intenta de nuevo.",
+        imageReady: "¡Listo! Acá está tu imagen",
+        placeholderWithMessages: "Describe tu post",
+        placeholderWithoutMessages: "Sube una foto primero por favor",
+        needInstagram: "Necesitás conectar Instagram para publicar.",
+        instagramPublished: "Publicado en Instagram.",
+        instagramFailedPrefix: "Falló la publicación en Instagram:",
+        unknownError: "Error desconocido",
+        uploadToInstagram: "Subiendo a Instagram...",
+        generatingPost: "Generando post",
+        generateAction: "Generar",
+        generatingAction: "Generando...",
+        welcomeTitleFirstPost: "¡Bienvenid@ a tu primer post!",
+        welcomeTitleNextPost: "¡Creemos tu nuevo post!",
+        welcomeHintFirstPost: "Para empezar, sube una foto de tu producto o arrástrala a la pantalla :)",
+        welcomeHintNextPost: "Sube una foto de tu producto para comenzar",
+        captionInstruction: "Caption para un post de Instagram.",
+        captionModalTitle: "Postear en Instagram",
+        captionLabel: "Caption",
+        captionPlaceholder: "Escribe tu caption...",
+        captionGenerating: "Generando caption...",
+        cancel: "Cancelar",
+        publish: "Publicar",
+        publishing: "Subiendo...",
+        savedInMyPosts: "Guardado en **My posts**.",
+        save: "Guardar",
+        saving: "Guardando...",
+        share: "Compartir",
+        post: "Postear",
+        myPostsTitle: "My posts",
+        myPostsSubtitle: "Guardados, subiendo y publicados.",
+        refresh: "Actualizar",
+        loading: "Cargando...",
+        noPostsYetPrefix: "Aún no hay posts.",
+        noPostsYetActionSave: "Guardar",
+        noPostsYetActionPost: "Postear",
+        loadingPosts: "Cargando posts...",
+        statusSaved: "Guardados",
+        statusUploading: "Subiendo",
+        statusPublished: "Publicados",
+        statusFailed: "Fallidos",
+        missingMedia: "Falta el media",
+        failedToLoad: "No se pudo cargar",
+        noUrl: "Sin URL",
+        noCaption: "Sin caption",
+      };
+    }
+    if (preferredLanguage === "pt") {
+      return {
+        uploadMarker: "📸 Imagem enviada",
+        referenceSelectedMarker: "📷 Referência selecionada",
+        referenceSelectedLabel: "Referência selecionada",
+        genericError: "Desculpe, tive um problema. Pode tentar de novo?",
+        genericErrorAlt: "Desculpe, ocorreu um erro. Tente novamente.",
+        imageReady: "Perfeito! Aqui está sua imagem",
+        placeholderWithMessages: "Descreva seu post",
+        placeholderWithoutMessages: "Envie uma foto primeiro, por favor",
+        needInstagram: "Você precisa conectar o Instagram para publicar.",
+        instagramPublished: "Publicado no Instagram.",
+        instagramFailedPrefix: "Falha ao publicar no Instagram:",
+        unknownError: "Erro desconhecido",
+        uploadToInstagram: "Enviando para o Instagram...",
+        generatingPost: "Gerando post",
+        generateAction: "Gerar",
+        generatingAction: "Gerando...",
+        welcomeTitleFirstPost: "Bem-vind@ ao seu primeiro post!",
+        welcomeTitleNextPost: "Vamos criar seu novo post!",
+        welcomeHintFirstPost: "Para começar, envie uma foto do seu produto ou arraste para a tela :)",
+        welcomeHintNextPost: "Envie uma foto do seu produto para começar",
+        captionInstruction: "Legenda para um post de Instagram.",
+        captionModalTitle: "Postar no Instagram",
+        captionLabel: "Legenda",
+        captionPlaceholder: "Escreva sua legenda...",
+        captionGenerating: "Gerando legenda...",
+        cancel: "Cancelar",
+        publish: "Publicar",
+        publishing: "Enviando...",
+        savedInMyPosts: "Salvo em **My posts**.",
+        save: "Salvar",
+        saving: "Salvando...",
+        share: "Compartilhar",
+        post: "Postar",
+        myPostsTitle: "My posts",
+        myPostsSubtitle: "Salvos, enviando e publicados.",
+        refresh: "Atualizar",
+        loading: "Carregando...",
+        noPostsYetPrefix: "Ainda não há posts.",
+        noPostsYetActionSave: "Salvar",
+        noPostsYetActionPost: "Postar",
+        loadingPosts: "Carregando posts...",
+        statusSaved: "Salvos",
+        statusUploading: "Enviando",
+        statusPublished: "Publicados",
+        statusFailed: "Falhos",
+        missingMedia: "Mídia ausente",
+        failedToLoad: "Falha ao carregar",
+        noUrl: "Sem URL",
+        noCaption: "Sem legenda",
+      };
+    }
+    return {
+      uploadMarker: "📸 Photo uploaded",
+      referenceSelectedMarker: "📷 Reference selected",
+      referenceSelectedLabel: "Reference selected",
+      genericError: "Sorry, I had a problem. Could you try again?",
+      genericErrorAlt: "Sorry, something went wrong. Please try again.",
+      imageReady: "Done! Here is your image",
+      placeholderWithMessages: "Describe your post",
+      placeholderWithoutMessages: "Please upload a photo first",
+      needInstagram: "You need to connect Instagram to publish.",
+      instagramPublished: "Published on Instagram.",
+      instagramFailedPrefix: "Instagram publish failed:",
+      unknownError: "Unknown error",
+      uploadToInstagram: "Uploading to Instagram...",
+      generatingPost: "Generating post",
+      generateAction: "Generate",
+      generatingAction: "Generating...",
+      welcomeTitleFirstPost: "Welcome to your first post!",
+      welcomeTitleNextPost: "Let's create your new post!",
+      welcomeHintFirstPost: "To start, upload a product photo or drag it onto the screen :)",
+      welcomeHintNextPost: "Upload a product photo to continue",
+      captionInstruction: "Caption for an Instagram post.",
+      captionModalTitle: "Post to Instagram",
+      captionLabel: "Caption",
+      captionPlaceholder: "Write your caption...",
+      captionGenerating: "Generating caption...",
+      cancel: "Cancel",
+      publish: "Publish",
+      publishing: "Uploading...",
+      savedInMyPosts: "Saved in **My posts**.",
+      save: "Save",
+      saving: "Saving...",
+      share: "Share",
+      post: "Post",
+      myPostsTitle: "My posts",
+      myPostsSubtitle: "Saved, uploading, and published posts.",
+      refresh: "Refresh",
+      loading: "Loading...",
+      noPostsYetPrefix: "No posts yet.",
+      noPostsYetActionSave: "Save",
+      noPostsYetActionPost: "Post",
+      loadingPosts: "Loading posts...",
+      statusSaved: "Saved",
+      statusUploading: "Uploading",
+      statusPublished: "Published",
+      statusFailed: "Failed",
+      missingMedia: "Missing media",
+      failedToLoad: "Failed to load",
+      noUrl: "No URL",
+      noCaption: "No caption",
+    };
+  }, [preferredLanguage]);
+
+  const persistPreferredLanguage = React.useCallback(
+    async (language: SupportedLanguage, source: "stored" | "browser" | "message") => {
+      if (!MULTILANG_ENABLED || !user) return;
+      if (persistedLanguageRef.current === language && source !== "message") return;
+      try {
+        await updateUserLanguagePreference(user.uid, language, source);
+        persistedLanguageRef.current = language;
+      } catch (error) {
+        console.error("[multilang] failed to persist preferred language", error);
+      }
+    },
+    [MULTILANG_ENABLED, user]
+  );
+
+  const syncLanguageFromAgentResult = React.useCallback(
+    async (result: any) => {
+      if (!MULTILANG_ENABLED) return;
+      const next = normalizePreferredLanguage(result?.language);
+      if (!next) return;
+      if (next !== preferredLanguage) {
+        setPreferredLanguage(next);
+      }
+      if (result?.languageSource === "message" && next !== persistedLanguageRef.current) {
+        await persistPreferredLanguage(next, "message");
+      }
+    },
+    [MULTILANG_ENABLED, persistPreferredLanguage, preferredLanguage]
+  );
+
+  React.useEffect(() => {
+    if (!MULTILANG_ENABLED) return;
+    if (!user) return;
+    const profile = (userProfile || null) as UserProfile | null;
+    const stored = normalizePreferredLanguage(profile?.preferredLanguage);
+    const initial = stored || detectBrowserLanguage();
+    setPreferredLanguage(initial);
+    persistedLanguageRef.current = stored || null;
+    if (!stored) {
+      void persistPreferredLanguage(initial, "browser");
+    }
+  }, [MULTILANG_ENABLED, persistPreferredLanguage, user, userProfile]);
 
   // Track previous loading stage to reset index when stage changes
   const prevLoadingStageRef = React.useRef<LoadingStage>(loadingStage);
@@ -507,6 +827,8 @@ export default function V3Page() {
       setProductThumbnail(null);
       setReadyToGenerate(false);
       setIsGenerating(false);
+      setPreferredLanguage("en");
+      persistedLanguageRef.current = null;
       // Allow restoring when a user logs back in (or switches accounts).
       restoredForUidRef.current = null;
     }
@@ -576,7 +898,16 @@ export default function V3Page() {
       if (!raw) return;
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === "object") {
-        if (Array.isArray(parsed.messages)) setMessages(parsed.messages as Message[]);
+        if (Array.isArray(parsed.messages)) {
+          const sanitizedMessages = (parsed.messages as Message[]).map((message) => {
+            if (!message || typeof message !== "object") return message;
+            if (!("productThumbnail" in message)) return message;
+            if (isDisplayableImageUrl(message.productThumbnail)) return message;
+            const { productThumbnail: _dropInvalidThumbnail, ...rest } = message;
+            return rest as Message;
+          });
+          setMessages(sanitizedMessages);
+        }
         if (typeof parsed.clientSessionId === "string") setClientSessionId(parsed.clientSessionId);
         if (parsed.clientSessionId === null) setClientSessionId(null);
         // Note: "reels" is intentionally not restorable. The button is "coming soon"
@@ -584,7 +915,7 @@ export default function V3Page() {
         if (parsed.activeLeftMenu === "home" || parsed.activeLeftMenu === "posts") {
           setActiveLeftMenu(parsed.activeLeftMenu);
         }
-        if (typeof parsed.productThumbnail === "string" || parsed.productThumbnail === null) {
+        if (isDisplayableImageUrl(parsed.productThumbnail) || parsed.productThumbnail === null) {
           setProductThumbnail(parsed.productThumbnail);
         }
       }
@@ -647,7 +978,11 @@ export default function V3Page() {
   }, [inputValue]);
 
   // Add assistant message with typing delay
-  const addAssistantMessage = (content: string, imageUrl?: string) => {
+  const addAssistantMessage = (
+    content: string,
+    imageUrl?: string,
+    onShown?: () => void
+  ) => {
     setIsTyping(true);
     const delay = 600 + Math.random() * 300;
     setTimeout(() => {
@@ -663,6 +998,7 @@ export default function V3Page() {
           imageUrl,
         },
       ]);
+      onShown?.();
       setIsTyping(false);
     }, delay);
   };
@@ -685,39 +1021,52 @@ export default function V3Page() {
     text?: string,
     uploadedFile?: File,
     _isReferenceUpload?: boolean,
-    opts?: { selectedPostType?: string }
+    opts?: { selectedPostType?: string; uploadedThumbnailUrl?: string; languageDetectionText?: string }
   ) => {
-    const messageText = text || inputValue.trim();
+    const rawInputText = inputValue.trim();
+    const messageText = text ?? rawInputText;
     if (!messageText && !uploadedFile) return;
     if (isSending || isTyping) return;
+    const languageDetectionText =
+      typeof opts?.languageDetectionText === "string" ? opts.languageDetectionText : text === undefined ? rawInputText : "";
 
     setInputValue("");
 
     // Track last user intent + product image for caption autofill.
     const msgNorm = (messageText || "").trim();
     const msgLower = msgNorm.toLowerCase();
+    const isStartOverIntent =
+      msgLower.includes("empezar de nuevo") ||
+      msgLower.includes("start over") ||
+      msgLower.includes("restart");
     const isControl =
       msgLower === "generar" ||
       msgLower === "generate" ||
       msgLower.includes("generar otra") ||
       msgLower.includes("otra imagen") ||
-      msgLower.includes("empezar de nuevo");
-    const isUploadMarker = msgLower === "[user uploaded product image]" || msgNorm === "📸 Imagen subida";
+      isStartOverIntent;
+    const isUploadMarker = msgLower === "[user uploaded product image]" || msgNorm === uiCopy.uploadMarker;
     if (msgNorm && !isControl && !isUploadMarker) {
       lastUserPromptForCaptionRef.current = msgNorm;
+    }
+    if (isStartOverIntent) {
+      // Prevent stale thumbnail bleed when the user starts a fresh run.
+      setProductThumbnail(null);
+      productThumbnailRef.current = null;
+      lastUploadedProductImageRef.current = null;
     }
     if (uploadedFile) {
       lastUploadedProductImageRef.current = uploadedFile;
     }
 
     // Add user message to chat
-    const uiMessage = uploadedFile && !messageText ? "📸 Imagen subida" : messageText;
-    const backendMessage = uploadedFile && (!messageText || messageText === "📸 Imagen subida")
+    const uiMessage = uploadedFile && !messageText ? uiCopy.uploadMarker : messageText;
+    const backendMessage = uploadedFile && (!messageText || messageText === uiCopy.uploadMarker)
       ? "[User uploaded product image]"
       : messageText;
 
     if (uploadedFile) {
-      const imageUrl = URL.createObjectURL(uploadedFile);
+      const imageUrl = opts?.uploadedThumbnailUrl || URL.createObjectURL(uploadedFile);
       addUserMessage(uiMessage, imageUrl);
     } else {
       addUserMessage(uiMessage);
@@ -733,6 +1082,8 @@ export default function V3Page() {
       formData.append("conversationHistory", JSON.stringify(
         messages.map((m) => ({ role: m.role, content: m.content }))
       ));
+      formData.append("preferredLanguage", preferredLanguage);
+      formData.append("languageDetectionText", languageDetectionText);
       if (clientSessionId) formData.append("sessionId", clientSessionId);
       if (uploadedFile) {
         formData.append("image", uploadedFile);
@@ -767,6 +1118,10 @@ export default function V3Page() {
       }
 
       const result = await response.json();
+      await syncLanguageFromAgentResult(result);
+      if (MULTILANG_ENABLED && result?.languageApplied === false) {
+        console.warn("[multilang] backend reported language not applied", result?.languageError || "unknown");
+      }
 
       // Handle different response types
       if (result.type === "text") {
@@ -780,16 +1135,20 @@ export default function V3Page() {
       } else if (result.type === "image") {
         setReadyToGenerate(false);
         setIsGenerating(false);
-        addAssistantMessage(result.text || "¡Listo! Acá está tu imagen", result.imageUrl);
+        addAssistantMessage(
+          result.text || uiCopy.imageReady,
+          result.imageUrl,
+          AUTO_FEEDBACK_AFTER_GENERATION_ENABLED ? scheduleAutoFeedbackAfterGeneration : undefined
+        );
       } else if (result.type === "post_type_options") {
         setIsGenerating(false);
         // Step 1: Show post type options with images
         const t = typeof result.text === "string" ? result.text.trim() : "";
         if (t) lastProductSummaryForCaptionRef.current = t;
         const resolvedThumb =
-          typeof result.productThumbnail === "string" && result.productThumbnail.trim().length > 0
-            ? result.productThumbnail
-            : productThumbnail || undefined;
+          opts?.uploadedThumbnailUrl ||
+          productThumbnailRef.current ||
+          (isDisplayableImageUrl(result.productThumbnail) ? result.productThumbnail : undefined);
         const msg: Message = {
           id: uuid(),
           role: "assistant",
@@ -815,7 +1174,7 @@ export default function V3Page() {
       const msg =
         error instanceof Error && error.message
           ? error.message
-          : "Perdón, tuve un problema. ¿Podés intentar de nuevo?";
+          : uiCopy.genericError;
       addAssistantMessage(msg);
     } finally {
       setIsSending(false);
@@ -826,7 +1185,10 @@ export default function V3Page() {
   const handlePostTypeSelect = (postType: PostTypeOption) => {
     lastSelectedPostTypeLabelRef.current = postType.label;
     // Send canonical post type for deterministic backend routing (keeps chat-visible label as-is).
-    handleSendMessage(postType.label, undefined, undefined, { selectedPostType: postType.type });
+    handleSendMessage(postType.label, undefined, undefined, {
+      selectedPostType: postType.type,
+      languageDetectionText: "",
+    });
   };
 
   // Handle reference selection
@@ -834,7 +1196,7 @@ export default function V3Page() {
     setSelectedReference(reference);
     
     // Add user message with reference thumbnail
-    addUserMessage("📷 Referencia seleccionada", reference.url);
+    addUserMessage(uiCopy.referenceSelectedMarker, reference.url);
     
     setIsSending(true);
     
@@ -847,6 +1209,8 @@ export default function V3Page() {
       ));
       formData.append("selectedReferenceId", reference.id);
       formData.append("selectedReferenceUrl", reference.url);
+      formData.append("preferredLanguage", preferredLanguage);
+      formData.append("languageDetectionText", "");
       if (clientSessionId) formData.append("sessionId", clientSessionId);
       if (user?.uid) formData.append("userId", user.uid);
       const token = user ? await user.getIdToken() : null;
@@ -876,6 +1240,10 @@ export default function V3Page() {
       }
 
       const result = await response.json();
+      await syncLanguageFromAgentResult(result);
+      if (MULTILANG_ENABLED && result?.languageApplied === false) {
+        console.warn("[multilang] backend reported language not applied", result?.languageError || "unknown");
+      }
       
       if (result.type === "text") {
         if (result.readyToGenerate) {
@@ -888,7 +1256,7 @@ export default function V3Page() {
       const msg =
         error instanceof Error && error.message
           ? error.message
-          : "Lo siento, hubo un error. Por favor intenta de nuevo.";
+          : uiCopy.genericErrorAlt;
       addAssistantMessage(msg);
     } finally {
       setIsSending(false);
@@ -903,7 +1271,7 @@ export default function V3Page() {
   const handleGenerate = async () => {
     if (!readyToGenerate || isGenerating) return;
     setIsGenerating(true);
-    handleSendMessage("Generar");
+    handleSendMessage("Generar", undefined, undefined, { languageDetectionText: "" });
   };
 
   const fileToDataUrl = React.useCallback((file: File): Promise<string> => {
@@ -914,6 +1282,20 @@ export default function V3Page() {
       reader.readAsDataURL(file);
     });
   }, []);
+
+  const hydrateProductThumbnailFromFile = React.useCallback((file: File) => {
+    // Clear previous thumbnail immediately so older images cannot be reused.
+    setProductThumbnail(null);
+    fileToDataUrl(file)
+      .then((dataUrl) => {
+        if (typeof dataUrl === "string" && dataUrl.startsWith("data:image/")) {
+          setProductThumbnail(dataUrl);
+        }
+      })
+      .catch(() => {
+        // ignore
+      });
+  }, [fileToDataUrl]);
 
   const getCaptionBasePrompt = React.useCallback(() => {
     // v2-parity: prefer the last meaningful USER intent, not assistant UI/status text.
@@ -983,12 +1365,12 @@ export default function V3Page() {
   const handleTryOpenCaptionModal = React.useCallback(
     (imageUrl: string) => {
       if (!igConnected) {
-        if (isMobileBrowser) showMobileToast("Necesitás conectar Instagram para publicar.");
+        if (isMobileBrowser) showMobileToast(uiCopy.needInstagram);
         return;
       }
       handleOpenCaptionModal(imageUrl);
     },
-    [handleOpenCaptionModal, igConnected, isMobileBrowser, showMobileToast]
+    [handleOpenCaptionModal, igConnected, isMobileBrowser, showMobileToast, uiCopy.needInstagram]
   );
 
   const handleOpenCaptionModalForSavedPost = React.useCallback((post: UserPost) => {
@@ -1015,7 +1397,7 @@ export default function V3Page() {
         if (!basePrompt) return;
         const body: any = {
           base_prompt: basePrompt,
-          instruction: "Caption para un post de Instagram.",
+          instruction: uiCopy.captionInstruction,
         };
         const res = await fetch("/api/caption", {
           method: "POST",
@@ -1051,17 +1433,17 @@ export default function V3Page() {
         if (captionGenSeqRef.current === seq) setIsCaptionGenerating(false);
       }
     })();
-  }, [user]);
+  }, [uiCopy.captionInstruction, user]);
 
   const handleTryOpenCaptionModalForSavedPost = React.useCallback(
     (post: UserPost) => {
       if (!igConnected) {
-        if (isMobileBrowser) showMobileToast("Necesitás conectar Instagram para publicar.");
+        if (isMobileBrowser) showMobileToast(uiCopy.needInstagram);
         return;
       }
       handleOpenCaptionModalForSavedPost(post);
     },
-    [handleOpenCaptionModalForSavedPost, igConnected, isMobileBrowser, showMobileToast]
+    [handleOpenCaptionModalForSavedPost, igConnected, isMobileBrowser, showMobileToast, uiCopy.needInstagram]
   );
 
   const handleCloseCaptionModal = React.useCallback(() => {
@@ -1151,13 +1533,17 @@ export default function V3Page() {
               typeof found?.instagramPermalink === "string" && found.instagramPermalink.trim().length > 0
                 ? found.instagramPermalink.trim()
                 : null;
-            addAssistantMessage(permalink ? `Publicado en Instagram.\n${permalink}` : "Publicado en Instagram.");
+            addAssistantMessage(
+              permalink ? `${uiCopy.instagramPublished}\n${permalink}` : uiCopy.instagramPublished
+            );
             return;
           }
           if (status === "failed") {
             const err =
-              typeof found?.error === "string" && found.error.trim().length > 0 ? found.error.trim() : "Error desconocido";
-            addAssistantMessage(`Falló la publicación en Instagram: ${err}`);
+              typeof found?.error === "string" && found.error.trim().length > 0
+                ? found.error.trim()
+                : uiCopy.unknownError;
+            addAssistantMessage(`${uiCopy.instagramFailedPrefix} ${err}`);
             return;
           }
 
@@ -1169,7 +1555,7 @@ export default function V3Page() {
 
       window.setTimeout(pollOnce, 800);
     },
-    [addAssistantMessage, user]
+    [addAssistantMessage, uiCopy.instagramFailedPrefix, uiCopy.instagramPublished, uiCopy.unknownError, user]
   );
 
   // Resume polling after reload (if any publish jobs were pending).
@@ -1241,7 +1627,7 @@ export default function V3Page() {
       const postId = typeof data?.postId === "string" ? data.postId : null;
 
       // Non-blocking UX: let it finish in the background.
-      addAssistantMessage("Uploading to Instagram...");
+      addAssistantMessage(uiCopy.uploadToInstagram);
       if (postId) void startPublishPolling(postId);
       refreshMyPosts();
       handleCloseCaptionModal();
@@ -1261,6 +1647,7 @@ export default function V3Page() {
     startPublishPolling,
     user,
     publishingPostId,
+    uiCopy.uploadToInstagram,
   ]);
 
   // Handle file selection - now sends to agent
@@ -1281,18 +1668,11 @@ export default function V3Page() {
       }
       
       // Persistable product thumbnail (data URL) for reload + panel switching.
-      fileToDataUrl(file)
-        .then((dataUrl) => {
-          if (typeof dataUrl === "string" && dataUrl.startsWith("data:image/")) {
-            setProductThumbnail(dataUrl);
-          }
-        })
-        .catch(() => {
-          // ignore
-        });
+      hydrateProductThumbnailFromFile(file);
+      const uploadPreviewUrl = URL.createObjectURL(file);
 
       // Send the image to the agent
-      handleSendMessage("", file);
+      handleSendMessage("", file, undefined, { uploadedThumbnailUrl: uploadPreviewUrl });
     }
   };
 
@@ -1309,7 +1689,8 @@ export default function V3Page() {
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
     if (inputValue.trim()) {
-      handleSendMessage(inputValue.trim());
+      const typed = inputValue.trim();
+      handleSendMessage(typed, undefined, undefined, { languageDetectionText: typed });
       // Keep typing without extra clicks
       queueMicrotask(() => inputRef.current?.focus());
     }
@@ -1416,8 +1797,10 @@ export default function V3Page() {
       return;
     }
 
-    void handleSendMessage("", file);
-  }, [hasMessages, isFileDragEvent, handleSendMessage]);
+    hydrateProductThumbnailFromFile(file);
+    const uploadPreviewUrl = URL.createObjectURL(file);
+    void handleSendMessage("", file, undefined, { uploadedThumbnailUrl: uploadPreviewUrl });
+  }, [handleSendMessage, hasMessages, hydrateProductThumbnailFromFile, isFileDragEvent]);
 
   // Close dropdown when clicking outside
   React.useEffect(() => {
@@ -1793,12 +2176,12 @@ export default function V3Page() {
                     />
                   </div>
                   <h2 className="text-base sm:text-lg font-medium text-gray-900 mb-1">
-                    {isFirstPost === true ? "¡Bienvenid@ a tu primer post!" : "¡Creemos tu nuevo post!"}
+                    {isFirstPost === true ? uiCopy.welcomeTitleFirstPost : uiCopy.welcomeTitleNextPost}
                   </h2>
                   <p className="text-xs sm:text-sm text-gray-500">
                     {isFirstPost 
-                      ? "Para empezar, sube una foto de tu producto o arrástrala a la pantalla :)"
-                      : "Sube una foto de tu producto para comenzar"
+                      ? uiCopy.welcomeHintFirstPost
+                      : uiCopy.welcomeHintNextPost
                     }
                   </p>
                 </div>
@@ -1983,7 +2366,7 @@ export default function V3Page() {
                                     onClick={async () => {
                                       try {
                                         await handleSaveImageToMyPosts(msg.imageUrl!);
-                                        addAssistantMessage("Guardado en **My posts**.");
+                                        addAssistantMessage(uiCopy.savedInMyPosts);
                                       } catch (e) {
                                         const m = e instanceof Error ? e.message : "Failed to save";
                                         addAssistantMessage(m);
@@ -1992,7 +2375,7 @@ export default function V3Page() {
                                     disabled={isSavingToPosts || isBusy}
                                     className="flex-1 py-2.5 px-4 bg-gray-900 text-white text-sm font-medium rounded-xl hover:bg-gray-800 transition disabled:opacity-50 disabled:cursor-not-allowed"
                                   >
-                                    {isSavingToPosts ? "Saving..." : "Save"}
+                                    {isSavingToPosts ? uiCopy.saving : uiCopy.save}
                                   </button>
                                   <button
                                     type="button"
@@ -2000,7 +2383,7 @@ export default function V3Page() {
                                     disabled={isBusy}
                                     className="flex-1 py-2.5 px-4 border border-gray-200 text-gray-700 text-sm font-medium rounded-xl hover:bg-gray-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
                                   >
-                                    Share
+                                    {uiCopy.share}
                                   </button>
                                   <button
                                     type="button"
@@ -2008,7 +2391,7 @@ export default function V3Page() {
                                     disabled={isBusy}
                                     className="flex-1 py-2.5 px-4 border border-gray-200 text-gray-700 text-sm font-medium rounded-xl hover:bg-gray-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
                                   >
-                                    Post
+                                    {uiCopy.post}
                                   </button>
                                 </div>
                               ) : (
@@ -2017,7 +2400,7 @@ export default function V3Page() {
                                     onClick={async () => {
                                       try {
                                         await handleSaveImageToMyPosts(msg.imageUrl!);
-                                        addAssistantMessage("Guardado en **My posts**.");
+                                        addAssistantMessage(uiCopy.savedInMyPosts);
                                       } catch (e) {
                                         const m = e instanceof Error ? e.message : "Failed to save";
                                         addAssistantMessage(m);
@@ -2026,7 +2409,7 @@ export default function V3Page() {
                                     disabled={isSavingToPosts || isBusy}
                                     className="flex-1 py-2.5 px-4 bg-gray-900 text-white text-sm font-medium rounded-xl hover:bg-gray-800 transition"
                                   >
-                                    {isSavingToPosts ? "Saving..." : "Save"}
+                                    {isSavingToPosts ? uiCopy.saving : uiCopy.save}
                                   </button>
                                   <div className="flex-1 relative group">
                                     <button
@@ -2034,12 +2417,12 @@ export default function V3Page() {
                                       disabled={!igConnected || isBusy}
                                       className="w-full py-2.5 px-4 border border-gray-200 text-gray-700 text-sm font-medium rounded-xl hover:bg-gray-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
-                                      Post
+                                      {uiCopy.post}
                                     </button>
                                     {!igConnected ? (
                                       <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 -top-2 -translate-y-full opacity-0 group-hover:opacity-100 transition-opacity">
                                         <div className="bg-gray-900 text-white text-xs px-3 py-2 rounded-lg shadow-lg whitespace-nowrap">
-                                          please connect to Instagram to use this functionality
+                                          {uiCopy.needInstagram}
                                         </div>
                                       </div>
                                     ) : null}
@@ -2069,12 +2452,12 @@ export default function V3Page() {
                         ============================================================ */}
                     
                     {/* User messages - max 40% width, aligned right */}
-                    {msg.role === "user" && msg.content !== "📸 Imagen subida" && (
+                    {msg.role === "user" && msg.content !== uiCopy.uploadMarker && (
                       <div className={["ml-auto flex items-center gap-2", bubbleMaxWidth].join(" ")}>
                         {/* Reference selection with thumbnail */}
-                        {msg.content === "📷 Referencia seleccionada" && msg.imageUrl ? (
+                        {msg.content === uiCopy.referenceSelectedMarker && msg.imageUrl ? (
                           <div className="flex items-center gap-2 bg-gray-100 rounded-2xl rounded-br-md px-3 py-2">
-                            <span className="text-[14px] text-gray-900">Referencia seleccionada</span>
+                            <span className="text-[14px] text-gray-900">{uiCopy.referenceSelectedLabel}</span>
                             <img 
                               src={msg.imageUrl} 
                               alt="Reference" 
@@ -2110,7 +2493,7 @@ export default function V3Page() {
                         <div className="w-5 h-5 border-2 border-gray-200 border-t-gray-400 rounded-full animate-spin" />
                         {/* Changing text */}
                         <span className="text-[15px] text-gray-600">
-                          {isGenerating ? "Generando post" : loadingMessages[loadingMessageIndex]}
+                          {isGenerating ? uiCopy.generatingPost : loadingMessages[loadingMessageIndex]}
                         </span>
                       </div>
                     </div>
@@ -2133,7 +2516,7 @@ export default function V3Page() {
                         disabled={isGenerating}
                         className="w-full py-3 rounded-xl bg-gray-900 text-white text-sm font-semibold hover:bg-gray-800 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        {isGenerating ? "Generando..." : "Generar"}
+                        {isGenerating ? uiCopy.generatingAction : uiCopy.generateAction}
                       </button>
                     ) : null}
                     {/* Input form - Enter only sends text, NOT generate */}
@@ -2157,7 +2540,11 @@ export default function V3Page() {
                         value={inputValue}
                         onChange={(e) => setInputValue(e.target.value)}
                         onKeyDown={handleKeyPress}
-                        placeholder={hasMessages ? "Describe tu post" : "Sube una foto primero por favor"}
+                        placeholder={
+                          hasMessages
+                            ? uiCopy.placeholderWithMessages
+                            : uiCopy.placeholderWithoutMessages
+                        }
                         disabled={isBusy || !hasMessages}
                         className="flex-1 bg-transparent outline-none text-[15px] text-gray-700 placeholder-gray-400 py-1 resize-none overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed"
                       />
@@ -2182,7 +2569,7 @@ export default function V3Page() {
                         disabled={isGenerating}
                         className="px-6 py-2.5 rounded-full bg-gray-900 text-white text-sm font-medium hover:bg-gray-800 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
                       >
-                        {isGenerating ? "Generando..." : "Generar"}
+                        {isGenerating ? uiCopy.generatingAction : uiCopy.generateAction}
                       </button>
                     )}
                   </div>
@@ -2194,8 +2581,8 @@ export default function V3Page() {
                 <div className="h-full overflow-y-auto p-5 sm:px-8 sm:py-6 scrollbar-hide">
                   <div className="flex items-start justify-between gap-4 mb-5">
                     <div>
-                      <h2 className="text-lg font-semibold text-gray-900">My posts</h2>
-                      <p className="text-xs text-gray-500">Saved, uploading, and published posts.</p>
+                      <h2 className="text-lg font-semibold text-gray-900">{uiCopy.myPostsTitle}</h2>
+                      <p className="text-xs text-gray-500">{uiCopy.myPostsSubtitle}</p>
                     </div>
                     <button
                       type="button"
@@ -2203,7 +2590,7 @@ export default function V3Page() {
                       disabled={myPostsLoading}
                       className="px-3 py-2 rounded-full border border-gray-200 text-xs text-gray-700 hover:bg-gray-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      {myPostsLoading ? "Loading..." : "Refresh"}
+                      {myPostsLoading ? uiCopy.loading : uiCopy.refresh}
                     </button>
                   </div>
 
@@ -2211,30 +2598,31 @@ export default function V3Page() {
 
                   {!myPostsLoading && myPosts.length === 0 ? (
                     <div className="text-sm text-gray-500">
-                      No posts yet. Use <strong>Save</strong> or <strong>Post</strong> on a generated image.
+                      {uiCopy.noPostsYetPrefix} Use <strong>{uiCopy.noPostsYetActionSave}</strong> or{" "}
+                      <strong>{uiCopy.noPostsYetActionPost}</strong> on a generated image.
                     </div>
                   ) : null}
 
                   {myPostsLoading ? (
                     <div className="flex items-center gap-2 text-sm text-gray-600">
                       <Spinner size="sm" />
-                      Loading posts…
+                      {uiCopy.loadingPosts}
                     </div>
                   ) : (
                     <div className="space-y-10">
                       {[
                         {
                           key: "ready_to_upload",
-                          title: "Saved",
+                          title: uiCopy.statusSaved,
                           items: myPosts.filter((p) => p.kind === "image" && p.status === "ready_to_upload"),
                         },
                         {
                           key: "publishing",
-                          title: "Uploading",
+                          title: uiCopy.statusUploading,
                           items: myPosts.filter((p) => p.kind === "image" && (p.status === "publishing" || p.status === "generating")),
                         },
-                        { key: "published", title: "Published", items: myPosts.filter((p) => p.kind === "image" && p.status === "published") },
-                        { key: "failed", title: "Failed", items: myPosts.filter((p) => p.kind === "image" && p.status === "failed") },
+                        { key: "published", title: uiCopy.statusPublished, items: myPosts.filter((p) => p.kind === "image" && p.status === "published") },
+                        { key: "failed", title: uiCopy.statusFailed, items: myPosts.filter((p) => p.kind === "image" && p.status === "failed") },
                       ]
                         .filter((row) => row.items.length > 0)
                         .map((row) => (
@@ -2264,9 +2652,9 @@ export default function V3Page() {
                                         />
                                       ) : (
                                         <div className="w-full h-full flex flex-col items-center justify-center text-xs text-gray-400 gap-1">
-                                          <div className="font-medium">Missing media</div>
+                                          <div className="font-medium">{uiCopy.missingMedia}</div>
                                           <div className="text-[11px]">
-                                            {p.mediaUrl || p.previewUrl ? "Failed to load" : "No URL"}
+                                            {p.mediaUrl || p.previewUrl ? uiCopy.failedToLoad : uiCopy.noUrl}
                                           </div>
                                         </div>
                                       )}
@@ -2291,7 +2679,7 @@ export default function V3Page() {
                                           {p.caption}
                                         </div>
                                       ) : (
-                                        <div className="mt-2 text-xs text-gray-400">No caption</div>
+                                        <div className="mt-2 text-xs text-gray-400">{uiCopy.noCaption}</div>
                                       )}
                                       {canPostFromHere ? (
                                         isMobileBrowser ? (
@@ -2302,14 +2690,14 @@ export default function V3Page() {
                                               disabled={!(p.mediaUrl || p.previewUrl)}
                                               className="flex-1 py-2.5 px-4 border border-gray-200 text-gray-700 text-xs font-medium rounded-xl hover:bg-gray-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
                                             >
-                                              Share
+                                              {uiCopy.share}
                                             </button>
                                             <button
                                               type="button"
                                               onClick={() => handleTryOpenCaptionModalForSavedPost(p)}
                                               className="flex-1 py-2.5 px-4 border border-gray-200 text-gray-700 text-xs font-medium rounded-xl hover:bg-gray-50 transition"
                                             >
-                                              Post
+                                              {uiCopy.post}
                                             </button>
                                           </div>
                                         ) : (
@@ -2320,12 +2708,12 @@ export default function V3Page() {
                                               disabled={!igConnected}
                                               className="w-full py-2.5 px-4 border border-gray-200 text-gray-700 text-xs font-medium rounded-xl hover:bg-gray-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
                                             >
-                                              Post
+                                              {uiCopy.post}
                                             </button>
                                             {!igConnected ? (
                                               <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 -top-2 -translate-y-full opacity-0 group-hover:opacity-100 transition-opacity">
                                                 <div className="bg-gray-900 text-white text-xs px-3 py-2 rounded-lg shadow-lg whitespace-nowrap">
-                                                  please connect to Instagram to use this functionality
+                                                  {uiCopy.needInstagram}
                                                 </div>
                                               </div>
                                             ) : null}
@@ -2361,17 +2749,17 @@ export default function V3Page() {
             className="relative bg-white rounded-2xl shadow-2xl p-6 max-w-lg w-full"
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 className="text-xl font-semibold text-gray-900 mb-4">Post to Instagram</h2>
+            <h2 className="text-xl font-semibold text-gray-900 mb-4">{uiCopy.captionModalTitle}</h2>
 
             <div className="mb-4">
               <label htmlFor="caption" className="block text-sm font-medium text-gray-700 mb-2">
-                Caption
+                {uiCopy.captionLabel}
               </label>
               <textarea
                 id="caption"
                 value={captionInput}
                 onChange={(e) => setCaptionInput(e.target.value)}
-                placeholder="Write your caption..."
+                placeholder={uiCopy.captionPlaceholder}
                 rows={4}
                 disabled={isPublishing || isCaptionGenerating}
                 className="w-full px-4 py-3 rounded-xl bg-white border border-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-900/10 focus:border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed text-[15px] resize-none"
@@ -2379,7 +2767,7 @@ export default function V3Page() {
               {isCaptionGenerating ? (
                 <div className="mt-2 text-xs text-gray-500 font-medium flex items-center gap-2">
                   <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-gray-400" />
-                  Generating caption…
+                  {uiCopy.captionGenerating}
                 </div>
               ) : null}
             </div>
@@ -2390,7 +2778,7 @@ export default function V3Page() {
                 disabled={isPublishing}
                 className="flex-1 py-2.5 px-4 border border-gray-200 text-gray-700 font-medium rounded-xl text-sm hover:bg-gray-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Cancel
+                {uiCopy.cancel}
               </button>
               <button
                 onClick={() => void handlePublishImageToInstagram()}
@@ -2400,10 +2788,10 @@ export default function V3Page() {
                 {isPublishing ? (
                   <>
                     <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
-                    Uploading…
+                    {uiCopy.publishing}
                   </>
                 ) : (
-                  "Publicar"
+                  uiCopy.publish
                 )}
               </button>
             </div>
