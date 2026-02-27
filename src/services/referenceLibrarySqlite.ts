@@ -364,13 +364,17 @@ export async function searchReferenceImages(params: {
   }
 
   // Pull a bounded candidate set then score in JS (simple + avoids dynamic SQL scoring).
-  // We bias towards higher-ranked & recently created.
+  // Prefer global references over user-scoped ones to avoid stale user-specific fallbacks
+  // when category/industry filters are too narrow for a fresh product.
   const candidates = await pool.query(
     `
     SELECT id, scope, owner_uid, original_filename, s3_bucket, s3_key, tags, industry, aesthetic, mood, design_guidelines, ranking, created_at, post_type, product_category, text_in_image, text_analysis
     FROM reference_images
     WHERE ${whereClause}
-    ORDER BY ranking DESC, created_at DESC
+    ORDER BY
+      CASE WHEN scope = 'global' THEN 0 ELSE 1 END,
+      ranking DESC,
+      created_at DESC
     LIMIT 250
     `,
     queryParams

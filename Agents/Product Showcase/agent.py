@@ -3300,9 +3300,30 @@ IMPORTANTE: Si pide "achicar" o "más corto", propone un texto con MENOS palabra
         try:
             # First, analyze the product image to get name and category
             product_info = self._analyze_product_image()
-            product_name = product_info.get('product_name', 'tu producto')
             industry = product_info.get('industry', 'beauty')
             category = product_info.get('category', 'product')
+            raw_product_name = str(product_info.get('product_name') or '').strip()
+
+            # Avoid surfacing generic placeholders like "tu producto" in user-facing copy.
+            generic_names = {
+                "",
+                "tu producto",
+                "your product",
+                "seu produto",
+                "producto",
+                "product",
+                "no identifiable product",
+                "unknown product",
+                "unknown",
+            }
+            category_fallback = str(category or '').strip()
+            if raw_product_name.lower() in generic_names:
+                if category_fallback and category_fallback.lower() not in {"product", "producto", "general", "unknown"}:
+                    product_name = category_fallback
+                else:
+                    product_name = 'tu producto'
+            else:
+                product_name = raw_product_name
             
             # Store for later use
             self.product_name = product_name
@@ -3614,40 +3635,75 @@ IMPORTANTE: Si pide "achicar" o "más corto", propone un texto con MENOS palabra
                     "references": references
                 }
             else:
-                # FALLBACK: No references found, use the post type example image as the only reference
-                example_data = self.post_type_examples.get(post_type)
-                if example_data and example_data.get('id'):
+                # FINAL FALLBACK: broaden search by post_type only.
+                # This avoids showing stale user-scoped examples from previous runs when
+                # category/industry filters are too narrow for a new product.
+                debug_tracker.log_step("2.1d FALLBACK_SEARCH_POST_TYPE_ONLY", {
+                    "post_type": post_type,
+                    "reason": "No references with category/industry filters"
+                })
+                fallback3_response = requests.post(
+                    f'{self.backend_url}/search-references',
+                    json={
+                        'query': search_query,
+                        'postType': post_type,
+                        'limit': 20,
+                        'userId': uid
+                    },
+                    headers=headers,
+                    timeout=60
+                )
+                fallback3_response.raise_for_status()
+                fallback3_result = fallback3_response.json()
+                references = fallback3_result.get('results', []) if fallback3_result.get('status') == 'success' else []
+
+                if references:
+                    global_refs = [r for r in references if str(r.get('scope') or '').lower() == 'global']
+                    references = global_refs if len(global_refs) > 0 else references
                     self.current_step = 2
-                    
-                    # Create fallback reference from post type example
+                    self.available_references = references
+                    debug_tracker.log_step("2.2 REFERENCES_RETRIEVED_FROM_S3", {
+                        "count": len(references),
+                        "reference_ids": [ref.get('id', 'unknown')[:8] for ref in references[:5]],
+                        "fallback": "post_type_only",
+                        "global_only": len(global_refs) > 0
+                    })
+                    return {
+                        "type": "reference_options",
+                        "text": f"¡Buena elección! Estos son algunos templates que tengo para crear tu post de **{label}**. Necesito que elijas uno para que trabajemos sobre el mismo o puedes también subir uno de tu preferencia.",
+                        "references": references
+                    }
+
+                # Absolute fallback: only use post type example if it's not a user-scoped URL.
+                example_data = self.post_type_examples.get(post_type)
+                example_url = str(example_data.get('url') or '') if example_data else ''
+                if example_data and example_data.get('id') and '/references/users/' not in example_url:
+                    self.current_step = 2
                     fallback_ref = {
                         'id': example_data.get('id'),
                         'url': example_data.get('url'),
                         'designGuidelines': example_data.get('designGuidelines', {})
                     }
                     references = [fallback_ref]
-                    
-                    # Store for later selection
                     self.available_references = references
-                    
                     debug_tracker.log_step("2.2 REFERENCES_FALLBACK_TO_POST_TYPE_IMAGE", {
                         "example_id": example_data.get('id')[:8] if example_data.get('id') else "none",
                         "post_type_image_used": True,
-                        "reason": "No references found in search"
+                        "reason": "No references found in search",
+                        "example_scope": "global_or_unknown"
                     })
-                    
                     return {
                         "type": "reference_options",
                         "text": f"¡Buena elección! Para **{label}** tengo esta referencia. Elegila para trabajar sobre ella o puedes subir una de tu preferencia.",
                         "references": references
                     }
-                else:
-                    # No references AND no post type example - return error message
-                    debug_tracker.log_step("2.2 REFERENCES_RETRIEVED_FROM_S3", success=False, error="No references found and no fallback available")
-                    return {
-                        "type": "text",
-                        "text": f"No encontré referencias para este tipo de post. ¿Querés que genere la imagen directamente según tu descripción?"
-                    }
+
+                # No safe references available.
+                debug_tracker.log_step("2.2 REFERENCES_RETRIEVED_FROM_S3", success=False, error="No references found and no safe fallback available")
+                return {
+                    "type": "text",
+                    "text": f"No encontré referencias para este tipo de post con este producto. Podés subir una referencia propia o elegir otro tipo de post."
+                }
                 
         except Exception as e:
             debug_tracker.log_step("2.0 STEP2_SEARCH_REFERENCES", success=False, error=str(e))

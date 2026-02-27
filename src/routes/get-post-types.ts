@@ -134,7 +134,10 @@ const getPostTypesRoute: FastifyPluginAsync = async (fastify) => {
           FROM reference_images
           WHERE post_type IS NOT NULL AND post_type != ''
             AND LOWER(product_category) = LOWER($1)
-          ORDER BY post_type, ranking DESC, created_at DESC
+          ORDER BY post_type,
+            CASE WHEN scope = 'global' THEN 0 ELSE 1 END,
+            ranking DESC,
+            created_at DESC
         `, [normalizedCategory.trim()]);
         
         logger.info(`get-post-types: Found ${result.rows.length} post types with category=${normalizedCategory}`);
@@ -155,6 +158,7 @@ const getPostTypesRoute: FastifyPluginAsync = async (fastify) => {
             WHERE post_type IS NOT NULL AND post_type != ''
               AND LOWER(industry) = LOWER($1)
             ORDER BY post_type, 
+              CASE WHEN scope = 'global' THEN 0 ELSE 1 END,
               CASE WHEN LOWER(product_category) = LOWER($2) THEN 0 ELSE 1 END,
               ranking DESC, 
               created_at DESC
@@ -174,7 +178,10 @@ const getPostTypesRoute: FastifyPluginAsync = async (fastify) => {
           FROM reference_images
           WHERE post_type IS NOT NULL AND post_type != ''
             AND LOWER(industry) = LOWER($1)
-          ORDER BY post_type, ranking DESC, created_at DESC
+          ORDER BY post_type,
+            CASE WHEN scope = 'global' THEN 0 ELSE 1 END,
+            ranking DESC,
+            created_at DESC
         `, [industry.trim()]);
         
         // If we didn't get enough types, supplement with other industries
@@ -191,6 +198,7 @@ const getPostTypesRoute: FastifyPluginAsync = async (fastify) => {
             FROM reference_images
             WHERE post_type IS NOT NULL AND post_type != ''
             ORDER BY post_type, 
+              CASE WHEN scope = 'global' THEN 0 ELSE 1 END,
               CASE WHEN LOWER(industry) = LOWER($1) THEN 0 ELSE 1 END,
               ranking DESC, 
               created_at DESC
@@ -209,7 +217,10 @@ const getPostTypesRoute: FastifyPluginAsync = async (fastify) => {
             tags
           FROM reference_images
           WHERE post_type IS NOT NULL AND post_type != ''
-          ORDER BY post_type, ranking DESC, created_at DESC
+          ORDER BY post_type,
+            CASE WHEN scope = 'global' THEN 0 ELSE 1 END,
+            ranking DESC,
+            created_at DESC
         `);
       }
 
@@ -228,7 +239,10 @@ const getPostTypesRoute: FastifyPluginAsync = async (fastify) => {
             tags
           FROM reference_images
           WHERE post_type IS NOT NULL AND post_type != ''
-          ORDER BY post_type, ranking DESC, created_at DESC
+          ORDER BY post_type,
+            CASE WHEN scope = 'global' THEN 0 ELSE 1 END,
+            ranking DESC,
+            created_at DESC
         `);
       }
 
@@ -251,7 +265,10 @@ const getPostTypesRoute: FastifyPluginAsync = async (fastify) => {
               tags
             FROM reference_images
             WHERE post_type IS NOT NULL AND post_type != ''
-            ORDER BY post_type, ranking DESC, created_at DESC
+            ORDER BY post_type,
+              CASE WHEN scope = 'global' THEN 0 ELSE 1 END,
+              ranking DESC,
+              created_at DESC
           `);
           const seen = new Set<string>(result.rows.map((r: any) => String(r.post_type)));
           for (const row of supplemental.rows) {

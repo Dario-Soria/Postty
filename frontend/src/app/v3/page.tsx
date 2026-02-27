@@ -75,7 +75,9 @@ const isDisplayableImageUrl = (value: unknown): value is string => {
 
 export default function V3Page() {
   const { user, userProfile, loading, signOut } = useAuth();
-  const MULTILANG_ENABLED = process.env.NEXT_PUBLIC_POSTTY_MULTILANG_ENABLED === "true";
+// Default to enabled so production doesn't silently regress to English
+// when the env var is missing. Only an explicit "false" disables it.
+const MULTILANG_ENABLED = process.env.NEXT_PUBLIC_POSTTY_MULTILANG_ENABLED !== "false";
   const AUTO_FEEDBACK_AFTER_GENERATION_ENABLED =
     process.env.NEXT_PUBLIC_POSTTY_V3_AUTO_FEEDBACK_ENABLED === "true";
   const [accessCheckLoading, setAccessCheckLoading] = React.useState(false);
@@ -827,7 +829,7 @@ export default function V3Page() {
       setProductThumbnail(null);
       setReadyToGenerate(false);
       setIsGenerating(false);
-      setPreferredLanguage("en");
+      setPreferredLanguage(detectBrowserLanguage());
       persistedLanguageRef.current = null;
       // Allow restoring when a user logs back in (or switches accounts).
       restoredForUidRef.current = null;
@@ -886,7 +888,9 @@ export default function V3Page() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [isMobileBrowser, messages, scrollChatToBottom]);
 
-  // Persist / restore v3 state across reloads (per-user).
+  // Start-from-scratch policy: do not restore chat/session state on reload.
+  // We keep auth and profile-derived preferences, but every open/refresh begins
+  // at the welcome screen with a fresh in-memory session.
   React.useEffect(() => {
     if (!user) return;
     if (typeof window === "undefined") return;
@@ -894,57 +898,26 @@ export default function V3Page() {
 
     const key = `postty:v3:${user.uid}:state:v1`;
     try {
-      const raw = window.localStorage.getItem(key);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object") {
-        if (Array.isArray(parsed.messages)) {
-          const sanitizedMessages = (parsed.messages as Message[]).map((message) => {
-            if (!message || typeof message !== "object") return message;
-            if (!("productThumbnail" in message)) return message;
-            if (isDisplayableImageUrl(message.productThumbnail)) return message;
-            const { productThumbnail: _dropInvalidThumbnail, ...rest } = message;
-            return rest as Message;
-          });
-          setMessages(sanitizedMessages);
-        }
-        if (typeof parsed.clientSessionId === "string") setClientSessionId(parsed.clientSessionId);
-        if (parsed.clientSessionId === null) setClientSessionId(null);
-        // Note: "reels" is intentionally not restorable. The button is "coming soon"
-        // and should not activate any transitions or state changes.
-        if (parsed.activeLeftMenu === "home" || parsed.activeLeftMenu === "posts") {
-          setActiveLeftMenu(parsed.activeLeftMenu);
-        }
-        if (isDisplayableImageUrl(parsed.productThumbnail) || parsed.productThumbnail === null) {
-          setProductThumbnail(parsed.productThumbnail);
-        }
-      }
+      // Remove legacy persisted chat state so older sessions cannot reappear.
+      window.localStorage.removeItem(key);
     } catch {
       // ignore
-    } finally {
-      restoredForUidRef.current = user.uid;
-      // Mobile: after restoring state, ensure the chat is anchored to bottom.
-      if (isMobileBrowser) requestAnimationFrame(() => scrollChatToBottom("auto"));
     }
+
+    // Ensure clean welcome state for this browser open/refresh.
+    setMessages([]);
+    setClientSessionId(null);
+    setActiveLeftMenu("home");
+    setProductThumbnail(null);
+    setSelectedReference(null);
+    setReadyToGenerate(false);
+    setIsGenerating(false);
+
+    restoredForUidRef.current = user.uid;
+    if (isMobileBrowser) requestAnimationFrame(() => scrollChatToBottom("auto"));
   }, [user, isMobileBrowser, scrollChatToBottom]);
 
-  React.useEffect(() => {
-    if (!user) return;
-    if (typeof window === "undefined") return;
-    if (restoredForUidRef.current !== user.uid) return;
-    const key = `postty:v3:${user.uid}:state:v1`;
-    try {
-      const payload = {
-        messages,
-        clientSessionId,
-        activeLeftMenu,
-        productThumbnail,
-      };
-      window.localStorage.setItem(key, JSON.stringify(payload));
-    } catch {
-      // ignore quota / serialization issues
-    }
-  }, [activeLeftMenu, clientSessionId, messages, productThumbnail, user]);
+  // Intentionally no localStorage persistence for v3 chat/session state.
 
   // Keep the latest uploaded product thumbnail in the active post-type assistant card.
   // This fixes stale thumbnails when the user starts another post with a new image.

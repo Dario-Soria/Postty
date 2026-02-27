@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as logger from '../utils/logger';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import sharp from 'sharp';
 import { sendMessageToAgent, ensureAgentRunning } from '../services/productShowcaseAgent';
 import { uploadLocalImage } from '../services/imageUploader';
 import { saveReferenceImageAsync } from '../services/referenceLibrarySqlite';
@@ -26,6 +27,57 @@ const isDisplayableImageUrl = (value: unknown): value is string => {
   );
 };
 
+const GEMINI_IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp']);
+
+const mimeToExtension = (mime: string): string => {
+  switch (mime) {
+    case 'image/png':
+      return 'png';
+    case 'image/webp':
+      return 'webp';
+    case 'image/gif':
+      return 'gif';
+    case 'image/bmp':
+      return 'bmp';
+    case 'image/jpeg':
+    default:
+      return 'jpg';
+  }
+};
+
+const sanitizeFilenameBase = (filename: string): string => {
+  const base = path.parse(filename || 'upload').name || 'upload';
+  return base.replace(/[^a-zA-Z0-9._-]/g, '_');
+};
+
+const normalizeImageForGemini = async (
+  fileBuffer: Buffer,
+  fileMimeType?: string
+): Promise<{ buffer: Buffer; mimeType: string; ext: string; converted: boolean }> => {
+  const normalizedMime = (fileMimeType || '').toLowerCase().split(';')[0].trim();
+  if (normalizedMime && GEMINI_IMAGE_MIME_TYPES.has(normalizedMime)) {
+    return {
+      buffer: fileBuffer,
+      mimeType: normalizedMime,
+      ext: mimeToExtension(normalizedMime),
+      converted: false,
+    };
+  }
+
+  // Convert unsupported/ambiguous input formats (e.g. HEIC) to JPEG for Gemini Vision compatibility.
+  const jpegBuffer = await sharp(fileBuffer, { failOn: 'none' })
+    .rotate()
+    .jpeg({ quality: 92 })
+    .toBuffer();
+
+  return {
+    buffer: jpegBuffer,
+    mimeType: 'image/jpeg',
+    ext: 'jpg',
+    converted: true,
+  };
+};
+
 export default async function agentChatRoute(fastify: FastifyInstance): Promise<void> {
   fastify.post('/agent-chat', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
@@ -42,11 +94,19 @@ export default async function agentChatRoute(fastify: FastifyInstance): Promise<
           // Save uploaded image to temp folder
           const tempDir = path.join(process.cwd(), 'temp-uploads');
           await fs.mkdir(tempDir, { recursive: true });
-          
-          const filename = `agent-upload-${Date.now()}-${part.filename}`;
+
+          const uploadedBuffer = await part.toBuffer();
+          const normalizedImage = await normalizeImageForGemini(uploadedBuffer, part.mimetype);
+          const filename = `agent-upload-${Date.now()}-${sanitizeFilenameBase(part.filename || 'upload')}.${normalizedImage.ext}`;
           const filepath = path.join(tempDir, filename);
-          
-          await fs.writeFile(filepath, await part.toBuffer());
+
+          if (normalizedImage.converted) {
+            logger.info(
+              `[Agent Chat] Converted upload to JPEG for compatibility (from ${part.mimetype || 'unknown'})`
+            );
+          }
+
+          await fs.writeFile(filepath, normalizedImage.buffer);
           imageFile = { filename, path: filepath };
         }
       }
